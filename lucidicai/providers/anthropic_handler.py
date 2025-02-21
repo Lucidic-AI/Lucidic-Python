@@ -1,0 +1,127 @@
+import pprint
+from typing import Optional
+from datetime import datetime
+
+from .base_providers import BaseProvider
+from lucidicai.session import Session, Step
+from lucidicai.singleton import singleton
+
+@singleton
+class AnthropicHandler(BaseProvider):
+    def __init__(self, client):
+        super().__init__(client)
+        self._provider_name = "Anthropic"
+        self.original_create = None
+        self.original_create_async = None
+    
+    def handle_response(self, response, kwargs, session: Optional[Session] = None):
+        """Handle responses for Anthropic"""
+        import anthropic
+        from anthropic import AsyncStream, Stream
+        
+        # For streaming responses
+        if isinstance(response, (AsyncStream, Stream)):
+            input_messages = kwargs.get('messages', '')
+            step = Step(
+                session=session,
+                goal=str(input_messages),
+                action=None
+            )
+            
+            accumulated_response = ""
+            
+            # For synchronous streams
+            if isinstance(response, Stream):
+                for chunk in response:
+                    try:
+                        if chunk.type == "message_start":
+                            continue
+                        elif chunk.type == "content_block_start":
+                            if chunk.content_block.type == "text":
+                                accumulated_response += chunk.content_block.text
+                        elif chunk.type == "content_block_delta":
+                            if chunk.delta.type == "text_delta":
+                                accumulated_response += chunk.delta.text
+                    except Exception as e:
+                        step.update_step(action=accumulated_response)  # Save what we got
+                        step.finish_step(
+                            is_successful=False,
+                            cost=None,
+                            model=kwargs.get('model')
+                        )
+                        raise
+            
+            # Update final response before finishing
+            step.update_step(action=accumulated_response)
+            step.finish_step(
+                is_successful=True,
+                cost=None,  # Streaming doesn't provide token count
+                model=kwargs.get('model')
+            )
+            
+            return response
+            
+        # For non-streaming responses
+        try:
+            input_messages = kwargs.get('messages', '')
+            step = Step(
+                session=session,
+                goal=str(input_messages),
+                action=None
+            )
+            
+            # Extract and update response text
+            if hasattr(response, 'content'):
+                response_text = response.content[0].text
+            else:
+                response_text = str(response)
+            
+            step.update_step(action=response_text)
+            
+            # Calculate token count if available
+            token_count = None
+            if hasattr(response, 'usage'):
+                token_count = response.usage.input_tokens + response.usage.output_tokens
+            
+            # Finish step with metadata
+            step.finish_step(
+                is_successful=True,
+                cost=token_count,
+                model=response.model if hasattr(response, 'model') else kwargs.get('model')
+            )
+            
+        except Exception as e:
+            if session and step:
+                # Try to update with error message if we fail
+                step.update_step(action=f"anthropic Error: {str(e)}")
+                step.finish_step(
+                    is_successful=False,
+                    cost=None,
+                    model=kwargs.get('model')
+                )
+            raise
+        
+        return response
+
+    def override(self):
+        import anthropic
+        
+        # Store original methods
+        self.original_create = anthropic.messages.Messages.create
+        
+        def patched_function(*args, **kwargs):
+            session = kwargs.pop("session", self.client.session)
+            if not session:
+                return self.original_create(*args, **kwargs)
+            
+            result = self.original_create(*args, **kwargs)
+            return self.handle_response(result, kwargs, session=session)
+            
+        # Override the methods
+        anthropic.messages.Messages.create = patched_function
+
+    def undo_override(self):
+        if self.original_create:
+            import anthropic
+            anthropic.messages.Messages.create = self.original_create
+            self.original_create = None
