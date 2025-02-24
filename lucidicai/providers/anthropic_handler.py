@@ -3,7 +3,7 @@ from typing import Optional
 from datetime import datetime
 
 from .base_providers import BaseProvider
-from lucidicai.session import Session, Step
+from lucidicai.session import Session, Event
 from lucidicai.singleton import singleton
 
 @singleton
@@ -22,10 +22,10 @@ class AnthropicHandler(BaseProvider):
         # For streaming responses
         if isinstance(response, (AsyncStream, Stream)):
             input_messages = kwargs.get('messages', '')
-            step = Step(
+            event = Event(
                 session=session,
-                goal=str(input_messages),
-                action=None
+                description=str(input_messages),
+                result=None
             )
             
             accumulated_response = ""
@@ -43,19 +43,19 @@ class AnthropicHandler(BaseProvider):
                             if chunk.delta.type == "text_delta":
                                 accumulated_response += chunk.delta.text
                     except Exception as e:
-                        step.update_step(action=accumulated_response)  # Save what we got
-                        step.finish_step(
+                        event.update_event(result=accumulated_response)  # Save what we got
+                        event.finish_event(
                             is_successful=False,
-                            cost=None,
+                            cost_added=None,
                             model=kwargs.get('model')
                         )
                         raise
             
             # Update final response before finishing
-            step.update_step(action=accumulated_response)
-            step.finish_step(
+            event.update_event(result=accumulated_response)
+            event.finish_event(
                 is_successful=True,
-                cost=None,  # Streaming doesn't provide token count
+                cost_added=None,  # Streaming doesn't provide token count
                 model=kwargs.get('model')
             )
             
@@ -64,10 +64,10 @@ class AnthropicHandler(BaseProvider):
         # For non-streaming responses
         try:
             input_messages = kwargs.get('messages', '')
-            step = Step(
+            event = Event(
                 session=session,
-                goal=str(input_messages),
-                action=None
+                description=str(input_messages),
+                result=None
             )
             
             # Extract and update response text
@@ -76,27 +76,27 @@ class AnthropicHandler(BaseProvider):
             else:
                 response_text = str(response)
             
-            step.update_step(action=response_text)
+            event.update_event(result=response_text)
             
             # Calculate token count if available
             token_count = None
             if hasattr(response, 'usage'):
                 token_count = response.usage.input_tokens + response.usage.output_tokens
             
-            # Finish step with metadata
-            step.finish_step(
+            # Finish event with metadata
+            event.finish_event(
                 is_successful=True,
-                cost=token_count,
+                cost_added=token_count,
                 model=response.model if hasattr(response, 'model') else kwargs.get('model')
             )
             
         except Exception as e:
-            if session and step:
+            if session and event:
                 # Try to update with error message if we fail
-                step.update_step(action=f"anthropic Error: {str(e)}")
-                step.finish_step(
+                event.update_event(result=f"anthropic Error: {str(e)}")
+                event.finish_event(
                     is_successful=False,
-                    cost=None,
+                    cost_added=None,
                     model=kwargs.get('model')
                 )
             raise

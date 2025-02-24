@@ -1,6 +1,7 @@
+"""OpenAI provider handler for the Lucidic API"""
 from typing import Optional
 from .base_providers import BaseProvider
-from lucidicai.session import Session, Step
+from lucidicai.session import Session, Event
 from lucidicai.singleton import singleton
 
 @singleton
@@ -9,9 +10,55 @@ class OpenAIHandler(BaseProvider):
         super().__init__(client)
         self._provider_name = "OpenAI"
         self.original_create = None
+        # Hard-coded pricing data (USD per 1M tokens)
+        self.pricing = {
+            'gpt-4o': {'input': 2.5, 'output': 10.0},
+            'gpt-4o-mini': {'input': 0.15, 'output': 0.6},
+            'gpt-3.5-turbo': {'input': 0.5, 'output': 1.5},
+            'o1': {'input': 15.0, 'output': 60.0},
+            'o3-mini': {'input': 1.1, 'output': 4.4}
+        }
+
+    def _calculate_cost(self, model: str, usage) -> Optional[float]:
+        """Calculate cost based on model and token usage"""
+        if not usage:
+            return None
+
+        # Get base model name (before the date)
+        base_model = model.split('-20')[0] if '-20' in model else model
+        
+        # Find matching price entry
+        for model_prefix, prices in self.pricing.items():
+            if base_model.startswith(model_prefix):
+                input_tokens = getattr(usage, 'prompt_tokens', 0)
+                output_tokens = getattr(usage, 'completion_tokens', 0)
+                
+                # Calculate costs in cents
+                input_cost = (input_tokens * prices['input'] * 100) / 1_000_000
+                output_cost = (output_tokens * prices['output'] * 100) / 1_000_000
+                
+                # Return total cost in cents
+                return round(input_cost + output_cost, 2)
+        
+        return None
+
+    def _format_messages(self, messages):
+        if not messages:
+            return "No messages provided"
+        
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if msg.get('role') == 'user':
+                    return msg.get('content', '')
+            return messages[-1].get('content', '')
+            
+        return str(messages)
 
     def handle_response(self, response, kwargs, session: Optional[Session] = None):
         if not session:
+            return response
+            
+        if not session.active_step:
             return response
 
         from openai import Stream
@@ -22,60 +69,64 @@ class OpenAIHandler(BaseProvider):
     def _handle_stream_response(self, response, kwargs, session):
         accumulated_response = ""
 
-        # Create initial step
-        step = Step(
-            session=session,
-            goal=str(kwargs.get('messages', '')),
-            action="Processing..."
-        )
-
         def generate():
             nonlocal accumulated_response
-            for chunk in response:
-                if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
-                    content = chunk.choices[0].delta.content
-                    if content:
-                        accumulated_response += content
-                yield chunk
-
-            # Pass accumulated_response as action in finish_step
-            step.update_step(
-                is_successful=True,
-                cost=None,
-                model=kwargs.get('model'),
-                action=accumulated_response
-            )
+            try:
+                for chunk in response:
+                    if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
+                        delta = chunk.choices[0].delta
+                        if hasattr(delta, 'content') and delta.content:
+                            accumulated_response += delta.content
+                    yield chunk
+                
+                # For streaming, we can't calculate costs since we don't get usage info
+                session.end_event(
+                    is_successful=True,
+                    cost_added=None,
+                    model=kwargs.get('model'),
+                    result=accumulated_response
+                )
+            except Exception as e:
+                session.end_event(
+                    is_successful=False,
+                    cost_added=None,
+                    model=kwargs.get('model'),
+                    result=f"Error during streaming: {str(e)}"
+                )
+                raise
 
         return generate()
 
     def _handle_regular_response(self, response, kwargs, session):
-        # Create initial step
-        step = Step(
-            session=session,
-            goal=str(kwargs.get('messages', '')),
-            action="Processing..."
-        )
+        try:
+            # Get response text
+            response_text = (response.choices[0].message.content 
+                           if hasattr(response, 'choices') and response.choices 
+                           else str(response))
 
-        # Process response
-        response_text = (response.choices[0].message.content
-                        if hasattr(response, 'choices') and response.choices
-                        else str(response))
+            # Calculate cost using the input/output token counts
+            cost = None
+            if hasattr(response, 'usage'):
+                model = response.model if hasattr(response, 'model') else kwargs.get('model')
+                cost = self._calculate_cost(model, response.usage)
 
-        token_count = None
-        if hasattr(response, 'usage'):
-            token_count = (getattr(response.usage, 'total_tokens', None) or
-                          (getattr(response.usage, 'prompt_tokens', 0) +
-                           getattr(response.usage, 'completion_tokens', 0)))
+            session.end_event(
+                is_successful=True,
+                cost_added=cost,
+                model=response.model if hasattr(response, 'model') else kwargs.get('model'),
+                result=response_text
+            )
 
-        # Pass response_text as action in finish_step
-        step.update_step(
-            is_successful=True,
-            cost=token_count,
-            model=response.model if hasattr(response, 'model') else kwargs.get('model'),
-            action=response_text
-        )
+            return response
 
-        return response
+        except Exception as e:
+            session.end_event(
+                is_successful=False,
+                cost_added=None,
+                model=kwargs.get('model'),
+                result=f"Error processing response: {str(e)}"
+            )
+            raise
 
     def override(self):
         from openai.resources.chat import completions
@@ -83,9 +134,17 @@ class OpenAIHandler(BaseProvider):
         
         def patched_function(*args, **kwargs):
             session = kwargs.pop("session", self.client.session) if "session" in kwargs else self.client.session
+            
+            if session and session.active_step:
+                description = self._format_messages(kwargs.get('messages', ''))
+                session.create_event(
+                    description=description,
+                    result="Waiting for response..."
+                )
+            
             result = self.original_create(*args, **kwargs)
             return self.handle_response(result, kwargs, session=session)
-            
+        
         completions.Completions.create = patched_function
 
     def undo_override(self):
