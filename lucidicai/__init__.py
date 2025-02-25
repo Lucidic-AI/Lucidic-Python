@@ -105,6 +105,22 @@ def end_session(is_successful: bool) -> None:
         client.session.finish_session(is_successful=is_successful)
         client.clear_session()
 
+def get_prompt(prompt_name: str, variables: Optional[dict] = None) -> str:
+    client = Client()
+    if not client.session:
+        # TODO: Write more descriptive Exception classes 
+        raise Exception("No session")
+    # TODO: make more efficient? maybe experiment on string length, naive way might be faster until string is very large
+    prompt = client.get_prompt(prompt_name)
+    for key, val in variables.items():
+        index = prompt.find("{{" + key +"}}")
+        if index == -1:
+            raise Exception("Supplied variable not found in prompt")
+        prompt = prompt.replace("{{" + key +"}}", val)
+    if "{{" in prompt and "}}" in prompt and prompt.find("{{") < prompt.find("}}"):
+        raise Exception("Unreplaced variable left in prompt")
+    return prompt
+
 __all__ = [
     'Client',
     'Session',
@@ -120,6 +136,7 @@ __all__ = [
     'create_event',
     'end_event',
     'end_session',
+    'get_prompt',
     'ProviderType',
     'APIKeyVerificationError',
     'SessionHTTPError',

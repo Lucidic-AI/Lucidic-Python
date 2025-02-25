@@ -23,6 +23,7 @@ class Client:
         self.mass_sim_id = None
         self.task = None
         self._provider = None
+        self.prompts = dict()
         
         self.configure(
             lucidic_api_key=lucidic_api_key,
@@ -106,6 +107,32 @@ class Client:
                 
             return data["project"], data["project_id"]
             
+        except requests.HTTPError as e:
+            if e.response.status_code == 401:
+                raise APIKeyVerificationError("Invalid API key: Authentication failed")
+            elif e.response.status_code == 403:
+                raise APIKeyVerificationError("Invalid API key: Access forbidden")
+            else:
+                raise APIKeyVerificationError(f"API key verification failed: {str(e)}")
+        except Exception as e:
+            raise APIKeyVerificationError(f"API key verification failed: {str(e)}")
+    
+    def get_prompt(self, prompt_name):
+        if prompt_name in self.prompts:
+            return self.prompts[prompt_name]
+        # TODO: Centralize request logic and response handling throughout library, maybe in Client
+        try:
+            response = requests.get(
+                f"{self.ase_url}/getprompt",
+                headers={"Authorization": f"Api-Key {self.api_key}"}
+            )
+            response.raise_for_status()
+            
+            prompt = response.json()['prompt_content']
+            self.prompts[prompt_name] = prompt
+            return prompt
+            
+        # TODO: More descriptive error handling
         except requests.HTTPError as e:
             if e.response.status_code == 401:
                 raise APIKeyVerificationError("Invalid API key: Authentication failed")
