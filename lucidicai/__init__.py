@@ -21,6 +21,7 @@ def init(
     task: Optional[str] = None,
     provider: Optional[ProviderType] = None,
 ) -> Union[Session, None]:
+    # TODO: Try to auto grab api key and agent ID from env, make them optional here?
     try:
         client = Client(
             lucidic_api_key=lucidic_api_key,

@@ -8,16 +8,17 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult, ChatGenerationChunk, GenerationChunk
 from langchain_core.documents import Document
 
+from .client import Client
+
 class LucidicLangchainHandler(BaseCallbackHandler):
     """Callback handler for Langchain integration with Lucidic"""
     
-    def __init__(self, client):
+    def __init__(self):
         """Initialize the handler with a Lucidic client.
         
-        Args:
-            client: A Lucidic client instance
         """
-        self.client = client
+        # TODO: Remove need for client argument, grab singleton
+        self.client = Client()
         # Keep track of which run is associated with which model
         self.run_to_model = {}
         print("[Handler] Initialized LucidicLangchainHandler")
@@ -66,7 +67,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         model = self._get_model_name(serialized, kwargs)
         self.run_to_model[run_str] = model
         
-        description = f"LLM call ({model}): {prompts[0][:100]}..." if prompts else "LLM call"
+        description = f"LLM call ({model}): {prompts[0]}..." if prompts else "LLM call"
         
         # Make sure we have a valid session and step
         print(f"\n[DEBUG] on_llm_start for run_id {run_str}")
@@ -129,7 +130,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         if messages and messages[0]:
             for msg in messages[0]:
                 if hasattr(msg, 'type') and hasattr(msg, 'content'):
-                    parsed_messages.append(f"{msg.type}: {msg.content[:50]}...")
+                    parsed_messages.append(f"{msg.type}: {msg.content}...")
         
         message_desc = "; ".join(parsed_messages[:2])
         description = f"Chat model call ({model}): {message_desc}"

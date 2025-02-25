@@ -24,7 +24,7 @@ class Client:
         self.task = None
         self._provider = None
         self.prompts = dict()
-        
+        # TODO: Throw better error if init is not called by the time Client() is attempted to be instantiated
         self.configure(
             lucidic_api_key=lucidic_api_key,
             agent_id=agent_id,
