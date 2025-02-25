@@ -97,6 +97,23 @@ class Session:
         self.step_history.append(step)
         return step
 
+    def update_step(self, is_successful: Optional[bool] = None, state: Optional[str] = None, 
+                   action: Optional[str] = None, goal: Optional[str] = None, 
+                   is_finished: Optional[bool] = None, cost_added: Optional[float] = None,
+                   model: Optional[str] = None) -> None:
+        if not self._active_step:
+            raise ValueError("No active step to update")
+        
+        self._active_step.update_step(
+            is_successful=is_successful,
+            state=state,
+            action=action,
+            goal=goal,
+            is_finished=is_finished,
+            cost_added=cost_added,
+            model=model
+        )
+
     def finish_step(self, is_successful: bool, state: Optional[str] = None, 
                    action: Optional[str] = None) -> None:
         if not self._active_step:
@@ -141,8 +158,7 @@ class Session:
         if self._active_step:
             raise ValueError("Cannot finish session with active step. Please finish current step first.")
             
-        self.print_step_history()
-        
+        #self.print_step_history()
         self.is_finished = True
         self.is_successful = is_successful
         return self.update_session(is_finished=True, is_successful=is_successful)
@@ -187,7 +203,7 @@ class Session:
             print(f"State: {step.state}")
             print(f"Action: {step.action}")
             print(f"Status: {'Successful' if step.is_successful else 'Failed' if step.is_successful is False else 'In Progress'}")
-            print(f"Cost: {step.cost_added:.2f}")
+            print(f"Cost: {step.cost_added}")
             print(f"Duration: {step.start_time} → {step.end_time or 'Ongoing'}")
             
             # Events
@@ -198,7 +214,7 @@ class Session:
                     print(f"  Description: {event.description}")
                     print(f"  Result: {event.result}")
                     print(f"  Status: {'Successful' if event.is_successful else 'Failed' if event.is_successful is False else 'In Progress'}")
-                    print(f"  Cost: {event.cost_added or 0:.2f}")
+                    print(f"  Cost: {event.cost_added}")
                     print(f"  Model: {event.model or 'None'}")
                     print(f"  Start Time: {event.start_time}")
                     print(f"  End Time: {event.end_time or 'Ongoing'}")
@@ -210,5 +226,5 @@ class Session:
         # Session Footer
         print("\n" + "="*80)
         print(f"Total Steps: {len(self.step_history)}")
-        print(f"Total Cost: {sum(step.cost_added or 0 for step in self.step_history):.2f}")
+        print(f"Total Cost: {sum(step.cost_added or 0 for step in self.step_history)}")
         print("="*80)

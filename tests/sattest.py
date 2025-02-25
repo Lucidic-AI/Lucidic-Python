@@ -2,6 +2,7 @@ import time
 import sys
 import os
 import lucidicai
+from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent import Agent
@@ -15,8 +16,14 @@ PROBLEMS = [
 
 def main():
     agent = Agent()
-    apikey = "RFxWd1F1.Jr4mLoh8liZXe4hFF17y95cYwwuvEeEu"
-    agent_id = "14061d9c-4aac-4d54-a23a-313a692ed8b1"
+    load_dotenv()  # Load environment variables from .env file
+    apikey = os.getenv("LUCIDIC_API_KEY")
+    if not apikey:
+        raise ValueError("LUCIDIC_API_KEY environment variable is not set")
+    
+    agent_id = os.getenv("AGENT_ID")
+    if not agent_id:
+        raise ValueError("AGENT_ID environment variable is not set")
     
     # Process each problem
     for i, question in enumerate(PROBLEMS, 1):

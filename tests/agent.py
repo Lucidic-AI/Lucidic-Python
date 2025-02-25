@@ -3,10 +3,12 @@ import openai
 import os
 import traceback
 import sys
+from dotenv import load_dotenv
 
 class Agent:
     def __init__(self):
-        self.api_key ="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"
+        load_dotenv()  # Load environment variables from .env file
+        self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY is not set. Please set it in your environment variables.")
         self.client = openai.OpenAI(api_key=self.api_key)

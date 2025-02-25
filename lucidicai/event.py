@@ -19,7 +19,6 @@ class Event:
         self.cost_added = None
         self.model = None
         self.base_url = "https://analytics.lucidic.ai/api"
-        
         self.init_event(description, result)
 
     def init_event(self, description: Optional[str] = None, result: Optional[str] = None) -> bool:
@@ -32,7 +31,6 @@ class Event:
             "result": result
         }
         headers = {"Authorization": f"Api-Key {self.api_key}"}
-        
         response = requests.post(
             f"{self.base_url}/initevent",
             headers=headers,
@@ -72,32 +70,18 @@ class Event:
         return True
 
     def finish_event(self, is_successful: bool, cost_added: Optional[float] = None,
-                    model: Optional[str] = None, result: Optional[str] = None) -> bool:
+        model: Optional[str] = None, result: Optional[str] = None,
+        description: Optional[str] = None, 
+    ) -> bool:
         if self.is_finished:
             raise ValueError("Event is already finished")
-            
-        self.is_finished = True
-        self.is_successful = is_successful
-        self.cost_added = cost_added
-        self.model = model
-        self.result = result
+        
         self.end_time = datetime.now().isoformat()
-        
-        request_data = {
-            "event_id": self.event_id,
-            "current_time": datetime.now().isoformat(),
-            "is_successful": is_successful,
-            "cost_added": cost_added,
-            "model": model,
-            "result": result
-        }
-        headers = {"Authorization": f"Api-Key {self.api_key}"}
-        
-        response = requests.put(
-            f"{self.base_url}/updateevent",
-            headers=headers,
-            json=request_data
+        return self.update_event(
+            is_successful=is_successful,
+            is_finished=True,
+            cost_added=cost_added,
+            model=model,
+            result=result,
+            description=description
         )
-        
-        handle_session_response(response)
-        return True

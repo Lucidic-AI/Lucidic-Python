@@ -25,8 +25,7 @@ class Step:
         self.event_history: List[Event] = []
         self.is_successful = None
         self.is_finished = None
-        self.cost_added = 0.0  # Initialize cost to 0
-        self.model = None
+        self.cost_added = 0.0  
         self.start_time = datetime.now().isoformat()
         
         self.init_step()
@@ -54,8 +53,9 @@ class Step:
 
     def update_step(self, goal: Optional[str] = None, action: Optional[Action] = None,
                    state: Optional[State] = None, is_successful: Optional[bool] = None, 
-                   is_finished: Optional[bool] = None, cost_added: Optional[float] = None, 
-                   model: Optional[str] = None) -> bool:
+                   is_finished: Optional[bool] = None, cost_added: Optional[float] = None,
+                   model: Optional[str] = None
+                   ) -> bool:
         update_attrs = {k: v for k, v in locals().items() 
                        if k != 'self' and v is not None}
         self.__dict__.update(update_attrs)
@@ -68,8 +68,7 @@ class Step:
             "state": str(self.state),
             "is_successful": self.is_successful,
             "is_finished": self.is_finished,
-            "cost_added": self.cost_added,
-            "model": self.model
+            "cost_added": self.cost_added
         }
         headers = {"Authorization": f"Api-Key {self.api_key}"}
         
@@ -97,7 +96,6 @@ class Step:
         self.update_step(action=self.action)
         
     def create_event(self, description: Optional[str] = None, result: Optional[str] = None) -> 'Event':
-        """Create a new event within this step"""
         from .event import Event  # Import moved inside method
         
         if not self.step_id:
@@ -105,8 +103,6 @@ class Step:
             
         if self.is_finished:
             raise ValueError("Cannot create event in finished step")
-            
-        # Check if there are any unfinished events
         if any(not event.is_finished for event in self.event_history):
             raise ValueError("Cannot create new event while previous event is unfinished")
             
@@ -118,10 +114,8 @@ class Step:
             result=result
         )
         
-        if event.init_event(description, result):
-            self.event_history.append(event)
-            return event
-        raise ValueError("Failed to initialize event")
+        self.event_history.append(event)
+        return event
     
     def finish_step(self, is_successful: bool, final_state: Optional[str] = None,
                    final_action: Optional[str] = None, cost_added: Optional[float] = None, 

@@ -9,8 +9,9 @@ from .state import State
 from .errors import APIKeyVerificationError, SessionHTTPError
 from .providers.openai_handler import OpenAIHandler
 from .providers.anthropic_handler import AnthropicHandler
+from .langchain import LucidicLangchainHandler
 
-ProviderType = Literal["openai", "anthropic"]
+ProviderType = Literal["openai", "anthropic", "langchain"]
 
 def init(
     lucidic_api_key: str,
@@ -29,15 +30,24 @@ def init(
             task=task
         )
         
+        # Set up provider
         if provider == "openai":
             client.set_provider(OpenAIHandler(client))
         elif provider == "anthropic":
             client.set_provider(AnthropicHandler(client))
+        elif provider == "langchain":
+            # Create and set OpenAI handler
+            openai_handler = OpenAIHandler(client)
+            client.set_provider(openai_handler)
+            
+            # Create and store Langchain handler on client
+            client.langchain_handler = LucidicLangchainHandler(client)
+            
         return client.init_session()
     except APIKeyVerificationError as e:
         print(f"Failed to initialize client: {e}")
         return None
-
+        
 def configure(
     lucidic_api_key: Optional[str] = None,
     agent_id: Optional[str] = None,
@@ -45,7 +55,6 @@ def configure(
     mass_sim_id: Optional[str] = None,
     task: Optional[str] = None,
 ) -> None:
-    # After init(), Client() returns existing singleton
     Client().configure(
         lucidic_api_key=lucidic_api_key,
         agent_id=agent_id,
@@ -66,6 +75,21 @@ def finish_step(is_successful: bool, state: Optional[str] = None, action: Option
     if not client.session:
         raise ValueError("No active session. Call init() first")
     client.session.finish_step(is_successful=is_successful, state=state, action=action)
+
+def update_step(
+    is_successful: Optional[bool] = None, state: Optional[str] = None, action: Optional[str] = None,
+    goal: Optional[str] = None, is_finished: Optional[bool] = None, cost_added: Optional[float] = None) -> None:
+    client = Client()
+    if not client.session:
+        raise ValueError("No active session. Call init() first")
+    client.session.update_step(
+        is_successful=is_successful,
+        state=state,
+        action=action,
+        goal=goal,
+        is_finished=is_finished,
+        cost_added=cost_added
+    )
 
 def create_event(description: Optional[str] = None, result: Optional[str] = None) -> Event:
     client = Client()
@@ -96,11 +120,12 @@ __all__ = [
     'configure',
     'create_step',
     'finish_step',
+    'update_step',
     'create_event',
     'end_event',
     'end_session',
     'ProviderType',
     'APIKeyVerificationError',
     'SessionHTTPError',
-    
+    'LucidicLangchainHandler',  # Add this to export the handler
 ]

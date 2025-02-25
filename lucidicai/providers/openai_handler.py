@@ -10,7 +10,6 @@ class OpenAIHandler(BaseProvider):
         super().__init__(client)
         self._provider_name = "OpenAI"
         self.original_create = None
-        # Hard-coded pricing data (USD per 1M tokens)
         self.pricing = {
             'gpt-4o': {'input': 2.5, 'output': 10.0},
             'gpt-4o-mini': {'input': 0.15, 'output': 0.6},
@@ -20,25 +19,20 @@ class OpenAIHandler(BaseProvider):
         }
 
     def _calculate_cost(self, model: str, usage) -> Optional[float]:
-        """Calculate cost based on model and token usage"""
         if not usage:
             return None
 
-        # Get base model name (before the date)
         base_model = model.split('-20')[0] if '-20' in model else model
         
-        # Find matching price entry
         for model_prefix, prices in self.pricing.items():
             if base_model.startswith(model_prefix):
                 input_tokens = getattr(usage, 'prompt_tokens', 0)
                 output_tokens = getattr(usage, 'completion_tokens', 0)
                 
-                # Calculate costs in cents
-                input_cost = (input_tokens * prices['input'] * 100) / 1_000_000
-                output_cost = (output_tokens * prices['output'] * 100) / 1_000_000
+                input_cost = (input_tokens * prices['input']) / 1_000_000
+                output_cost = (output_tokens * prices['output']) / 1_000_000
                 
-                # Return total cost in cents
-                return round(input_cost + output_cost, 2)
+                return input_cost + output_cost
         
         return None
 
@@ -79,7 +73,6 @@ class OpenAIHandler(BaseProvider):
                             accumulated_response += delta.content
                     yield chunk
                 
-                # For streaming, we can't calculate costs since we don't get usage info
                 session.end_event(
                     is_successful=True,
                     cost_added=None,
@@ -99,12 +92,10 @@ class OpenAIHandler(BaseProvider):
 
     def _handle_regular_response(self, response, kwargs, session):
         try:
-            # Get response text
             response_text = (response.choices[0].message.content 
                            if hasattr(response, 'choices') and response.choices 
                            else str(response))
 
-            # Calculate cost using the input/output token counts
             cost = None
             if hasattr(response, 'usage'):
                 model = response.model if hasattr(response, 'model') else kwargs.get('model')
@@ -135,6 +126,7 @@ class OpenAIHandler(BaseProvider):
         def patched_function(*args, **kwargs):
             session = kwargs.pop("session", self.client.session) if "session" in kwargs else self.client.session
             
+            # Create event before API call
             if session and session.active_step:
                 description = self._format_messages(kwargs.get('messages', ''))
                 session.create_event(
@@ -142,6 +134,7 @@ class OpenAIHandler(BaseProvider):
                     result="Waiting for response..."
                 )
             
+            # Make API call
             result = self.original_create(*args, **kwargs)
             return self.handle_response(result, kwargs, session=session)
         
