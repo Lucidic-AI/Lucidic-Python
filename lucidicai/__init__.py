@@ -36,10 +36,6 @@ def init(
         elif provider == "anthropic":
             client.set_provider(AnthropicHandler(client))
         elif provider == "langchain":
-            # Create and set OpenAI handler
-            openai_handler = OpenAIHandler(client)
-            client.set_provider(openai_handler)
-            
             # Create and store Langchain handler on client
             client.langchain_handler = LucidicLangchainHandler(client)
             

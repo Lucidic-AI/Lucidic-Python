@@ -34,11 +34,21 @@ class LucidicLangchainHandler(BaseCallbackHandler):
 
     def _calculate_cost(self, model: str, token_usage: Dict) -> float:
         """Calculate cost based on model and token usage"""
-        if "gpt-4" in model:
-            return ((token_usage.get("completion_tokens", 0) * 0.03) + 
-                    (token_usage.get("prompt_tokens", 0) * 0.01)) / 1000
-        return ((token_usage.get("completion_tokens", 0) * 0.002) + 
-                (token_usage.get("prompt_tokens", 0) * 0.001)) / 1000
+        if model == "gpt-4o":
+            return ((token_usage.get("completion_tokens", 0) * 10) + 
+                    (token_usage.get("prompt_tokens", 0) * 2.5)) / 1_000_000
+        if model == "gpt-4o-mini":
+            return ((token_usage.get("completion_tokens", 0) * 0.6) + 
+                    (token_usage.get("prompt_tokens", 0) * 0.15)) / 1_000_000
+        if model == "o1":
+            return ((token_usage.get("completion_tokens", 0) * 60) + 
+                    (token_usage.get("prompt_tokens", 0) * 15)) / 1_000_000
+        if model == "o3-mini":
+            return ((token_usage.get("completion_tokens", 0) * 4.4) + 
+                    (token_usage.get("prompt_tokens", 0) * 1.1)) / 1_000_000
+        if model == "o1-mini":
+            return ((token_usage.get("completion_tokens", 0) * 4.4) + 
+                    (token_usage.get("prompt_tokens", 0) * 1.1)) / 1_000_000
 
     def on_llm_start(
         self,
