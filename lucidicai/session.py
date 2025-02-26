@@ -1,12 +1,15 @@
 """Session management for the Lucidic API"""
 from datetime import datetime
 from typing import Optional, List
+from PIL import Image
 import requests
+import base64
 from .errors import handle_session_response
 from .action import Action
 from .state import State
 from .step import Step
 from .event import Event
+import io
 
 
 class Session:
@@ -115,14 +118,18 @@ class Session:
         )
 
     def finish_step(self, is_successful: bool, state: Optional[str] = None, 
-                   action: Optional[str] = None) -> None:
+                   action: Optional[str] = None, screenshot = None) -> None:
         if not self._active_step:
             raise ValueError("No active step to finish")
-        
+        if screenshot is not None:
+            presigned_url, bucket_name, object_key = self.get_presigned_url(self._active_step.step_id)
+            self.upload_image_to_s3(presigned_url, screenshot)
+
         self._active_step.finish_step(
             is_successful=is_successful,
             final_state=state,
-            final_action=action
+            final_action=action,
+            screenshot=screenshot,
         )
         self._active_step = None
 
@@ -163,6 +170,31 @@ class Session:
         self.is_successful = is_successful
         return self.update_session(is_finished=True, is_successful=is_successful)
 
+    def get_presigned_url(self, step_id):
+        request_data = {
+            "agent_id": self.agent_id,
+            "step_id": step_id
+        }
+        headers = {"Authorization": f"Api-Key {self.api_key}"}
+        
+        response = requests.get(
+            f"{self.base_url}/getpresigneduploadurl",
+            headers=headers,
+            params=request_data
+        )
+        
+        handle_session_response(response)
+        response = response.json()
+        return response['presigned_url'], response['bucket_name'], response['object_key']
+
+    def upload_image_to_s3(self, url, image):
+        image_obj = io.BytesIO(base64.b64decode(image))
+        image_obj.seek(0)
+        upload_response = requests.put(
+            url,
+            data=image_obj.getvalue(),
+        )
+        upload_response.raise_for_status()
 
    #DEBUGGING PRINTS      
     def print_step_history(self):

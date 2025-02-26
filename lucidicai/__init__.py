@@ -1,4 +1,5 @@
 from typing import Optional, Union, Literal
+from PIL import Image
 
 from .client import Client
 from .session import Session
@@ -67,11 +68,11 @@ def create_step(state: Optional[str] = None, action: Optional[str] = None, goal:
     state = state or "state not provided"
     return client.session.create_step(state=state, action=action, goal=goal)
 
-def finish_step(is_successful: bool, state: Optional[str] = None, action: Optional[str] = None) -> None:
+def finish_step(is_successful: bool, state: Optional[str] = None, action: Optional[str] = None, screenshot = None) -> None:
     client = Client()
     if not client.session:
         raise ValueError("No active session. Call init() first")
-    client.session.finish_step(is_successful=is_successful, state=state, action=action)
+    client.session.finish_step(is_successful=is_successful, state=state, action=action, screenshot=screenshot)
 
 def update_step(
     is_successful: Optional[bool] = None, state: Optional[str] = None, action: Optional[str] = None,

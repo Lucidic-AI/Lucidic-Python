@@ -2,6 +2,8 @@
 from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
 import requests
+from PIL import Image
+import io
 from .errors import handle_session_response
 from .action import Action
 from .state import State
@@ -27,7 +29,7 @@ class Step:
         self.is_finished = None
         self.cost_added = 0.0  
         self.start_time = datetime.now().isoformat()
-        
+        self.screenshot = None
         self.init_step()
 
     def init_step(self) -> bool:
@@ -59,7 +61,6 @@ class Step:
         update_attrs = {k: v for k, v in locals().items() 
                        if k != 'self' and v is not None}
         self.__dict__.update(update_attrs)
-        
         request_data = {
             "step_id": self.step_id,
             "current_time": datetime.now().isoformat(),
@@ -68,7 +69,8 @@ class Step:
             "state": str(self.state),
             "is_successful": self.is_successful,
             "is_finished": self.is_finished,
-            "cost_added": self.cost_added
+            "cost_added": self.cost_added,
+            "has_screenshot": True if self.screenshot is not None else False
         }
         headers = {"Authorization": f"Api-Key {self.api_key}"}
         
@@ -119,7 +121,7 @@ class Step:
     
     def finish_step(self, is_successful: bool, final_state: Optional[str] = None,
                    final_action: Optional[str] = None, cost_added: Optional[float] = None, 
-                   model: Optional[str] = None) -> bool:
+                   model: Optional[str] = None, screenshot = None) -> bool:
         """Finish the step and mark it as successful or failed"""
         # Check for unfinished events
         if any(not event.is_finished for event in self.event_history):
@@ -143,6 +145,8 @@ class Step:
             
         self.is_finished = True
         self.is_successful = is_successful
+
+        self.screenshot = screenshot
             
         return self.update_step(
             is_finished=True,
