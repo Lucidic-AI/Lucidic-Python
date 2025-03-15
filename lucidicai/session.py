@@ -1,21 +1,26 @@
-"""Session management for the Lucidic API"""
+import base64
+import io
 from datetime import datetime
 from typing import Optional, List
-from PIL import Image
+
 import requests
-import base64
-from .errors import handle_session_response
+from PIL import Image
+
 from .action import Action
+from .errors import InvalidOperationError, LucidicNotInitializedError
+from .event import Event
 from .state import State
 from .step import Step
-from .event import Event
-import io
 
 
 class Session:
-    def __init__(self, api_key: str, agent_id: str, session_name: str, 
-                 mass_sim_id: Optional[str] = None, task: Optional[str] = None):
-        self.api_key = api_key
+    def __init__(
+        self, 
+        agent_id: str, 
+        session_name: str, 
+        mass_sim_id: Optional[str] = None, 
+        task: Optional[str] = None
+    ):
         self.agent_id = agent_id
         self.session_name = session_name
         self.mass_sim_id = mass_sim_id
@@ -25,13 +30,12 @@ class Session:
         self._active_step: Optional[Step] = None
         self.base_url = "https://analytics.lucidic.ai/api"
         self.starttime = datetime.now().isoformat()
-        
         self.is_finished = False
         self.is_successful = None
-        
         self.init_session()
 
     def init_session(self) -> bool:
+        from .client import Client
         request_data = {
             "agent_id": self.agent_id,
             "session_name": self.session_name,
@@ -39,15 +43,7 @@ class Session:
             "task": self.task,
             "mass_sim_id": self.mass_sim_id
         }
-        headers = {"Authorization": f"Api-Key {self.api_key}"}
-        
-        response = requests.post(
-            f"{self.base_url}/initsession",
-            headers=headers,
-            json=request_data
-        )
-        
-        data = handle_session_response(response, required_fields=["session_id"])
+        data = Client().make_request('initsession', 'POST', request_data)
         self.session_id = data["session_id"]
         return True
 
@@ -55,43 +51,44 @@ class Session:
     def active_step(self) -> Optional[Step]:
         return self._active_step
     
-    def update_session(self, is_finished: Optional[bool] = None,
-                      is_successful: Optional[bool] = None, task: Optional[str] = None) -> bool:
-
+    def update_session(
+        self, 
+        is_finished: Optional[bool] = None,
+        is_successful: Optional[bool] = None, 
+        task: Optional[str] = None, 
+        has_gif=False
+    ) -> bool:
+        from .client import Client
         update_attrs = {k: v for k, v in locals().items() 
                        if k != 'self' and v is not None}
         self.__dict__.update(update_attrs)
-            
         request_data = {
             "session_id": self.session_id,
             "current_time": datetime.now().isoformat(),
             "is_finished": self.is_finished,
             "is_successful": self.is_successful, 
-            "task": self.task
+            "task": self.task,
+            "has_gif": has_gif,
         }
-        headers = {"Authorization": f"Api-Key {self.api_key}"}
-        
-        response = requests.put(
-            f"{self.base_url}/updatesession",
-            headers=headers,
-            json=request_data
-        )
-        
-        handle_session_response(response)
+        Client().make_request('updatesession', 'PUT', request_data)
         return True
 
-    def create_step(self, state: Optional[str] = None, action: Optional[str] = None, goal: Optional[str] = None) -> Step:
+    def create_step(
+        self, 
+        state: Optional[str] = None, 
+        action: Optional[str] = None, 
+        goal: Optional[str] = None
+    ) -> Step:
         if not self.session_id:
-            raise ValueError("Session ID not set. Call init_session first.")
+            raise LucidicNotInitializedError()
             
         if self._active_step:
-            raise ValueError("Cannot create new step while another step is active. Please finish current step first.")
+            raise InvalidOperationError("Cannot create new step while another step is active. Please finish current step first.")
         
         state = state or "state not provided"
         
         step = Step(
             session_id=self.session_id,
-            api_key=self.api_key,
             state=state,
             action=action,
             goal=goal
@@ -100,15 +97,24 @@ class Session:
         self.step_history.append(step)
         return step
 
-    def update_step(self, is_successful: Optional[bool] = None, state: Optional[str] = None, 
-                   action: Optional[str] = None, goal: Optional[str] = None, 
-                   is_finished: Optional[bool] = None, cost_added: Optional[float] = None,
-                   model: Optional[str] = None) -> None:
+    def update_step(
+        self, 
+        is_successful: Optional[bool] = None, 
+        eval_score: Optional[float] = None,
+        eval_description: Optional[float] = None,
+        state: Optional[str] = None, 
+        action: Optional[str] = None, 
+        goal: Optional[str] = None, 
+        is_finished: Optional[bool] = None, 
+        cost_added: Optional[float] = None,
+        model: Optional[str] = None
+    ) -> None:
         if not self._active_step:
-            raise ValueError("No active step to update")
-        
+            raise InvalidOperationError("Cannot update step without active step")
         self._active_step.update_step(
             is_successful=is_successful,
+            eval_score=eval_score,
+            eval_description=eval_description,
             state=state,
             action=action,
             goal=goal,
@@ -117,16 +123,32 @@ class Session:
             model=model
         )
 
-    def finish_step(self, is_successful: bool, state: Optional[str] = None, 
-                   action: Optional[str] = None, screenshot = None) -> None:
+    def end_step(
+        self, 
+        is_successful: bool, 
+        eval_score: Optional[float] = None,
+        eval_description: Optional[float] = None,
+        state: Optional[str] = None, 
+        action: Optional[str] = None, 
+        screenshot = None, 
+        screenshot_path=None
+    ) -> None:
         if not self._active_step:
-            raise ValueError("No active step to finish")
+            raise InvalidOperationError("Cannot end step without active step")
+        if screenshot_path is not None:
+            img = Image.open(screenshot_path)
+            img = img.convert("RGB") 
+            buffered = io.BytesIO()
+            img.save(buffered, format="JPEG")  # Save to BytesIO buffer
+            img_byte = buffered.getvalue()
+            screenshot = base64.b64encode(img_byte).decode('utf-8')
         if screenshot is not None:
-            presigned_url, bucket_name, object_key = self.get_presigned_url(self._active_step.step_id)
-            self.upload_image_to_s3(presigned_url, screenshot)
-
-        self._active_step.finish_step(
+            presigned_url, bucket_name, object_key = self.get_presigned_url(step_id=self._active_step.step_id)
+            self.upload_image_to_s3(presigned_url, screenshot, "JPEG")
+        self._active_step.end_step(
             is_successful=is_successful,
+            eval_score=eval_score,
+            eval_description=eval_description,
             final_state=state,
             final_action=action,
             screenshot=screenshot,
@@ -135,7 +157,8 @@ class Session:
 
     def create_event(self, description: Optional[str] = None, result: Optional[str] = None) -> Event:
         if not self._active_step:
-            raise ValueError("Cannot create event without an active step. Call create_step first.")
+            print("[Lucidic] Attempted to create event without active step, ignoring...")
+            return None
         
         return self._active_step.create_event(description=description, result=result)
 
@@ -148,115 +171,64 @@ class Session:
         latest_event = self._active_step.event_history[-1]
         if latest_event.is_finished:
             raise ValueError("Latest event is already finished")
-            
-        latest_event.finish_event(
+        latest_event.end_event(
             is_successful=is_successful, 
             cost_added=cost_added, 
             model=model,
             result=result 
         )
-        
         self._active_step.cost_added = sum(
             event.cost_added for event in self._active_step.event_history 
             if event.cost_added is not None
         )
 
-    def finish_session(self, is_successful: bool) -> bool:
+    def end_session(self, is_successful: bool) -> bool:
         if self._active_step:
-            raise ValueError("Cannot finish session with active step. Please finish current step first.")
-            
-        #self.print_step_history()
+            print("[Warning] Ending Lucidic session while current step is unfinished...")
         self.is_finished = True
         self.is_successful = is_successful
-        return self.update_session(is_finished=True, is_successful=is_successful)
+        images_b64 = []
+        for step in self.step_history:
+            if step.screenshot is not None:
+                images_b64.append(step.screenshot)
+        has_gif = False
+        if images_b64:
+            images = [Image.open(io.BytesIO(base64.b64decode(b64))) for b64 in images_b64]
+            gif_buffer = io.BytesIO()
+            images[0].save(gif_buffer, format="GIF", save_all=True, append_images=images[1:], duration=2000, loop=0)
+            gif_buffer.seek(0)
+            presigned_url, bucket_name, object_key = self.get_presigned_url(session_id=self.session_id)
+            self.upload_image_to_s3(presigned_url, gif_buffer, "GIF")
+            has_gif = True
+        return self.update_session(is_finished=True, is_successful=is_successful, has_gif=has_gif)
 
-    def get_presigned_url(self, step_id):
+    def get_presigned_url(self, step_id=None, session_id=None):
+        from .client import Client
         request_data = {
             "agent_id": self.agent_id,
-            "step_id": step_id
         }
-        headers = {"Authorization": f"Api-Key {self.api_key}"}
-        
-        response = requests.get(
-            f"{self.base_url}/getpresigneduploadurl",
-            headers=headers,
-            params=request_data
-        )
-        
-        handle_session_response(response)
-        response = response.json()
+        if step_id is not None:
+            request_data["step_id"] = step_id
+        if session_id is not None:
+            request_data["session_id"] = session_id
+        response = Client().make_request('getpresigneduploadurl', 'GET', request_data)
         return response['presigned_url'], response['bucket_name'], response['object_key']
 
-    def upload_image_to_s3(self, url, image):
-        image_obj = io.BytesIO(base64.b64decode(image))
-        image_obj.seek(0)
+    def upload_image_to_s3(self, url, image, format):
+        if format == "JPEG":
+            image_stream = io.BytesIO(base64.b64decode(image))
+            image_stream.seek(0)
+            pil_image = Image.open(image_stream)
+            image_obj = io.BytesIO()
+            pil_image.save(image_obj, format="JPEG")
+            image_obj.seek(0)
+            content_type = "image/jpeg"
+        elif format == "GIF":
+            image_obj = image
+            content_type = "image/gif"
         upload_response = requests.put(
             url,
             data=image_obj.getvalue(),
+            headers={"Content-Type": content_type}
         )
         upload_response.raise_for_status()
-
-   #DEBUGGING PRINTS      
-    def print_step_history(self):
-        print("\nSession Step History:")
-        print("=" * 50)
-        print()
-        
-        for i, step in enumerate(self.step_history):
-            print(f"Step {i}:")
-            print(f"Goal: {step.goal}")
-            print(f"Action: {step.action}")
-            print(f"State: {step.state}")
-            print(f"Status: {'Successful' if step.is_successful else 'Failed' if step.is_successful is False else 'In Progress'}")
-            print()
-            
-            print("Step Event History (Goal: {}):\n{}".format(
-                step.goal,
-                "-" * 50
-            ))
-            print()
-            
-    def print_all(self):
-        """Print complete history of session including all steps and their events in a clean format"""
-        # Session Header
-        print("\n" + "="*80)
-        print(f"{'SESSION OVERVIEW':^80}")
-        print("="*80)
-        print(f"Name: {self.session_name}")
-        print(f"Status: {'Successful' if self.is_successful else 'Failed' if self.is_successful is False else 'In Progress'}")
-        print(f"Task: {self.task or 'None'}")
-        print("-"*80)
-
-        # Steps and Events
-        for i, step in enumerate(self.step_history, 1):
-            # Step Header
-            print(f"\n{'STEP '+str(i):=^80}")
-            print(f"Goal: {step.goal}")
-            print(f"State: {step.state}")
-            print(f"Action: {step.action}")
-            print(f"Status: {'Successful' if step.is_successful else 'Failed' if step.is_successful is False else 'In Progress'}")
-            print(f"Cost: {step.cost_added}")
-            print(f"Duration: {step.start_time} → {step.end_time or 'Ongoing'}")
-            
-            # Events
-            if step.event_history:
-                print(f"\n{'EVENTS':->40}")
-                for j, event in enumerate(step.event_history, 1):
-                    print(f"\nEvent {j}:")
-                    print(f"  Description: {event.description}")
-                    print(f"  Result: {event.result}")
-                    print(f"  Status: {'Successful' if event.is_successful else 'Failed' if event.is_successful is False else 'In Progress'}")
-                    print(f"  Cost: {event.cost_added}")
-                    print(f"  Model: {event.model or 'None'}")
-                    print(f"  Start Time: {event.start_time}")
-                    print(f"  End Time: {event.end_time or 'Ongoing'}")
-            else:
-                print("\nNo events recorded")
-            
-            print("-"*80)
-        
-        # Session Footer
-        print("\n" + "="*80)
-        print(f"Total Steps: {len(self.step_history)}")
-        print(f"Total Cost: {sum(step.cost_added or 0 for step in self.step_history)}")
-        print("="*80)

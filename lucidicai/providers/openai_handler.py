@@ -43,8 +43,18 @@ class OpenAIHandler(BaseProvider):
         if isinstance(messages, list):
             for msg in reversed(messages):
                 if msg.get('role') == 'user':
-                    return msg.get('content', '')
-            return messages[-1].get('content', '')
+                    content = msg.get('content', '')
+                    out = []
+                    for content_piece in content:
+                        if content_piece.get('type') == 'text':
+                            out.append(content_piece)
+                    return out
+            content = messages[-1].get('content', '')
+            out = []
+            for content_piece in content:
+                if content_piece.get('type') == 'text':
+                    out.append(content_piece)
+            return out
             
         return str(messages)
 

@@ -2,13 +2,17 @@ from setuptools import setup, find_packages
 
 setup(
     name="lucidicai",
-    version="1.0.0",
+    version="1.1.1",
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
         "boto3",
-        "openai",
         "python-dotenv",
+        "langchain",
+        "langchain-community",
+        "langchain-core",
+        "openai>=1.3.0",
+        "pillow",
     ],
     author="Andy Liang",
     author_email="andy@lucidic.ai",

@@ -89,7 +89,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                 if not event.is_finished:
                     print(f"[DEBUG] Attempting to finish unfinished event {i} id={event.event_id}")
                     try:
-                        event.finish_event(is_successful=False, result="Force-closed by handler")
+                        event.end_event(is_successful=False, result="Force-closed by handler")
                         print(f"[DEBUG] Successfully finished event {i}")
                     except Exception as e:
                         print(f"[DEBUG] Error finishing event {i}: {e}")
@@ -145,7 +145,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             for event in self.client.session.active_step.event_history:
                 if not event.is_finished:
                     print(f"[Handler] Found unfinished event, calling finish_event")
-                    event.finish_event(is_successful=False)
+                    event.end_event(is_successful=False)
             
             # Create a new event
             self.client.session.create_event(description=description)
@@ -212,7 +212,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                         if response.generations and response.generations[0]:
                             result = response.generations[0][0].text[:1000]
                             
-                        last_unfinished.finish_event(
+                        last_unfinished.end_event(
                             is_successful=True, 
                             cost_added=cost, 
                             model=model,
@@ -257,7 +257,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             if step and step.event_history:
                 last_event = step.event_history[-1]
                 if not last_event.is_finished:
-                    last_event.finish_event(is_successful=False, model=model)
+                    last_event.end_event(is_successful=False, model=model)
                     print(f"[Handler] Ended event with error for run {run_str}")
                 else:
                     print(f"[Handler] Event already finished for run {run_str}")
@@ -298,7 +298,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             for event in self.client.session.active_step.event_history:
                 if not event.is_finished:
                     print(f"[Handler] Found unfinished event, calling finish_event")
-                    event.finish_event(is_successful=False)
+                    event.end_event(is_successful=False)
             
             # Create a new event
             self.client.session.create_event(description=description)
@@ -321,7 +321,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             if step and step.event_history:
                 last_event = step.event_history[-1]
                 if not last_event.is_finished:
-                    last_event.finish_event(is_successful=True)
+                    last_event.end_event(is_successful=True)
                     print(f"[Handler] Ended chain event for run {run_id}")
                 else:
                     print(f"[Handler] Chain event already finished for run {run_id}")
@@ -345,7 +345,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             if step and step.event_history:
                 last_event = step.event_history[-1]
                 if not last_event.is_finished:
-                    last_event.finish_event(is_successful=False)
+                    last_event.end_event(is_successful=False)
                     print(f"[Handler] Ended chain event with error for run {run_id}")
                 else:
                     print(f"[Handler] Chain event already finished for run {run_id}")
@@ -368,7 +368,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             # Check for unfinished events
             for event in self.client.session.active_step.event_history:
                 if not event.is_finished:
-                    event.finish_event(is_successful=False)
+                    event.end_event(is_successful=False)
             
             # Create event
             self.client.session.create_event(description=description)
@@ -389,7 +389,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             if step and step.event_history:
                 last_event = step.event_history[-1]
                 if not last_event.is_finished:
-                    last_event.finish_event(is_successful=True)
+                    last_event.end_event(is_successful=True)
                     print(f"[Handler] Ended tool event for run {run_id}")
                 else:
                     print(f"[Handler] Tool event already finished for run {run_id}")
@@ -411,7 +411,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             if step and step.event_history:
                 last_event = step.event_history[-1]
                 if not last_event.is_finished:
-                    last_event.finish_event(is_successful=False)
+                    last_event.end_event(is_successful=False)
                     print(f"[Handler] Ended tool event with error for run {run_id}")
                 else:
                     print(f"[Handler] Tool event already finished for run {run_id}")
@@ -433,7 +433,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             # Check for unfinished events
             for event in self.client.session.active_step.event_history:
                 if not event.is_finished:
-                    event.finish_event(is_successful=False)
+                    event.end_event(is_successful=False)
             
             # Create event
             self.client.session.create_event(description=description)
@@ -454,7 +454,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             if step and step.event_history:
                 last_event = step.event_history[-1]
                 if not last_event.is_finished:
-                    last_event.finish_event(is_successful=True)
+                    last_event.end_event(is_successful=True)
                     print(f"[Handler] Ended retriever event for run {run_id}")
                 else:
                     print(f"[Handler] Retriever event already finished for run {run_id}")
@@ -476,7 +476,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             if step and step.event_history:
                 last_event = step.event_history[-1]
                 if not last_event.is_finished:
-                    last_event.finish_event(is_successful=False)
+                    last_event.end_event(is_successful=False)
                     print(f"[Handler] Ended retriever event with error for run {run_id}")
                 else:
                     print(f"[Handler] Retriever event already finished for run {run_id}")
@@ -498,7 +498,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             # Check for unfinished events
             for event in self.client.session.active_step.event_history:
                 if not event.is_finished:
-                    event.finish_event(is_successful=False)
+                    event.end_event(is_successful=False)
             
             # Create and immediately end event
             self.client.session.create_event(description=description)
@@ -519,7 +519,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             # Check for unfinished events
             for event in self.client.session.active_step.event_history:
                 if not event.is_finished:
-                    event.finish_event(is_successful=False)
+                    event.end_event(is_successful=False)
             
             # Create and immediately end event
             self.client.session.create_event(description=description)

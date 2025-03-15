@@ -1,22 +1,26 @@
 from typing import Optional, Tuple
-from .session import Session
-from .singleton import singleton
-from .errors import APIKeyVerificationError
 
-from .providers.base_providers import BaseProvider
 import requests
+
+from .errors import APIKeyVerificationError, InvalidOperationError
+from .providers.base_providers import BaseProvider
+from .session import Session
+from .singleton import singleton, clear_singletons
+
 
 @singleton
 class Client:
-    def __init__(self,
-                 lucidic_api_key: str,
-                 agent_id: str,
-                 session_name: str,
-                 mass_sim_id: Optional[str] = None,
-                 task: Optional[str] = None):
+    def __init__(
+        self,
+        lucidic_api_key: str,
+        agent_id: str,
+        session_name: str,
+        mass_sim_id: Optional[str] = None,
+        task: Optional[str] = None
+    ):
         self.base_url = "https://analytics.lucidic.ai/api"
         self._initialized = False
-        self._session: Optional[Session] = None
+        self._session = None
         self.api_key = None
         self.agent_id = None
         self.session_name = None
@@ -24,31 +28,41 @@ class Client:
         self.task = None
         self._provider = None
         self.prompts = dict()
-        # TODO: Throw better error if init is not called by the time Client() is attempted to be instantiated
         self.configure(
             lucidic_api_key=lucidic_api_key,
             agent_id=agent_id,
             session_name=session_name,
             mass_sim_id=mass_sim_id,
-            task=task)
+            task=task
+        )
     
-    def configure(self,
-                 lucidic_api_key: Optional[str] = None,
-                 agent_id: Optional[str] = None,
-                 session_name: Optional[str] = None,
-                 mass_sim_id: Optional[str] = None,
-                 task: Optional[str] = None) -> None:
-        if lucidic_api_key:
-            self.verify_api_key(self.base_url, lucidic_api_key)
-            self.api_key = lucidic_api_key
-            
+    def configure(
+        self,
+        lucidic_api_key: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        session_name: Optional[str] = None,
+        mass_sim_id: Optional[str] = None,
+        task: Optional[str] = None
+    ) -> None:
+        self.api_key = lucidic_api_key
+        self.verify_api_key(self.base_url, lucidic_api_key)
         self.agent_id = agent_id or self.agent_id
         self.session_name = session_name or self.session_name
         self.mass_sim_id = mass_sim_id or self.mass_sim_id
         self.task = task or self.task
         self._initialized = True
     
-    def set_provider(self, provider: BaseProvider):
+    def reset(self):
+        if self.session:
+            self.session.end_session()
+            self.clear_session()
+        clear_singletons()
+        del self
+
+    def set_provider(
+        self, 
+        provider: BaseProvider
+    ):
         """Set the LLM provider to track"""
         if self._provider:
             self._provider.undo_override()
@@ -58,14 +72,13 @@ class Client:
     
     def init_session(self) -> Session:
         if not self._initialized:
-            raise ValueError("Client must be configured before initializing session")
+            raise 
             
-        if not all([self.api_key, self.agent_id, self.session_name]):
-            raise ValueError("API key, agent ID, and session name are required")
+        if not all([self.agent_id, self.session_name]):
+            raise InvalidOperationError("agent ID, and session name are required to initialize a session")
             
         if self._session is None:
             self._session = Session(
-                api_key=self.api_key,
                 agent_id=self.agent_id,
                 session_name=self.session_name,
                 mass_sim_id=self.mass_sim_id,
@@ -80,7 +93,7 @@ class Client:
     def session(self) -> Optional[Session]:
         return self._session
 
-    def clear_session(self):
+    def clear_session(self) -> None:
         if self._provider:
             self._provider.undo_override()
         self._session = None
@@ -93,52 +106,40 @@ class Client:
     def has_session(self) -> bool:
         return self._session is not None
 
-    def verify_api_key(self, base_url: str, api_key: str) -> Tuple[str, str]:
-        try:
-            response = requests.get(
-                f"{base_url}/verifyapikey",
-                headers={"Authorization": f"Api-Key {api_key}"}
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            if not data.get("project") or not data.get("project_id"):
-                raise APIKeyVerificationError("Invalid API key: Missing project information")
-                
-            return data["project"], data["project_id"]
-            
-        except requests.HTTPError as e:
-            if e.response.status_code == 401:
-                raise APIKeyVerificationError("Invalid API key: Authentication failed")
-            elif e.response.status_code == 403:
-                raise APIKeyVerificationError("Invalid API key: Access forbidden")
-            else:
-                raise APIKeyVerificationError(f"API key verification failed: {str(e)}")
-        except Exception as e:
-            raise APIKeyVerificationError(f"API key verification failed: {str(e)}")
+    def verify_api_key(
+        self, 
+        base_url: str, 
+        api_key: str
+    ) -> Tuple[str, str]:
+        data = self.make_request('verifyapikey', 'GET', {})
+        return data["project"], data["project_id"]
     
-    def get_prompt(self, prompt_name):
+    def get_prompt(
+        self, 
+        prompt_name
+    ) -> str:
         if prompt_name in self.prompts:
             return self.prompts[prompt_name]
-        # TODO: Centralize request logic and response handling throughout library, maybe in Client
-        try:
-            response = requests.get(
-                f"{self.ase_url}/getprompt",
-                headers={"Authorization": f"Api-Key {self.api_key}"}
-            )
-            response.raise_for_status()
-            
-            prompt = response.json()['prompt_content']
-            self.prompts[prompt_name] = prompt
-            return prompt
-            
-        # TODO: More descriptive error handling
-        except requests.HTTPError as e:
-            if e.response.status_code == 401:
-                raise APIKeyVerificationError("Invalid API key: Authentication failed")
-            elif e.response.status_code == 403:
-                raise APIKeyVerificationError("Invalid API key: Access forbidden")
-            else:
-                raise APIKeyVerificationError(f"API key verification failed: {str(e)}")
-        except Exception as e:
-            raise APIKeyVerificationError(f"API key verification failed: {str(e)}")
+        params={
+            "agent_id": self.agent_id,
+            "prompt_name": prompt_name
+        }
+        prompt = self.make_request('getprompt', 'GET', params)['prompt_content']
+        self.prompts[prompt_name] = prompt
+        return prompt
+
+    def make_request(self, endpoint, method, data):
+        http_methods = {
+            "GET": lambda data: requests.get(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, params=data),
+            "POST": lambda data: requests.post(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, json=data),
+            "PUT": lambda data: requests.put(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, json=data),
+            "DELETE": lambda data: requests.delete(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, params=data),
+        }
+        func = http_methods[method]
+        response = func(data)
+        if response.status_code == 401:
+            raise APIKeyVerificationError("Invalid API key: 401 Unauthorized")
+        if response.status_code == 403:
+            raise APIKeyVerificationError("Invalid API key: 403 Forbidden")
+        response.raise_for_status()
+        return response.json()
