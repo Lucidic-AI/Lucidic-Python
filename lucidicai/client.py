@@ -1,6 +1,7 @@
 from typing import Optional, Tuple
 
 import requests
+import time
 
 from .errors import APIKeyVerificationError, InvalidOperationError
 from .providers.base_providers import BaseProvider
@@ -116,16 +117,22 @@ class Client:
     
     def get_prompt(
         self, 
-        prompt_name
+        prompt_name,
+        cache_ttl,
+        label
     ) -> str:
-        if prompt_name in self.prompts:
-            return self.prompts[prompt_name]
+        current_time = time.time()
+        if (prompt_name, label) in self.prompts:
+            prompt, prev_timestamp = self.prompts[prompt_name]
+            if current_time - prev_timestamp < cache_ttl:
+                return prompt
         params={
             "agent_id": self.agent_id,
-            "prompt_name": prompt_name
+            "prompt_name": prompt_name,
+            "label": label
         }
         prompt = self.make_request('getprompt', 'GET', params)['prompt_content']
-        self.prompts[prompt_name] = prompt
+        self.prompts[(prompt_name, label)] = (prompt, current_time)
         return prompt
 
     def make_request(self, endpoint, method, data):
