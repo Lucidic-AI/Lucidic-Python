@@ -150,12 +150,14 @@ def end_session(
 
 def get_prompt(
     prompt_name: str, 
-    variables: Optional[dict] = None
+    variables: Optional[dict] = None,
+    cache_ttl: Optional[int] = 300,
+    label: Optional[str] = 'production'
 ) -> str:
     client = Client()
     if not client.session:
         raise LucidicNotInitializedError()
-    prompt = client.get_prompt(prompt_name)
+    prompt = client.get_prompt(prompt_name, cache_ttl, label)
     if variables:
         for key, val in variables.items():
             index = prompt.find("{{" + key +"}}")
