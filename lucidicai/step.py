@@ -91,7 +91,8 @@ class Step:
         upload_image_to_s3(presigned_url, screenshot, "JPEG")
         
     def create_event(self, **kwargs) -> 'Event':
-        from .event import Event
+        from .event import Event  # Import moved inside method
+        
         if not self.step_id:
             raise InvalidOperationError("Step ID not set. Call init_step first.")
             
@@ -108,3 +109,4 @@ class Step:
         
         self.event_history.append(event)
         return event
+
