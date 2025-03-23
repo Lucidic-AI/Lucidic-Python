@@ -1,5 +1,4 @@
 """Event management for the Lucidic API"""
-from datetime import datetime
 
 from .errors import InvalidOperationError
 
@@ -23,10 +22,8 @@ class   Event:
 
     def init_event(self) -> None:
         from .client import Client
-        self.start_time = datetime.now().isoformat()
         request_data = {
             "step_id": self.step_id,
-            "current_time": datetime.now().isoformat(),
             # TODO: get rid of these in backend API interface?
             # "description": description,
             # "result": result
@@ -39,12 +36,10 @@ class   Event:
         if 'is_finished' in kwargs:
             if self.is_finished:
                 raise InvalidOperationError("Event is already finished")
-            self.end_time = datetime.now().isoformat()
         update_attrs = {k: v for k, v in kwargs.items() if v is not None}
         self.__dict__.update(update_attrs)
         request_data = {
             "event_id": self.event_id,
-            "current_time": datetime.now().isoformat(),
             "description": self.description,
             "result": self.result,
             "is_finished": self.is_finished, 

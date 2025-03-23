@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 from typing import Optional, Tuple
 
 import requests
@@ -137,6 +138,7 @@ class Client:
             "PUT": lambda data: requests.put(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, json=data),
             "DELETE": lambda data: requests.delete(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, params=data),
         }
+        data['current_time'] = datetime.now(datetime.timezone.utc).isoformat()
         func = http_methods[method]
         response = func(data)
         if response.status_code == 401:
