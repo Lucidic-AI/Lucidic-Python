@@ -1,9 +1,9 @@
+import time
 from typing import Optional, Tuple
 
 import requests
-import time
 
-from .errors import APIKeyVerificationError, InvalidOperationError
+from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError
 from .providers.base_providers import BaseProvider
 from .session import Session
 from .singleton import singleton, clear_singletons
@@ -37,59 +37,6 @@ class Client:
             task=task
         )
     
-    def configure(
-        self,
-        lucidic_api_key: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        session_name: Optional[str] = None,
-        mass_sim_id: Optional[str] = None,
-        task: Optional[str] = None
-    ) -> None:
-        self.api_key = lucidic_api_key
-        self.verify_api_key(self.base_url, lucidic_api_key)
-        self.agent_id = agent_id or self.agent_id
-        self.session_name = session_name or self.session_name
-        self.mass_sim_id = mass_sim_id or self.mass_sim_id
-        self.task = task or self.task
-        self._initialized = True
-    
-    def reset(self):
-        if self.session:
-            self.session.end_session()
-            self.clear_session()
-        clear_singletons()
-        del self
-
-    def set_provider(
-        self, 
-        provider: BaseProvider
-    ):
-        """Set the LLM provider to track"""
-        if self._provider:
-            self._provider.undo_override()
-        self._provider = provider
-        if self._session:
-            self._provider.override()
-    
-    def init_session(self) -> Session:
-        if not self._initialized:
-            raise 
-            
-        if not all([self.agent_id, self.session_name]):
-            raise InvalidOperationError("agent ID, and session name are required to initialize a session")
-            
-        if self._session is None:
-            self._session = Session(
-                agent_id=self.agent_id,
-                session_name=self.session_name,
-                mass_sim_id=self.mass_sim_id,
-                task=self.task,
-            )
-            if self._provider:
-                self._provider.override()
-            
-        return self._session
-    
     @property
     def session(self) -> Optional[Session]:
         return self._session
@@ -107,24 +54,66 @@ class Client:
     def has_session(self) -> bool:
         return self._session is not None
 
-    def verify_api_key(
-        self, 
-        base_url: str, 
-        api_key: str
-    ) -> Tuple[str, str]:
+    def configure(
+        self,
+        lucidic_api_key: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        session_name: Optional[str] = None,
+        mass_sim_id: Optional[str] = None,
+        task: Optional[str] = None
+    ) -> None:
+        self.api_key = lucidic_api_key
+        try:
+            self.verify_api_key(self.base_url, lucidic_api_key)
+        except APIKeyVerificationError as e:
+            raise APIKeyVerificationError(str(e))
+        self.agent_id = agent_id or self.agent_id
+        self.session_name = session_name or self.session_name
+        self.mass_sim_id = mass_sim_id or self.mass_sim_id
+        self.task = task or self.task
+        self._initialized = True
+    
+    def reset(self):
+        if self.session:
+            self.session.end_session()
+            self.clear_session()
+        clear_singletons()
+        del self
+
+    def verify_api_key(self, base_url: str, api_key: str) -> Tuple[str, str]:
         data = self.make_request('verifyapikey', 'GET', {})
         return data["project"], data["project_id"]
+
+    def set_provider(self, provider: BaseProvider) -> None:
+        """Set the LLM provider to track"""
+        if self._provider:
+            self._provider.undo_override()
+        self._provider = provider
+        if self._session:
+            self._provider.override()
     
-    def get_prompt(
-        self, 
-        prompt_name,
-        cache_ttl,
-        label
-    ) -> str:
+    def init_session(self) -> None:
+        if not self._initialized:
+            raise LucidicNotInitializedError()
+            
+        if not all([self.agent_id, self.session_name]):
+            raise InvalidOperationError("agent ID, and session name are required to initialize a session")
+        
+        self._session = Session(
+            agent_id=self.agent_id,
+            session_name=self.session_name,
+            mass_sim_id=self.mass_sim_id,
+            task=self.task,
+        )
+        if self._provider:
+            self._provider.override()
+
+    def get_prompt(self, prompt_name, cache_ttl, label) -> str:
         current_time = time.time()
-        if (prompt_name, label) in self.prompts:
-            prompt, prev_timestamp = self.prompts[prompt_name]
-            if current_time - prev_timestamp < cache_ttl:
+        key = (prompt_name, label)
+        if key in self.prompts:
+            prompt, expiration_time = self.prompts[key]
+            if expiration_time == float('inf') or current_time < expiration_time:
                 return prompt
         params={
             "agent_id": self.agent_id,
@@ -132,7 +121,13 @@ class Client:
             "label": label
         }
         prompt = self.make_request('getprompt', 'GET', params)['prompt_content']
-        self.prompts[(prompt_name, label)] = (prompt, current_time)
+        
+        if cache_ttl != 0:
+            if cache_ttl == -1:
+                expiration_time = float('inf')
+            else:
+                expiration_time = current_time + cache_ttl
+            self.prompts[key] = (prompt, expiration_time)
         return prompt
 
     def make_request(self, endpoint, method, data):

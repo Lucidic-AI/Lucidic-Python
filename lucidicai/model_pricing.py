@@ -33,7 +33,7 @@ def calculate_cost(model: str, token_usage: dict) -> float:
     """
     # Normalize model name
     model_lower = model.lower()
-    model_lower = model_lower.replace("anthropic/", "").replace("openai/", "").replace("google/", "")
+    model_lower = model_lower.replace("anthropic/", "").replace("openai/", "").replace("google/", "").replace("models/", "")
     
     # Remove date suffix from Claude models if present
     for prefix in ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku", 
@@ -55,5 +55,5 @@ def calculate_cost(model: str, token_usage: dict) -> float:
     
     # Calculate cost
     cost = ((input_tokens * pricing["input"]) + (output_tokens * pricing["output"])) / 1_000_000
-    
+    print(f"")
     return cost

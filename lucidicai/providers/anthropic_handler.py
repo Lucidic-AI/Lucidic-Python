@@ -1,9 +1,6 @@
-import pprint
 from typing import Optional
-from datetime import datetime
 
 from .base_providers import BaseProvider
-from lucidicai.session import Session, Event
 from lucidicai.singleton import singleton
 
 @singleton
@@ -14,7 +11,7 @@ class AnthropicHandler(BaseProvider):
         self.original_create = None
         self.original_create_async = None
     
-    def handle_response(self, response, kwargs, session: Optional[Session] = None):
+    def handle_response(self, response, kwargs, step = None):
         """Handle responses for Anthropic"""
         import anthropic
         from anthropic import AsyncStream, Stream
@@ -22,8 +19,7 @@ class AnthropicHandler(BaseProvider):
         # For streaming responses
         if isinstance(response, (AsyncStream, Stream)):
             input_messages = kwargs.get('messages', '')
-            event = Event(
-                session=session,
+            event = step.create_event(
                 description=str(input_messages),
                 result=None
             )
@@ -43,8 +39,9 @@ class AnthropicHandler(BaseProvider):
                             if chunk.delta.type == "text_delta":
                                 accumulated_response += chunk.delta.text
                     except Exception as e:
-                        event.update_event(result=accumulated_response)  # Save what we got
-                        event.finish_event(
+                        event.update_event(
+                            is_finished=True,
+                            result=accumulated_response,
                             is_successful=False,
                             cost_added=None,
                             model=kwargs.get('model')
@@ -64,8 +61,7 @@ class AnthropicHandler(BaseProvider):
         # For non-streaming responses
         try:
             input_messages = kwargs.get('messages', '')
-            event = Event(
-                session=session,
+            event = step.create_event(
                 description=str(input_messages),
                 result=None
             )
@@ -91,10 +87,11 @@ class AnthropicHandler(BaseProvider):
             )
             
         except Exception as e:
-            if session and event:
+            if step:
                 # Try to update with error message if we fail
-                event.update_event(result=f"anthropic Error: {str(e)}")
-                event.finish_event(
+                event.update_event(
+                    is_finished=True,
+                    result=f"anthropic Error: {str(e)}",
                     is_successful=False,
                     cost_added=None,
                     model=kwargs.get('model')
@@ -110,12 +107,12 @@ class AnthropicHandler(BaseProvider):
         self.original_create = anthropic.messages.Messages.create
         
         def patched_function(*args, **kwargs):
-            session = kwargs.pop("session", self.client.session)
-            if not session:
+            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+            if not step:
                 return self.original_create(*args, **kwargs)
             
             result = self.original_create(*args, **kwargs)
-            return self.handle_response(result, kwargs, session=session)
+            return self.handle_response(result, kwargs, step=step)
             
         # Override the methods
         anthropic.messages.Messages.create = patched_function
