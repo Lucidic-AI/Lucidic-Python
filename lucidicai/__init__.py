@@ -212,6 +212,9 @@ def update_previous_step(
         raise InvalidOperationError("Index must be negative, -1 is the latest step, -2 is the second latest, etc.")
     if index < -len(client.session.step_history):
         raise InvalidOperationError("Index out of bounds")
+    if not client.session.step_history[index]:
+        print("[Lucidic] Warning: update_previous_step called on an empty step. Please check your index.")
+        return
     client.session.step_history[index].update_step(**locals())
 
 def end_step(
