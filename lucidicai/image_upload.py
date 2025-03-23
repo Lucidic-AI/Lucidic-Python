@@ -1,0 +1,58 @@
+import base64
+import io
+
+import requests
+from PIL import Image
+
+def get_presigned_url(agent_id, step_id=None, session_id=None):
+    """
+    Get a presigned URL for uploading an image to S3.
+    
+    Args:
+        agent_id: The ID of the agent.
+        step_id: Optional step ID for the image. Either supply step_id or session_id.
+        session_id: Optional session ID for the image. Either supply step_id or session_id.
+    
+    Returns:
+        A tuple containing the presigned URL, bucket name, and object key.
+    """
+    from .client import Client
+    request_data = {
+        "agent_id": agent_id,
+    }
+    if step_id is not None:
+        request_data["step_id"] = step_id
+    if session_id is not None:
+        request_data["session_id"] = session_id
+    response = Client().make_request('getpresigneduploadurl', 'GET', request_data)
+    return response['presigned_url'], response['bucket_name'], response['object_key']
+
+def upload_image_to_s3(url, image, format):
+    """
+    Upload an image to S3.
+    
+    Args:
+        url: The presigned URL for the upload.
+        image: The image data to upload.
+        format: The format of the image ("JPEG" or "GIF").
+    
+    Raises:
+        ValueError: If the format is not supported.
+    """
+    if format == "JPEG":
+        image_stream = io.BytesIO(base64.b64decode(image))
+        image_stream.seek(0)
+        pil_image = Image.open(image_stream)
+        image_obj = io.BytesIO()
+        pil_image.save(image_obj, format="JPEG")
+        image_obj.seek(0)
+        content_type = "image/jpeg"
+    elif format == "GIF":
+        image_obj = image
+        content_type = "image/gif"
+    upload_response = requests.put(
+        url,
+        data=image_obj.getvalue(),
+        headers={"Content-Type": content_type}
+    )
+    upload_response.raise_for_status()

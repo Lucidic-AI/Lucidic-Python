@@ -1,187 +1,20 @@
 import atexit
-import signal
 import os
-from typing import Optional, Union, Literal
-
-from PIL import Image
+import signal
+from typing import Literal, Optional
 
 from .action import Action
 from .client import Client
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError, PromptError
 from .event import Event
-from .langchain import LucidicLangchainHandler
 from .providers.anthropic_handler import AnthropicHandler
+from .providers.langchain import LucidicLangchainHandler
 from .providers.openai_handler import OpenAIHandler
 from .session import Session
 from .state import State
 from .step import Step
 
 ProviderType = Literal["openai", "anthropic", "langchain"]
-
-
-def init(
-    session_name: str,
-    lucidic_api_key: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    mass_sim_id: Optional[str] = None,
-    task: Optional[str] = None,
-    provider: Optional[ProviderType] = None,
-) -> bool:
-    if lucidic_api_key is None:
-        lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if lucidic_api_key is None:
-            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
-    if agent_id is None:
-        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-        if agent_id is None:
-            raise InvalidOperationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-    try:
-        client = Client(
-            lucidic_api_key=lucidic_api_key,
-            agent_id=agent_id,
-            session_name=session_name,
-            mass_sim_id=mass_sim_id,
-            task=task
-        )
-        # Set up provider
-        if provider == "openai":
-            client.set_provider(OpenAIHandler(client))
-        elif provider == "anthropic":
-            client.set_provider(AnthropicHandler(client))
-        elif provider == "langchain":
-            print(f"[Lucidic] For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
-        client.init_session()
-        return True
-    except Exception as e:
-        raise e
-        
-
-def reset() -> None:
-    Client().reset()
-
-
-def create_step(
-    state: Optional[str] = None, 
-    action: Optional[str] = None, 
-    goal: Optional[str] = None
-) -> Step:
-    client = Client()
-    if not client.session:
-        raise LucidicNotInitializedError()
-    state = state or "state not provided"
-    return client.session.create_step(state=state, action=action, goal=goal)
-
-
-def end_step(
-    is_successful: bool,
-    eval_score: Optional[float] = None,
-    eval_description: Optional[float] = None,
-    state: Optional[str] = None,
-    action: Optional[str] = None,
-    screenshot = None,
-    screenshot_path = None
-) -> None:
-    client = Client()
-    if not client.session:
-        raise LucidicNotInitializedError()
-    client.session.end_step(
-        is_successful=is_successful,
-        eval_score=eval_score,
-        eval_description=eval_description,
-        state=state, action=action, 
-        screenshot=screenshot, 
-        screenshot_path=screenshot_path
-    )
-
-
-def update_step(
-    is_successful: Optional[bool] = None, 
-    eval_score: Optional[float] = None,
-    eval_description: Optional[float] = None,
-    state: Optional[str] = None, 
-    action: Optional[str] = None,
-    goal: Optional[str] = None, 
-    is_finished: Optional[bool] = None, 
-    cost_added: Optional[float] = None
-) -> None:
-    client = Client()
-    if not client.session:
-        raise LucidicNotInitializedError
-    client.session.update_step(
-        is_successful=is_successful,
-        eval_score=eval_score,
-        eval_description=eval_description,
-        state=state,
-        action=action,
-        goal=goal,
-        is_finished=is_finished,
-        cost_added=cost_added
-    )
-
-def create_event(
-    description: Optional[str] = None,
-    result: Optional[str] = None
-) -> Event:
-    client = Client()
-    if not client.session:
-        raise LucidicNotInitializedError()
-    return client.session.create_event(description=description, result=result)
-
-
-def end_event(
-    is_successful: bool, 
-    cost_added: Optional[float] = None, 
-    model: Optional[str] = None
-) -> None:
-    client = Client()
-    if not client.session:
-        raise LucidicNotInitializedError()
-    client.session.end_event(is_successful=is_successful, cost_added=cost_added, model=model)
-
-
-def end_session(
-    is_successful: bool
-) -> None:
-    client = Client()
-    if client.session:
-        client.session.end_session(is_successful=is_successful)
-        client.clear_session()
-
-
-def get_prompt(
-    prompt_name: str, 
-    variables: Optional[dict] = None,
-    cache_ttl: Optional[int] = 300,
-    label: Optional[str] = 'production'
-) -> str:
-    client = Client()
-    if not client.session:
-        raise LucidicNotInitializedError()
-    prompt = client.get_prompt(prompt_name, cache_ttl, label)
-    if variables:
-        for key, val in variables.items():
-            index = prompt.find("{{" + key +"}}")
-            if index == -1:
-                raise PromptError("Supplied variable not found in prompt")
-            prompt = prompt.replace("{{" + key +"}}", str(val))
-    if "{{" in prompt and "}}" in prompt and prompt.find("{{") < prompt.find("}}"):
-        raise PromptError("Unreplaced variable left in prompt")
-    return prompt
-
-
-@atexit.register
-def cleanup():
-    original_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    try:
-        print(f"Lucidic AI Cleanup: This should only take a few seconds...")
-        try:
-            client = Client()
-            end_session(True)
-        except Exception as e:
-            print(f"[Lucidic] Client not yet initialized, shutting down")
-    finally:
-        signal.signal(signal.SIGINT, original_handler)
-
 
 __all__ = [
     'Client',
@@ -196,6 +29,7 @@ __all__ = [
     'end_step',
     'update_step',
     'create_event',
+    'update_event',
     'end_event',
     'end_session',
     'get_prompt',
@@ -204,5 +38,374 @@ __all__ = [
     'LucidicNotInitializedError',
     'PromptError',
     'InvalidOperationError',
-    'LucidicLangchainHandler',  # Add this to export the handler
+    'LucidicLangchainHandler',
+    'AnthropicHandler',
+    'OpenAIHandler'
 ]
+
+
+def init(
+    session_name: str,
+    lucidic_api_key: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    task: Optional[str] = None,
+    provider: Optional[ProviderType] = None,
+    mass_sim_id: Optional[str] = None,
+) -> None:
+    """
+    Initialize the Lucidic client.
+    
+    Args:
+        session_name: The name of the session.
+        lucidic_api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
+        agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
+        task: Task description.
+        provider: Provider type ("openai", "anthropic", "langchain").
+        mass_sim_id: Optional mass simulation ID, if session is to be part of a mass simulation.
+    
+    Raises:
+        InvalidOperationError: If the client is already initialized.
+        APIKeyVerificationError: If the API key is invalid.
+    """
+    try:
+        client = Client()
+        raise InvalidOperationError("Lucidic client already initialized. Please call lai.reset() before reinitializing.")
+    except LucidicNotInitializedError:
+        pass
+    if lucidic_api_key is None:
+        lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
+        if lucidic_api_key is None:
+            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
+    if agent_id is None:
+        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
+        if agent_id is None:
+            raise InvalidOperationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
+
+    client = Client(
+        lucidic_api_key=lucidic_api_key,
+        agent_id=agent_id,
+        session_name=session_name,
+        mass_sim_id=mass_sim_id,
+        task=task
+    )
+    # Set up provider
+    if provider == "openai":
+        client.set_provider(OpenAIHandler(client))
+    elif provider == "anthropic":
+        client.set_provider(AnthropicHandler(client))
+    elif provider == "langchain":
+        print(f"[Lucidic] For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
+    client.init_session()
+
+
+def end_session(is_successful: bool) -> None:
+    """
+    End the current session.
+    
+    Args:
+        is_successful: Whether the session was successful.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: end_session called when session not initialized. Please call lai.init() first.")
+        return
+    client.session.end_session(is_successful=is_successful)
+    client.clear_session()
+
+
+def reset() -> None:
+    """
+    Reset the client.
+    """
+    Client().reset()
+
+
+def create_step(
+    state: Optional[str] = None, 
+    action: Optional[str] = None, 
+    goal: Optional[str] = None,
+    eval_score: Optional[float] = None,
+    eval_description: Optional[str] = None,
+    screenshot: Optional[str] = None,
+    screenshot_path: Optional[str] = None
+) -> None:
+    """
+    Create a new step. Previous step must be finished to create a new step.
+    
+    Args:
+        state: State description.
+        action: Action description.
+        goal: Goal description.
+        eval_score: Evaluation score.
+        eval_description: Evaluation description.
+        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
+        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: create_step called when session not initialized. Please call lai.init() first.")
+        return
+    client.session.create_step(**locals())
+
+
+def update_step(
+    is_successful: Optional[bool] = None, # TODO: get rid of is_successful
+    state: Optional[str] = None, 
+    action: Optional[str] = None, 
+    goal: Optional[str] = None,
+    eval_score: Optional[float] = None,
+    eval_description: Optional[str] = None,
+    screenshot: Optional[str] = None,
+    screenshot_path: Optional[str] = None
+) -> None:
+    """
+    Update the current step.
+    
+    Args:
+        is_successful: Whether the step was successful.
+        state: State description.
+        action: Action description.
+        goal: Goal description.
+        eval_score: Evaluation score.
+        eval_description: Evaluation description.
+        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
+        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: update_step called when session not initialized. Please call lai.init() first.")
+        return
+    if not client.session.active_step:
+        raise InvalidOperationError("No active step to update")
+    client.session.update_step(**locals())
+
+def update_previous_step(
+    index: int, # -1 is the latest step, -2 is the second latest, etc.
+    is_successful: Optional[bool] = None,
+    state: Optional[str] = None, 
+    action: Optional[str] = None, 
+    goal: Optional[str] = None,
+    eval_score: Optional[float] = None,
+    eval_description: Optional[str] = None,
+    screenshot: Optional[str] = None,
+    screenshot_path: Optional[str] = None
+) -> None:
+    """
+    Update a previous step.
+    
+    Args:
+        index: Index of the step to update. -1 is the latest step, -2 is the second latest, etc.
+        is_successful: Whether the step was successful.
+        state: State description.
+        action: Action description.
+        goal: Goal description.
+        eval_score: Evaluation score.
+        eval_description: Evaluation description.
+        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
+        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: update_previous_step called when session not initialized. Please call lai.init() first.")
+        return
+    if index >= 0:
+        raise InvalidOperationError("Index must be negative, -1 is the latest step, -2 is the second latest, etc.")
+    if index < -len(client.session.step_history):
+        raise InvalidOperationError("Index out of bounds")
+    client.session.step_history[index].update_step(**locals())
+
+def end_step(
+    is_successful: bool,
+    state: Optional[str] = None, 
+    action: Optional[str] = None, 
+    goal: Optional[str] = None,
+    eval_score: Optional[float] = None,
+    eval_description: Optional[str] = None,
+    screenshot: Optional[str] = None,
+    screenshot_path: Optional[str] = None
+) -> None:
+    """
+    End the current step.
+    
+    Args:
+        is_successful: Whether the step was successful.
+        state: State description.
+        action: Action description.
+        goal: Goal description.
+        eval_score: Evaluation score.
+        eval_description: Evaluation description.
+        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
+        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: end_step called when session not initialized. Please call lai.init() first.")
+        return
+    if not client.session.active_step:
+        raise InvalidOperationError("No active step to end")
+    client.session.update_step(is_finished=True, **locals())
+
+
+def create_event(
+    description: Optional[str] = None,
+    result: Optional[str] = None,
+    cost_added: Optional[float] = None, 
+    model: Optional[str] = None
+) -> None:
+    """
+    Create a new event in the current step. Current step must not be finished.
+    
+    Args:
+        description: Description of the event.
+        result: Result of the event.
+        cost_added: Cost added by the event.
+        model: Model used for the event.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: create_event called when session not initialized. Please call lai.init() first.")
+        return
+    if not client.session.active_step:
+        raise InvalidOperationError("No active step to create event in")
+    client.session.active_step.create_event(**locals())
+
+
+def update_event(
+    is_successful: Optional[bool] = None, # TODO: get rid of is_successful
+    description: Optional[str] = None,
+    result: Optional[str] = None,
+    cost_added: Optional[float] = None, 
+    model: Optional[str] = None
+) -> None:
+    """
+    Update the latest event in the current step.
+    
+    Args:
+        is_successful: Whether the event was successful.
+        description: Description of the event.
+        result: Result of the event.
+        cost_added: Cost added by the event.
+        model: Model used for the event.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: update_event called when session not initialized. Please call lai.init() first.")
+        return
+    if not client.session.active_step:
+        raise InvalidOperationError("No active step to update event in")
+    if not client.session.active_step.event_history:
+        raise InvalidOperationError("No events exist in the current step")
+    client.session.active_step.event_history[-1].update_event(**locals())
+
+
+def update_previous_event(
+    index: int, # -1 is the latest event, -2 is the second latest, etc.
+    is_successful: Optional[bool] = None, # TODO: get rid of is_successful
+    description: Optional[str] = None,  
+    result: Optional[str] = None,
+    cost_added: Optional[float] = None, 
+    model: Optional[str] = None
+) -> None:
+    """
+    Update a previous event in the current step.
+    
+    Args:
+        index: Index of the event to update. -1 is the latest event, -2 is the second latest, etc.
+        is_successful: Whether the event was successful.
+        description: Description of the event.
+        result: Result of the event.
+        cost_added: Cost added by the event.
+        model: Model used for the event.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: update_previous_event called when session not initialized. Please call lai.init() first.")
+        return
+    if not client.session.active_step:
+        raise InvalidOperationError("No active step to update previous event in")
+    if not client.session.active_step.event_history:
+        raise InvalidOperationError("No events exist in the current step")
+    if index >= 0:
+        raise InvalidOperationError("Index must be negative, -1 is the latest event, -2 is the second latest, etc.")
+    if index < -len(client.session.active_step.event_history):
+        raise InvalidOperationError("Index out of bounds")
+    client.session.active_step.event_history[index].update_event(**locals())
+
+
+def end_event(
+    is_successful: bool,
+    description: Optional[str] = None,
+    result: Optional[str] = None,
+    cost_added: Optional[float] = None, 
+    model: Optional[str] = None
+) -> None:
+    """
+    End the latest event in the current step.
+    
+    Args:
+        is_successful: Whether the event was successful.
+        description: Description of the event.
+        result: Result of the event.
+        cost_added: Cost added by the event.
+        model: Model used for the event.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: end_event called when session not initialized. Please call lai.init() first.")
+        return
+    if not client.session.active_step:
+        raise InvalidOperationError("No active step to end event in")
+    if not client.session.active_step.event_history:
+        raise InvalidOperationError("No events exist in the current step")
+    latest_event = client.session.active_step.event_history[-1]
+    if latest_event.is_finished:
+        raise InvalidOperationError("Latest event is already finished")
+    latest_event.update_event(is_finished=True, **locals())
+
+
+def get_prompt(
+    prompt_name: str, 
+    variables: Optional[dict] = None,
+    cache_ttl: Optional[int] = 300,
+    label: Optional[str] = 'production'
+) -> str:
+    """
+    Get a prompt from the prompt database.
+    
+    Args:
+        prompt_name: Name of the prompt.
+        variables: {{Variables}} to replace in the prompt, supplied as a dictionary.
+        cache_ttl: Time-to-live for the prompt in the cache in seconds (default: 300). Set to -1 to cache forever. Set to 0 to disable caching.
+        label: Optional label for the prompt.
+    
+    Returns:
+        str: The prompt.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: get_prompt called when session not initialized, and will return an empty string. Please call lai.init() first.")
+        return ""
+    prompt = client.get_prompt(prompt_name, cache_ttl, label)
+    if variables:
+        for key, val in variables.items():
+            index = prompt.find("{{" + key +"}}")
+            if index == -1:
+                raise PromptError("Supplied variable not found in prompt")
+            prompt = prompt.replace("{{" + key +"}}", str(val))
+    if "{{" in prompt and "}}" in prompt and prompt.find("{{") < prompt.find("}}"):
+        print("[Lucidic] Warning: Unreplaced variable(s) left in prompt. Please check your prompt.")
+    return prompt
+
+
+@atexit.register
+def cleanup():
+    original_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        print("[Lucidic] Cleanup: This should only take a few seconds...")
+        try:
+            client = Client()
+            end_session(True)
+        except Exception as e:
+            print(f"[Lucidic] Client not yet initialized, shutting down")
+    finally:
+        signal.signal(signal.SIGINT, original_handler)

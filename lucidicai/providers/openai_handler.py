@@ -1,7 +1,7 @@
 """OpenAI provider handler for the Lucidic API"""
 from typing import Optional
+
 from .base_providers import BaseProvider
-from lucidicai.session import Session, Event
 from lucidicai.singleton import singleton
 
 @singleton
@@ -58,19 +58,19 @@ class OpenAIHandler(BaseProvider):
             
         return str(messages)
 
-    def handle_response(self, response, kwargs, session: Optional[Session] = None):
-        if not session:
+    def handle_response(self, response, kwargs, step = None):
+        if not step:
             return response
             
-        if not session.active_step:
+        if not step.event_history:
             return response
 
         from openai import Stream
         if isinstance(response, Stream):
-            return self._handle_stream_response(response, kwargs, session)
-        return self._handle_regular_response(response, kwargs, session)
+            return self._handle_stream_response(response, kwargs, step)
+        return self._handle_regular_response(response, kwargs, step)
 
-    def _handle_stream_response(self, response, kwargs, session):
+    def _handle_stream_response(self, response, kwargs, step):
         accumulated_response = ""
 
         def generate():
@@ -83,14 +83,16 @@ class OpenAIHandler(BaseProvider):
                             accumulated_response += delta.content
                     yield chunk
                 
-                session.end_event(
+                step.update_event(
+                    is_finished=True,
                     is_successful=True,
                     cost_added=None,
                     model=kwargs.get('model'),
                     result=accumulated_response
                 )
             except Exception as e:
-                session.end_event(
+                step.update_event(
+                    is_finished=True,
                     is_successful=False,
                     cost_added=None,
                     model=kwargs.get('model'),
@@ -100,7 +102,7 @@ class OpenAIHandler(BaseProvider):
 
         return generate()
 
-    def _handle_regular_response(self, response, kwargs, session):
+    def _handle_regular_response(self, response, kwargs, step):
         try:
             response_text = (response.choices[0].message.content 
                            if hasattr(response, 'choices') and response.choices 
@@ -111,7 +113,8 @@ class OpenAIHandler(BaseProvider):
                 model = response.model if hasattr(response, 'model') else kwargs.get('model')
                 cost = self._calculate_cost(model, response.usage)
 
-            session.end_event(
+            step.update_event(
+                is_finished=True,
                 is_successful=True,
                 cost_added=cost,
                 model=response.model if hasattr(response, 'model') else kwargs.get('model'),
@@ -121,7 +124,8 @@ class OpenAIHandler(BaseProvider):
             return response
 
         except Exception as e:
-            session.end_event(
+            step.update_event(
+                is_finished=True,
                 is_successful=False,
                 cost_added=None,
                 model=kwargs.get('model'),
@@ -134,19 +138,18 @@ class OpenAIHandler(BaseProvider):
         self.original_create = completions.Completions.create
         
         def patched_function(*args, **kwargs):
-            session = kwargs.pop("session", self.client.session) if "session" in kwargs else self.client.session
-            
+            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
             # Create event before API call
-            if session and session.active_step:
+            if step:
                 description = self._format_messages(kwargs.get('messages', ''))
-                session.create_event(
+                step.create_event(
                     description=description,
                     result="Waiting for response..."
                 )
             
             # Make API call
             result = self.original_create(*args, **kwargs)
-            return self.handle_response(result, kwargs, session=session)
+            return self.handle_response(result, kwargs, step=step)
         
         completions.Completions.create = patched_function
 
