@@ -1,5 +1,4 @@
 import io
-from datetime import datetime
 from typing import List, TYPE_CHECKING
 
 from PIL import Image
@@ -18,8 +17,6 @@ class Step:
     def __init__(self, session_id: str, **kwargs):
         self.session_id = session_id
         self.step_id = None
-        self.start_time = datetime.now().isoformat()
-        self.end_time = None
         self.goal = None
         self.state = None
         self.action = None
@@ -38,7 +35,6 @@ class Step:
         from .client import Client
         request_data = {
             "session_id": self.session_id,
-            "current_time": datetime.now().isoformat(),
             # TODO: Remove following from init_step backend API 
             # "goal": self.goal,
             # "action": str(self.action) if self.action else None,
@@ -58,11 +54,9 @@ class Step:
         if 'action' in kwargs:
             self.action = Action(kwargs['action'])
         if 'is_finished' in kwargs:
-            self.end_time = datetime.now().isoformat()
             self.cost = sum(event.cost_added for event in self.event_history if event.cost_added is not None)
         request_data = {
             "step_id": self.step_id,
-            "current_time": datetime.now().isoformat(),
             "goal": self.goal,
             "action": str(self.action) if self.action else None,
             "state": str(self.state),
