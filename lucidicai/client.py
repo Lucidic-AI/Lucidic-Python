@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 import requests
@@ -17,7 +18,8 @@ class Client:
         agent_id: str,
         session_name: str,
         mass_sim_id: Optional[str] = None,
-        task: Optional[str] = None
+        task: Optional[str] = None,
+        rubrics: Optional[list] = None
     ):
         self.base_url = "https://analytics.lucidic.ai/api"
         self._initialized = False
@@ -34,7 +36,8 @@ class Client:
             agent_id=agent_id,
             session_name=session_name,
             mass_sim_id=mass_sim_id,
-            task=task
+            task=task,
+            rubrics=rubrics
         )
     
     @property
@@ -60,7 +63,8 @@ class Client:
         agent_id: Optional[str] = None,
         session_name: Optional[str] = None,
         mass_sim_id: Optional[str] = None,
-        task: Optional[str] = None
+        task: Optional[str] = None,
+        rubrics: Optional[list] = None
     ) -> None:
         self.api_key = lucidic_api_key
         try:
@@ -71,6 +75,7 @@ class Client:
         self.session_name = session_name or self.session_name
         self.mass_sim_id = mass_sim_id or self.mass_sim_id
         self.task = task or self.task
+        self.rubrics = rubrics or self.rubrics
         self._initialized = True
     
     def reset(self):
@@ -104,6 +109,7 @@ class Client:
             session_name=self.session_name,
             mass_sim_id=self.mass_sim_id,
             task=self.task,
+            rubrics=self.rubrics
         )
         if self._provider:
             self._provider.override()
@@ -137,6 +143,7 @@ class Client:
             "PUT": lambda data: requests.put(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, json=data),
             "DELETE": lambda data: requests.delete(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, params=data),
         }
+        data['current_time'] = datetime.now().astimezone(timezone.utc).isoformat()
         func = http_methods[method]
         response = func(data)
         if response.status_code == 401:

@@ -1,6 +1,5 @@
 import base64
 import io
-from datetime import datetime
 from typing import List, Optional
 
 from PIL import Image
@@ -15,7 +14,8 @@ class Session:
         agent_id: str, 
         session_name: str, 
         mass_sim_id: Optional[str] = None, 
-        task: Optional[str] = None
+        task: Optional[str] = None,
+        rubrics: Optional[list] = None
     ):
         self.agent_id = agent_id
         self.session_name = session_name
@@ -25,9 +25,9 @@ class Session:
         self.step_history: List[Step] = []
         self._active_step: Optional[Step] = None
         self.base_url = "https://analytics.lucidic.ai/api"
-        self.starttime = datetime.now().isoformat()
         self.is_finished = False
         self.is_successful = None
+        self.rubrics = rubrics
         self.init_session()
 
     def init_session(self) -> None:
@@ -35,9 +35,9 @@ class Session:
         request_data = {
             "agent_id": self.agent_id,
             "session_name": self.session_name,
-            "current_time": datetime.now().isoformat(),
             "task": self.task,
-            "mass_sim_id": self.mass_sim_id
+            "mass_sim_id": self.mass_sim_id,
+            "rubrics": self.rubrics
         }
         data = Client().make_request('initsession', 'POST', request_data)
         self.session_id = data["session_id"]
@@ -59,7 +59,6 @@ class Session:
         self.__dict__.update(update_attrs)
         request_data = {
             "session_id": self.session_id,
-            "current_time": datetime.now().isoformat(),
             "is_finished": self.is_finished,
             "is_successful": self.is_successful, 
             "task": self.task,

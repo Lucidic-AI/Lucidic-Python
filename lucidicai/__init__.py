@@ -51,6 +51,7 @@ def init(
     task: Optional[str] = None,
     provider: Optional[ProviderType] = None,
     mass_sim_id: Optional[str] = None,
+    rubrics: Optional[list] = None
 ) -> None:
     """
     Initialize the Lucidic client.
@@ -62,6 +63,7 @@ def init(
         task: Task description.
         provider: Provider type ("openai", "anthropic", "langchain").
         mass_sim_id: Optional mass simulation ID, if session is to be part of a mass simulation.
+        rubrics: Optional rubrics for evaluation, list of strings.
     
     Raises:
         InvalidOperationError: If the client is already initialized.
@@ -86,7 +88,8 @@ def init(
         agent_id=agent_id,
         session_name=session_name,
         mass_sim_id=mass_sim_id,
-        task=task
+        task=task,
+        rubrics=rubrics
     )
     # Set up provider
     if provider == "openai":
