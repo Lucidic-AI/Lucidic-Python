@@ -14,6 +14,7 @@ MODEL_PRICING = {
     "claude-2": {"input": 8.0, "output": 24.0},
     
     "gemini-2.0-flash": {"input": 0.1, "output": 0.4},
+    "gemini-2.0-flash-exp": {"input": 0.1, "output": 0.4},
     
     "o1": {"input": 15.0, "output": 60.0},
     "o3-mini": {"input": 1.1, "output": 4.4},
