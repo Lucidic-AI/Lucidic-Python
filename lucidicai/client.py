@@ -71,11 +71,11 @@ class Client:
             self.verify_api_key(self.base_url, lucidic_api_key)
         except APIKeyVerificationError as e:
             raise APIKeyVerificationError(str(e))
-        self.agent_id = agent_id or self.agent_id
-        self.session_name = session_name or self.session_name
-        self.mass_sim_id = mass_sim_id or self.mass_sim_id
-        self.task = task or self.task
-        self.rubrics = rubrics or self.rubrics
+        self.agent_id = agent_id
+        self.session_name = session_name
+        self.mass_sim_id = mass_sim_id
+        self.task = task
+        self.rubrics = rubrics
         self._initialized = True
     
     def reset(self):
