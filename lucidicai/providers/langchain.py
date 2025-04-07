@@ -9,6 +9,8 @@ from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResu
 from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
 from langchain_core.load.dump import dumps
+import json
+import traceback
 
 
 class LucidicLangchainHandler(BaseCallbackHandler):
