@@ -8,6 +8,8 @@ from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResu
 
 from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
+from langchain_core.load.dump import dumps
+
 
 class LucidicLangchainHandler(BaseCallbackHandler):
     
@@ -49,7 +51,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         model = self._get_model_name(serialized, kwargs)
         self.run_to_model[run_str] = model
         
-        description = f"LLM call ({model}): {prompts[0]}..." if prompts else "LLM call"
+        description = str(dumps(prompts, pretty=True)) if prompts else None
         
         # Make sure we have a valid session and step
         if not (self.client.session and self.client.session.active_step):
@@ -88,9 +90,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                 if hasattr(msg, 'type') and hasattr(msg, 'content'):
                     parsed_messages.append(f"{msg.type}: {msg.content}...")
         
-        message_desc = "; ".join(parsed_messages[:2])
-        description = f"Chat model call ({model}): {message_desc}"
-        
+        description = json.dumps(messages, default=str) if messages else None
+
         # Make sure we have a valid session and step
         if not (self.client.session and self.client.session.active_step):
             print(f"[Lucidic] Cannot create event - no active session or step")
@@ -218,10 +219,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """Handle start of chain execution"""
         print(f"[Lucidic] Starting chain execution in Langchain Handler, creating event...")
         run_str = str(run_id)
-        chain_type = serialized.get("name", "Unknown Chain")
-        input_desc = str(next(iter(inputs.values())))[:50] if inputs else "No inputs"
         
-        description = f"Chain execution ({chain_type}): {input_desc}..."
+        description = str(dumps(inputs, pretty=True)) if inputs else None
         
         # Make sure we have a valid session and step
         if not (self.client.session and self.client.session.active_step):
@@ -254,7 +253,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
             # Convert to string if needed and truncate
             if output_value is not None:
-                result = str(output_value)[:1000]
+                result = str(dumps(output_value, pretty=True)) if output_value else None
             
         try:
             if run_id in self.run_to_event:
