@@ -53,7 +53,13 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         model = self._get_model_name(serialized, kwargs)
         self.run_to_model[run_str] = model
         
-        description = str(dumps(prompts, pretty=True)) if prompts else None
+        text = []
+        images = []
+        for prompt in prompts:
+            if isinstance(prompt, str):
+                text.append(prompt)
+            elif isinstance(prompt, dict) and 'image' in prompt:
+                images.append(prompt['image'])
         
         # Make sure we have a valid session and step
         if not (self.client.session and self.client.session.active_step):
@@ -62,12 +68,13 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create a new event
-            event = self.client.session.active_step.create_event(description=description)
+            event = self.client.session.active_step.create_event(description=text, screenshots=images)
             self.run_to_event[run_str] = event
         except Exception as e:
             print(f"[Lucidic] Error creating event: {e}")
             print(traceback.format_exc())
 
+#TODO: Don't really know when this is used probably need to check documentation. 
     def on_chat_model_start(
         self,
         serialized: Dict[str, Any],
@@ -85,14 +92,32 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         model = self._get_model_name(serialized, kwargs)
         self.run_to_model[run_str] = model
         
-        # Format messages for description
-        parsed_messages = []
+        text = []
+        images_b64 = []
+
         if messages and messages[0]:
             for msg in messages[0]:
-                if hasattr(msg, 'type') and hasattr(msg, 'content'):
-                    parsed_messages.append(f"{msg.type}: {msg.content}...")
-        
-        description = json.dumps(messages, default=str) if messages else None
+                content = msg.content
+                if isinstance(content, str):
+                    text.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                text.append(block.get("text", ""))
+                            elif block.get("type") == "image_url":
+                                image_url = block.get("image_url", "")
+                                try:
+                                    # Fetch the image bytes
+                                    response = requests.get(image_url)
+                                    response.raise_for_status()
+                                    image_bytes = response.content
+                                    # Encode as base64
+                                    b64_str = f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
+                                    images_b64.append(b64_str)
+                                except Exception as e:
+                                    print(f"[Lucidic] Failed to fetch image from {image_url}: {e}")
+
 
         # Make sure we have a valid session and step
         if not (self.client.session and self.client.session.active_step):
@@ -101,7 +126,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create a new event
-            event = self.client.session.active_step.create_event(description=description)
+            event = self.client.session.active_step.create_event(description=text, screenshots=images_b64)
             self.run_to_event[run_str] = event
         except Exception as e:
             print(f"[Lucidic] Error creating event: {e}")
@@ -222,7 +247,31 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         print(f"[Lucidic] Starting chain execution in Langchain Handler, creating event...")
         run_str = str(run_id)
         
-        description = str(dumps(inputs, pretty=True)) if inputs else None
+        text = []
+        images_b64 = []
+
+        if inputs and inputs[0]:
+            for msg in inputs[0]:
+                content = msg.content
+                if isinstance(content, str):
+                    text.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                text.append(block.get("text", ""))
+                            elif block.get("type") == "image_url":
+                                image_url = block.get("image_url", "")
+                                try:
+                                    # Fetch the image bytes
+                                    response = requests.get(image_url)
+                                    response.raise_for_status()
+                                    image_bytes = response.content
+                                    # Encode as base64
+                                    b64_str = f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
+                                    images_b64.append(b64_str)
+                                except Exception as e:
+                                    print(f"[Lucidic] Failed to fetch image from {image_url}: {e}")
         
         # Make sure we have a valid session and step
         if not (self.client.session and self.client.session.active_step):
@@ -231,7 +280,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create a new event
-            event = self.client.session.active_step.create_event(description=description)
+            event = self.client.session.active_step.create_event(description=text, screenshots=images_b64)
             self.run_to_event[run_str] = event
         except Exception as e:
             print(f"[Lucidic] Error creating chain event: {e}")
@@ -492,7 +541,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """
         print(f"[Lucidic] Handling agent finish in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
-        description = "Agent Finish"
+
         
         # Make sure we have a valid session and step
         if not (self.client.session and self.client.session.active_step):
@@ -514,14 +563,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create event
-            event = self.client.session.active_step.create_event(description=description)
-            self.run_to_event[run_id] = event
-            
-            # Note: Agent finish events are immediately ended in the original code
-            # This seems intentional so we'll keep the behavior but use our event
-            if not event.is_finished:
-                event.update_event(is_finished=True, is_successful=True, result=result)
-            del self.run_to_event[run_id]
+            self.client.session.active_step.update_event(is_finished=True, is_successful=True, result=result)
+        
             
             print(f"[Lucidic] Processed agent finish")
         except Exception as e:

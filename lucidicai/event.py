@@ -16,8 +16,10 @@ class   Event:
         self.is_finished = False
         self.cost_added = None
         self.model = None
+        self.screenshots = []
         self.init_event()
         self.update_event(**kwargs)
+
 
     def init_event(self) -> None:
         from .client import Client
@@ -32,6 +34,8 @@ class   Event:
 
     def update_event(self, **kwargs) -> None:
         from .client import Client
+        if 'screenshots' in kwargs:
+            self.screenshots += kwargs['screenshots']
         if 'is_finished' in kwargs:
             if self.is_finished:
                 raise InvalidOperationError("Event is already finished")
@@ -43,6 +47,7 @@ class   Event:
             "result": self.result,
             "is_finished": self.is_finished, 
             "cost_added": self.cost_added,
-            "model": self.model
+            "model": self.model, 
+            "nscreenshots": len(self.screenshots)
         }
         Client().make_request('updateevent', 'PUT', request_data)

@@ -91,9 +91,17 @@ class Session:
         self.is_finished = True
         self.is_successful = is_successful
         images_b64 = []
+        event_b64 = []
+        event_indicies = []
         for step in self.step_history:
             if step.screenshot is not None:
                 images_b64.append(step.screenshot)
+            if step.event_history:
+                for i, event in enumerate(step.event_history):
+                    if event.screenshots:
+                        event_b64.append(event.screenshots)
+                        total_images = len(event.screenshots)
+                        event_indicies.append([i for _ in range(total_images)])
         has_gif = False
         if images_b64:
             images = [Image.open(io.BytesIO(base64.b64decode(b64))) for b64 in images_b64]
@@ -103,4 +111,8 @@ class Session:
             presigned_url, bucket_name, object_key = get_presigned_url(self.agent_id, session_id=self.session_id)
             upload_image_to_s3(presigned_url, gif_buffer, "GIF")
             has_gif = True
-        return self.update_session(is_finished=True, is_successful=is_successful, has_gif=has_gif)
+        if event_b64:
+            images = [Image.open(io.BytesIO(base64.b64decode(b64))) for b64 in event_b64]
+            for event_image, event_index in zip(images, event_indicies):
+                presigned_url, bucket_name, object_key = get_presigned_url(self.agent_id, session_id=self.session_id, event_id=event_id, nthscreenshot=event_index)
+                upload_image_to_s3(presigned_url, event_image, "JPEG")

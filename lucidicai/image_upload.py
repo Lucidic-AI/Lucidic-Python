@@ -4,7 +4,7 @@ import io
 import requests
 from PIL import Image
 
-def get_presigned_url(agent_id, step_id=None, session_id=None):
+def get_presigned_url(agent_id, step_id=None, session_id=None, event_id=None, nthscreenshot=None):
     """
     Get a presigned URL for uploading an image to S3.
     
@@ -24,6 +24,12 @@ def get_presigned_url(agent_id, step_id=None, session_id=None):
         request_data["step_id"] = step_id
     if session_id is not None:
         request_data["session_id"] = session_id
+    if event_id is not None:
+        request_data["event_id"] = event_id
+        if nthscreenshot is None:
+            raise ValueError("nth_screenshot is required when event_id is provided")
+        request_data["nth_screenshot"] = nthscreenshot
+
     response = Client().make_request('getpresigneduploadurl', 'GET', request_data)
     return response['presigned_url'], response['bucket_name'], response['object_key']
 
@@ -56,3 +62,5 @@ def upload_image_to_s3(url, image, format):
         headers={"Content-Type": content_type}
     )
     upload_response.raise_for_status()
+
+    

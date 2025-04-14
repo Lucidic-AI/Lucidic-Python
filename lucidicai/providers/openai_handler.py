@@ -45,17 +45,23 @@ class OpenAIHandler(BaseProvider):
                 if msg.get('role') == 'user':
                     content = msg.get('content', '')
                     out = []
+                    images = []
                     for content_piece in content:
                         if content_piece.get('type') == 'text':
                             out.append(content_piece)
-                    return out
+                        elif content_piece.get('type') == 'image':
+                            images.append(content_piece)
+                    return out, images
             content = messages[-1].get('content', '')
             out = []
+            images = []
             for content_piece in content:
                 if content_piece.get('type') == 'text':
                     out.append(content_piece)
-            return out
-            
+                elif content_piece.get('type') == 'image':
+                    images.append(content_piece)
+            return out, images
+        
         return str(messages)
 
     def handle_response(self, response, kwargs, step = None):
@@ -118,7 +124,8 @@ class OpenAIHandler(BaseProvider):
                 is_successful=True,
                 cost_added=cost,
                 model=response.model if hasattr(response, 'model') else kwargs.get('model'),
-                result=response_text
+                result=response_text, 
+                
             )
 
             return response
@@ -141,11 +148,13 @@ class OpenAIHandler(BaseProvider):
             step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
             # Create event before API call
             if step:
-                description = self._format_messages(kwargs.get('messages', ''))
+                description, images = self._format_messages(kwargs.get('messages', ''))
                 step.create_event(
                     description=description,
-                    result="Waiting for response..."
+                    result="Waiting for response...",
+                    screenshots=images
                 )
+                
             
             # Make API call
             result = self.original_create(*args, **kwargs)

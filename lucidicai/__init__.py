@@ -256,7 +256,8 @@ def create_event(
     description: Optional[str] = None,
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    screenshots: Optional[List[str]] = None
 ) -> None:
     """
     Create a new event in the current step. Current step must not be finished.
@@ -266,6 +267,7 @@ def create_event(
         result: Result of the event.
         cost_added: Cost added by the event.
         model: Model used for the event.
+        screenshots: List of screenshots encoded in base64.
     """
     client = Client()
     if not client.session:
@@ -281,7 +283,8 @@ def update_event(
     description: Optional[str] = None,
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    screenshots: Optional[List[str]] = None
 ) -> None:
     """
     Update the latest event in the current step.
@@ -310,7 +313,8 @@ def update_previous_event(
     description: Optional[str] = None,  
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    screenshots: Optional[List[str]] = None
 ) -> None:
     """
     Update a previous event in the current step.
@@ -343,7 +347,8 @@ def end_event(
     description: Optional[str] = None,
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    screenshots: Optional[List[str]] = None
 ) -> None:
     """
     End the latest event in the current step.

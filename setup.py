@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="lucidicai",
-    version="1.1.7",
+    version="1.1.9",
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
