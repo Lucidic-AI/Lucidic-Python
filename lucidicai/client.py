@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -21,7 +22,7 @@ class Client:
         task: Optional[str] = None,
         rubrics: Optional[list] = None
     ):
-        self.base_url = "https://analytics.lucidic.ai/api"
+        self.base_url = "https://analytics.lucidic.ai/api" if not (os.getenv("LUCIDIC_DEBUG", 'False') == 'True') else "http://localhost:8000/api"
         self._initialized = False
         self._session = None
         self.api_key = None

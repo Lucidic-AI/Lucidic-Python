@@ -1,4 +1,5 @@
 """Langchain integration for Lucidic API with detailed logging"""
+import base64
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 

@@ -1,7 +1,7 @@
 """Event management for the Lucidic API"""
 from .errors import InvalidOperationError
 
-class   Event:
+class Event:
     def __init__(
         self, 
         session_id: str, 
@@ -34,7 +34,7 @@ class   Event:
 
     def update_event(self, **kwargs) -> None:
         from .client import Client
-        if 'screenshots' in kwargs:
+        if 'screenshots' in kwargs and kwargs['screenshots'] is not None:
             self.screenshots += kwargs['screenshots']
         if 'is_finished' in kwargs:
             if self.is_finished:

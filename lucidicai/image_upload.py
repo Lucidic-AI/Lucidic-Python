@@ -12,6 +12,8 @@ def get_presigned_url(agent_id, step_id=None, session_id=None, event_id=None, nt
         agent_id: The ID of the agent.
         step_id: Optional step ID for the image. Either supply step_id or session_id.
         session_id: Optional session ID for the image. Either supply step_id or session_id.
+        event_id: Optional event ID for the image.
+        nthscreenshot: Optional nth screenshot for the image.
     
     Returns:
         A tuple containing the presigned URL, bucket name, and object key.
@@ -63,4 +65,10 @@ def upload_image_to_s3(url, image, format):
     )
     upload_response.raise_for_status()
 
-    
+def screenshot_path_to_jpeg(screenshot_path):
+    img = Image.open(screenshot_path)
+    img = img.convert("RGB") 
+    buffered = io.BytesIO()
+    img.save(buffered, format="JPEG")  # Save to BytesIO buffer
+    img_byte = buffered.getvalue()
+    return base64.b64encode(img_byte).decode('utf-8')
