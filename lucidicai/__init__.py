@@ -144,7 +144,6 @@ def create_step(
         screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
         screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
     """
-    print(f"LUCIDIC DEBUG LMAO create_step")
     client = Client()
     if not client.session:
         print("[Lucidic] Warning: create_step called when session not initialized. Please call lai.init() first.")
@@ -270,7 +269,6 @@ def create_event(
         model: Model used for the event.
         screenshots: List of screenshots encoded in base64.
     """
-    print(f"LUCIDIC DEBUG LMAO create_event")
 
     client = Client()
     if not client.session:
@@ -299,7 +297,6 @@ def update_event(
         cost_added: Cost added by the event.
         model: Model used for the event.
     """
-    print(f"LUCIDIC DEBUG LMAO update_event")
     client = Client()
     if not client.session:
         print("[Lucidic] Warning: update_event called when session not initialized. Please call lai.init() first.")
@@ -364,7 +361,6 @@ def end_event(
         cost_added: Cost added by the event.
         model: Model used for the event.
     """
-    print(f"LUCIDIC DEBUG LMAO end_event")
     client = Client()
     if not client.session:
         print("[Lucidic] Warning: end_event called when session not initialized. Please call lai.init() first.")

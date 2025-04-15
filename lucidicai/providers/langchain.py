@@ -108,16 +108,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                                 text.append(block.get("text", ""))
                             elif block.get("type") == "image_url":
                                 image_url = block.get("image_url", "")
-                                try:
-                                    # Fetch the image bytes
-                                    response = requests.get(image_url)
-                                    response.raise_for_status()
-                                    image_bytes = response.content
-                                    # Encode as base64
-                                    b64_str = f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
-                                    images_b64.append(b64_str)
-                                except Exception as e:
-                                    print(f"[Lucidic] Failed to fetch image from {image_url}: {e}")
+                                image_str = image_url.get('url', "")
+                                images_b64.append(image_str[image_str.find(',') + 1:])
 
 
         # Make sure we have a valid session and step
@@ -263,16 +255,9 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                                 text.append(block.get("text", ""))
                             elif block.get("type") == "image_url":
                                 image_url = block.get("image_url", "")
-                                try:
-                                    # Fetch the image bytes
-                                    response = requests.get(image_url)
-                                    response.raise_for_status()
-                                    image_bytes = response.content
-                                    # Encode as base64
-                                    b64_str = f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
-                                    images_b64.append(b64_str)
-                                except Exception as e:
-                                    print(f"[Lucidic] Failed to fetch image from {image_url}: {e}")
+                                image_str = image_url.get('url', "")
+                                images_b64.append(image_str[image_str.find(',') + 1:])
+
         
         # Make sure we have a valid session and step
         if not (self.client.session and self.client.session.active_step):
