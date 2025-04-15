@@ -101,18 +101,18 @@ def init(
     client.init_session()
 
 
-def end_session(is_successful: bool) -> None:
+def end_session(is_finished: bool) -> None:
     """
     End the current session.
     
     Args:
-        is_successful: Whether the session was successful.
+        is_finished: Whether the session was finished.
     """
     client = Client()
     if not client.session:
         print("[Lucidic] Warning: end_session called when session not initialized. Please call lai.init() first.")
         return
-    client.session.end_session(is_successful=is_successful)
+    client.session.end_session(is_finished=is_finished)
     client.clear_session()
 
 
@@ -152,7 +152,6 @@ def create_step(
 
 
 def update_step(
-    is_successful: Optional[bool] = None, # TODO: get rid of is_successful
     state: Optional[str] = None, 
     action: Optional[str] = None, 
     goal: Optional[str] = None,
@@ -165,7 +164,6 @@ def update_step(
     Update the current step.
     
     Args:
-        is_successful: Whether the step was successful.
         state: State description.
         action: Action description.
         goal: Goal description.
@@ -184,7 +182,6 @@ def update_step(
 
 def update_previous_step(
     index: int, # -1 is the latest step, -2 is the second latest, etc.
-    is_successful: Optional[bool] = None,
     state: Optional[str] = None, 
     action: Optional[str] = None, 
     goal: Optional[str] = None,
@@ -198,7 +195,6 @@ def update_previous_step(
     
     Args:
         index: Index of the step to update. -1 is the latest step, -2 is the second latest, etc.
-        is_successful: Whether the step was successful.
         state: State description.
         action: Action description.
         goal: Goal description.
@@ -221,7 +217,6 @@ def update_previous_step(
     client.session.step_history[index].update_step(**locals())
 
 def end_step(
-    is_successful: bool,
     state: Optional[str] = None, 
     action: Optional[str] = None, 
     goal: Optional[str] = None,
@@ -234,7 +229,6 @@ def end_step(
     End the current step.
     
     Args:
-        is_successful: Whether the step was successful.
         state: State description.
         action: Action description.
         goal: Goal description.
@@ -280,7 +274,6 @@ def create_event(
 
 
 def update_event(
-    is_successful: Optional[bool] = None, # TODO: get rid of is_successful
     description: Optional[str] = None,
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
@@ -291,7 +284,6 @@ def update_event(
     Update the latest event in the current step.
     
     Args:
-        is_successful: Whether the event was successful.
         description: Description of the event.
         result: Result of the event.
         cost_added: Cost added by the event.
@@ -310,7 +302,6 @@ def update_event(
 
 def update_previous_event(
     index: int, # -1 is the latest event, -2 is the second latest, etc.
-    is_successful: Optional[bool] = None, # TODO: get rid of is_successful
     description: Optional[str] = None,  
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
@@ -322,7 +313,6 @@ def update_previous_event(
     
     Args:
         index: Index of the event to update. -1 is the latest event, -2 is the second latest, etc.
-        is_successful: Whether the event was successful.
         description: Description of the event.
         result: Result of the event.
         cost_added: Cost added by the event.
@@ -344,7 +334,6 @@ def update_previous_event(
 
 
 def end_event(
-    is_successful: bool,
     description: Optional[str] = None,
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
@@ -355,7 +344,6 @@ def end_event(
     End the latest event in the current step.
     
     Args:
-        is_successful: Whether the event was successful.
         description: Description of the event.
         result: Result of the event.
         cost_added: Cost added by the event.

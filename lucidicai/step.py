@@ -22,7 +22,6 @@ class Step:
         self.state = None
         self.action = None
         self.event_history: List[Event] = []
-        self.is_successful = None
         self.is_finished = False
         self.eval_score = None
         self.eval_description = None
@@ -66,7 +65,6 @@ class Step:
             "goal": self.goal,
             "action": str(self.action) if self.action else None,
             "state": str(self.state),
-            "is_successful": self.is_successful,
             "eval_score": self.eval_score,
             "eval_description": self.eval_description,
             "is_finished": self.is_finished,

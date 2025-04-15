@@ -26,7 +26,6 @@ class Session:
         self._active_step: Optional[Step] = None
         self.base_url = "https://analytics.lucidic.ai/api"
         self.is_finished = False
-        self.is_successful = None
         self.rubrics = rubrics
         self.init_session()
 
@@ -49,7 +48,6 @@ class Session:
     def update_session(
         self, 
         is_finished: Optional[bool] = None,
-        is_successful: Optional[bool] = None, 
         task: Optional[str] = None, 
         has_gif=False
     ) -> None:
@@ -60,7 +58,6 @@ class Session:
         request_data = {
             "session_id": self.session_id,
             "is_finished": self.is_finished,
-            "is_successful": self.is_successful, 
             "task": self.task,
             "has_gif": has_gif,
         }
@@ -85,11 +82,10 @@ class Session:
         if 'is_finished' in kwargs and kwargs['is_finished']:
             self._active_step = None
 
-    def end_session(self, is_successful: bool) -> bool:
+    def end_session(self, is_finished: bool = True) -> bool:
         if self._active_step:
             print("[Warning] Ending Lucidic session while current step is unfinished...")
-        self.is_finished = True
-        self.is_successful = is_successful
+        self.is_finished = is_finished and True
         images_b64 = []
         events_b64 = [] # (event_id, nth screenshot, b64)
         for step in self.step_history:
@@ -110,4 +106,4 @@ class Session:
         for event_id, nthscreenshot, event_b64 in events_b64:
             presigned_url, bucket_name, object_key = get_presigned_url(self.agent_id, session_id=self.session_id, event_id=event_id, nthscreenshot=nthscreenshot)
             upload_image_to_s3(presigned_url, event_b64, "JPEG")
-        return self.update_session(is_finished=True, is_successful=is_successful, has_gif=has_gif)
+        return self.update_session(is_finished=True, has_gif=has_gif)
