@@ -399,7 +399,7 @@ def get_prompt(
 
 @atexit.register
 def cleanup():
-    # original_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    original_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         print("[Lucidic] Cleanup: This should only take a few seconds...")
         try:
@@ -408,5 +408,5 @@ def cleanup():
         except Exception as e:
             print(f"[Lucidic] Client not yet initialized, shutting down")
     finally:
-        # signal.signal(signal.SIGINT, original_handler)
+        signal.signal(signal.SIGINT, original_handler)
         pass
