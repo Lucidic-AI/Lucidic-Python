@@ -54,11 +54,11 @@ class Step:
         if self.screenshot is not None:
             presigned_url, bucket_name, object_key = get_presigned_url(Client().agent_id, step_id=self.step_id)
             upload_image_to_s3(presigned_url, self.screenshot, "JPEG")
-        if 'state' in kwargs:
+        if 'state' in kwargs and kwargs['state'] is not None:
             self.state = State(kwargs['state'])
-        if 'action' in kwargs:
+        if 'action' in kwargs and kwargs['action'] is not None:
             self.action = Action(kwargs['action'])
-        if 'is_finished' in kwargs:
+        if 'is_finished' in kwargs and kwargs['is_finished'] is not None:
             self.cost = sum(event.cost_added for event in self.event_history if event.cost_added is not None)
         request_data = {
             "step_id": self.step_id,
