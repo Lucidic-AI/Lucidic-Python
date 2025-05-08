@@ -64,7 +64,7 @@ class Step:
             "step_id": self.step_id,
             "goal": self.goal,
             "action": str(self.action) if self.action else None,
-            "state": str(self.state),
+            "state": str(self.state) if self.state else None,
             "eval_score": self.eval_score,
             "eval_description": self.eval_description,
             "is_finished": self.is_finished,
@@ -91,5 +91,6 @@ class Step:
         )
         
         self.event_history.append(event)
+        
         return event
 
