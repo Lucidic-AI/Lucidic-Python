@@ -158,7 +158,7 @@ def update_step(
     eval_score: Optional[float] = None,
     eval_description: Optional[str] = None,
     screenshot: Optional[str] = None,
-    screenshot_path: Optional[str] = Nonez
+    screenshot_path: Optional[str] = None
 ) -> None:
     """
     Update the current step.
