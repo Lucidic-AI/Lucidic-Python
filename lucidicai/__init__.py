@@ -101,7 +101,7 @@ def init(
     client.init_session()
 
 
-def end_session(is_finished: bool) -> None:
+def end_session(is_finished: bool, session_eval: Optional[str] = None, session_eval_reason: Optional[str] = None, is_successful: Optional[bool] = None, is_successful_reason: Optional[str] = None) -> None:
     """
     End the current session.
     
@@ -112,7 +112,7 @@ def end_session(is_finished: bool) -> None:
     if not client.session:
         print("[Lucidic] Warning: end_session called when session not initialized. Please call lai.init() first.")
         return
-    client.session.end_session(is_finished=is_finished)
+    client.session.end_session(is_finished=is_finished, session_eval=session_eval, session_eval_reason=session_eval_reason, is_successful=is_successful, is_successful_reason=is_successful_reason)
     client.clear_session()
 
 
