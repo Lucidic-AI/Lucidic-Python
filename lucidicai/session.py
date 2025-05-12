@@ -27,6 +27,10 @@ class Session:
         self.base_url = "https://analytics.lucidic.ai/api"
         self.is_finished = False
         self.rubrics = rubrics
+        self.is_successful = None
+        self.is_successful_reason = None
+        self.user_eval = None
+        self.user_eval_reason = None
         self.init_session()
 
     def init_session(self) -> None:
@@ -49,7 +53,11 @@ class Session:
         self, 
         is_finished: Optional[bool] = None,
         task: Optional[str] = None, 
-        has_gif=False
+        has_gif=False,
+        is_successful: Optional[bool] = None,
+        is_successful_reason: Optional[str] = None,
+        user_eval: Optional[str] = None,
+        user_eval_reason: Optional[str] = None
     ) -> None:
         from .client import Client
         update_attrs = {k: v for k, v in locals().items() 
@@ -60,6 +68,10 @@ class Session:
             "is_finished": self.is_finished,
             "task": self.task,
             "has_gif": has_gif,
+            "is_successful": self.is_successful,
+            "is_successful_reason": self.is_successful_reason,
+            "user_eval": self.user_eval,
+            "user_eval_reason": self.user_eval_reason
         }
         Client().make_request('updatesession', 'PUT', request_data)
 
