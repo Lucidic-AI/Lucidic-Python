@@ -120,6 +120,7 @@ def reset() -> None:
     """
     Reset the client.
     """
+    end_session(True)
     Client().reset()
 
 
@@ -405,8 +406,8 @@ def cleanup():
         try:
             client = Client()
             end_session(True)
-        except Exception as e:
-            print(f"[Lucidic] Client not yet initialized, shutting down")
+        except LucidicNotInitializedError:
+            print("[Lucidic] Client not yet initialized, shutting down")
     finally:
         signal.signal(signal.SIGINT, original_handler)
         pass
