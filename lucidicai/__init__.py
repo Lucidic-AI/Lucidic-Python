@@ -101,18 +101,50 @@ def init(
     client.init_session()
 
 
-def end_session(is_finished: bool, session_eval: Optional[str] = None, session_eval_reason: Optional[str] = None, is_successful: Optional[bool] = None, is_successful_reason: Optional[str] = None) -> None:
+def update_session(
+    task: Optional[str] = None,
+    session_eval: Optional[int] = None,
+    session_eval_reason: Optional[str] = None,
+    is_successful: Optional[bool] = None,
+    is_successful_reason: Optional[str] = None
+) -> None:
+    """
+    Update the current session.
+    
+    Args:
+        task: Task description.
+        session_eval: Session evaluation.
+        session_eval_reason: Session evaluation reason.
+        is_successful: Whether the session was successful.
+        is_successful_reason: Session success reason.
+    """
+    client = Client()
+    if not client.session:
+        print("[Lucidic] Warning: update_session called when session not initialized. Please call lai.init() first.")
+        return
+    client.session.update_session(**locals())
+
+
+def end_session(
+    session_eval: Optional[int] = None,
+    session_eval_reason: Optional[str] = None,
+    is_successful: Optional[bool] = None,
+    is_successful_reason: Optional[str] = None
+) -> None:
     """
     End the current session.
     
     Args:
-        is_finished: Whether the session was finished.
+        session_eval: Session evaluation.
+        session_eval_reason: Session evaluation reason.
+        is_successful: Whether the session was successful.
+        is_successful_reason: Session success reason.
     """
     client = Client()
     if not client.session:
         print("[Lucidic] Warning: end_session called when session not initialized. Please call lai.init() first.")
         return
-    client.session.end_session(is_finished=is_finished, session_eval=session_eval, session_eval_reason=session_eval_reason, is_successful=is_successful, is_successful_reason=is_successful_reason)
+    client.session.end_session(is_finished=True, **locals())
     client.clear_session()
 
 
@@ -120,7 +152,7 @@ def reset() -> None:
     """
     Reset the client.
     """
-    end_session(True)
+    end_session()
     Client().reset()
 
 
@@ -405,7 +437,8 @@ def cleanup():
         print("[Lucidic] Cleanup: This should only take a few seconds...")
         try:
             client = Client()
-            end_session(True)
+            if client.session:
+                end_session()
         except LucidicNotInitializedError:
             print("[Lucidic] Client not yet initialized, shutting down")
     finally:

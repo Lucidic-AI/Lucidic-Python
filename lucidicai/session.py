@@ -31,6 +31,7 @@ class Session:
         self.is_successful_reason = None
         self.session_eval = None
         self.session_eval_reason = None
+        self.has_gif = None
         self.init_session()
 
     def init_session(self) -> None:
@@ -51,23 +52,17 @@ class Session:
     
     def update_session(
         self, 
-        is_finished: Optional[bool] = None,
-        task: Optional[str] = None, 
-        has_gif=False,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[str] = None,
-        session_eval_reason: Optional[str] = None
+        **kwargs
     ) -> None:
         from .client import Client
-        update_attrs = {k: v for k, v in locals().items() 
+        update_attrs = {k: v for k, v in kwargs.items() 
                        if k != 'self' and v is not None}
         self.__dict__.update(update_attrs)
         request_data = {
             "session_id": self.session_id,
             "is_finished": self.is_finished,
             "task": self.task,
-            "has_gif": has_gif,
+            "has_gif": self.has_gif,
             "is_successful": self.is_successful,
             "is_successful_reason": self.is_successful_reason,
             "session_eval": self.session_eval,
@@ -94,10 +89,9 @@ class Session:
         if 'is_finished' in kwargs and kwargs['is_finished']:
             self._active_step = None
 
-    def end_session(self, is_finished: bool = True, is_successful: Optional[bool] = None, is_successful_reason: Optional[str] = None, session_eval: Optional[str] = None, session_eval_reason: Optional[str] = None) -> bool:
+    def end_session(self, **kwargs) -> bool:
         if self._active_step:
             print("[Warning] Ending Lucidic session while current step is unfinished...")
-        self.is_finished = is_finished and True
         images_b64 = []
         events_b64 = [] # (event_id, nth screenshot, b64)
         for step in self.step_history:
@@ -118,4 +112,4 @@ class Session:
         for event_id, nthscreenshot, event_b64 in events_b64:
             presigned_url, bucket_name, object_key = get_presigned_url(self.agent_id, session_id=self.session_id, event_id=event_id, nthscreenshot=nthscreenshot)
             upload_image_to_s3(presigned_url, event_b64, "JPEG")
-        return self.update_session(is_finished=True, has_gif=has_gif, is_successful=is_successful, is_successful_reason=is_successful_reason, session_eval=session_eval, session_eval_reason=session_eval_reason)
+        return self.update_session(has_gif=has_gif, **kwargs)
