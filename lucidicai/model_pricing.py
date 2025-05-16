@@ -19,6 +19,19 @@ MODEL_PRICING = {
     "o1": {"input": 15.0, "output": 60.0},
     "o3-mini": {"input": 1.1, "output": 4.4},
     "o1-mini": {"input": 1.1, "output": 4.4},
+    "meta-llama/llama-4-maverick-17b-128e-instruct": {"input": 0.2, "output": 0.6},
+    "meta-llama/llama-4-scout-17b-16e-instruct": {"input": 0.11, "output": 0.34},
+    "meta-llama/llama-guard-4-12b-128k": {"input": 0.20, "output": 0.20},
+    "deepseek-ai/deepseek-r1-distill-llama-70b": {"input": 0.75, "output": 0.99},
+    "qwen/qwen-qwq-32b-preview-128k": {"input": 0.29, "output": 0.39},
+    "mistral/mistral-saba-24b": {"input": 0.79, "output": 0.79},
+    "meta-llama/llama-3.3-70b-versatile-128k": {"input": 0.59, "output": 0.79},
+    "meta-llama/llama-3.1-8b-instant-128k": {"input": 0.05, "output": 0.08},
+    "meta-llama/llama-3-70b-8k": {"input": 0.59, "output": 0.79},
+    "meta-llama/llama-3-8b-8k": {"input": 0.05, "output": 0.08},
+    "google/gemma-2-9b-8k": {"input": 0.20, "output": 0.20},
+    "meta-llama/llama-guard-3-8b-8k": {"input": 0.20, "output": 0.20}
+
 }
 
 def calculate_cost(model: str, token_usage: dict) -> float:
