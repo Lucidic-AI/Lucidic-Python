@@ -51,6 +51,13 @@ def upload_image_to_s3(url, image, format):
         image_stream = io.BytesIO(base64.b64decode(image))
         image_stream.seek(0)
         pil_image = Image.open(image_stream)
+        if pil_image.mode in ("RGBA", "LA"):  # TODO: Natively support PNGs
+            background = Image.new("RGB", pil_image.size, (255, 255, 255))
+            alpha = pil_image.split()[-1]
+            background.paste(pil_image, mask=alpha)
+            pil_image = background
+        else:
+            pil_image = pil_image.convert("RGB")
         image_obj = io.BytesIO()
         pil_image.save(image_obj, format="JPEG")
         image_obj.seek(0)
@@ -69,6 +76,6 @@ def screenshot_path_to_jpeg(screenshot_path):
     img = Image.open(screenshot_path)
     img = img.convert("RGB") 
     buffered = io.BytesIO()
-    img.save(buffered, format="JPEG")  # Save to BytesIO buffer
+    img.save(buffered, format="JPEG")
     img_byte = buffered.getvalue()
     return base64.b64encode(img_byte).decode('utf-8')
