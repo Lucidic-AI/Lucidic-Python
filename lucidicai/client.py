@@ -17,28 +17,17 @@ class Client:
         self,
         lucidic_api_key: str,
         agent_id: str,
-        session_name: str,
-        mass_sim_id: Optional[str] = None,
-        task: Optional[str] = None,
-        rubrics: Optional[list] = None
     ):
         self.base_url = "https://analytics.lucidic.ai/api" if not (os.getenv("LUCIDIC_DEBUG", 'False') == 'True') else "http://localhost:8000/api"
         self._initialized = False
         self._session = None
         self.api_key = None
         self.agent_id = None
-        self.session_name = None
-        self.mass_sim_id = None
-        self.task = None
         self._provider = None
         self.prompts = dict()
         self.configure(
             lucidic_api_key=lucidic_api_key,
             agent_id=agent_id,
-            session_name=session_name,
-            mass_sim_id=mass_sim_id,
-            task=task,
-            rubrics=rubrics
         )
     
     @property
@@ -62,10 +51,6 @@ class Client:
         self,
         lucidic_api_key: Optional[str] = None,
         agent_id: Optional[str] = None,
-        session_name: Optional[str] = None,
-        mass_sim_id: Optional[str] = None,
-        task: Optional[str] = None,
-        rubrics: Optional[list] = None
     ) -> None:
         self.api_key = lucidic_api_key
         try:
@@ -73,10 +58,6 @@ class Client:
         except APIKeyVerificationError as e:
             raise APIKeyVerificationError(str(e))
         self.agent_id = agent_id
-        self.session_name = session_name
-        self.mass_sim_id = mass_sim_id
-        self.task = task
-        self.rubrics = rubrics
         self._initialized = True
     
     def reset(self):
@@ -87,7 +68,7 @@ class Client:
         del self
 
     def verify_api_key(self, base_url: str, api_key: str) -> Tuple[str, str]:
-        data = self.make_request('verifyapikey', 'GET', {})
+        data = self.make_request('verifyapikey', 'GET', {})  # TODO: Verify against agent ID provided
         return data["project"], data["project_id"]
 
     def set_provider(self, provider: BaseProvider) -> None:
@@ -98,22 +79,29 @@ class Client:
         if self._session:
             self._provider.override()
     
-    def init_session(self) -> None:
-        if not self._initialized:
+    def init_session(
+        self,
+        session_name: str,
+        mass_sim_id: Optional[str] = None,
+        task: Optional[str] = None,
+        rubrics: Optional[list] = None
+    ) -> None:
+        if not self._initialized:  # TODO: unnecessary I think
             raise LucidicNotInitializedError()
-            
-        if not all([self.agent_id, self.session_name]):
-            raise InvalidOperationError("agent ID, and session name are required to initialize a session")
         
         self._session = Session(
             agent_id=self.agent_id,
-            session_name=self.session_name,
-            mass_sim_id=self.mass_sim_id,
-            task=self.task,
-            rubrics=self.rubrics
+            session_name=session_name,
+            mass_sim_id=mass_sim_id,
+            task=task,
+            rubrics=rubrics
         )
         if self._provider:
             self._provider.override()
+
+    def init_mass_sim(self, **kwargs) -> str:
+        kwargs['agent_id'] = self.agent_id
+        return self.make_request('initmasssim', 'POST', kwargs)['mass_sim_id']
 
     def get_prompt(self, prompt_name, cache_ttl, label) -> str:
         current_time = time.time()
@@ -143,13 +131,16 @@ class Client:
             "POST": lambda data: requests.post(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, json=data),
             "PUT": lambda data: requests.put(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, json=data),
             "DELETE": lambda data: requests.delete(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, params=data),
-        }
+        }  # TODO: make into enum
         data['current_time'] = datetime.now().astimezone(timezone.utc).isoformat()
         func = http_methods[method]
-        response = func(data)
+        response = func(data)  # TODO: retry logic on failure
         if response.status_code == 401:
             raise APIKeyVerificationError("Invalid API key: 401 Unauthorized")
         if response.status_code == 403:
-            raise APIKeyVerificationError("Invalid API key: 403 Forbidden")
-        response.raise_for_status()
+            raise APIKeyVerificationError(f"Invalid API key: 403 Forbidden")
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            raise InvalidOperationError(f"Request to Lucidic AI Backend failed: {e.response.text}")
         return response.json()

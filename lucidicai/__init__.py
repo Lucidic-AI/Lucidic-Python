@@ -69,11 +69,6 @@ def init(
         InvalidOperationError: If the client is already initialized.
         APIKeyVerificationError: If the API key is invalid.
     """
-    try:
-        client = Client()
-        raise InvalidOperationError("Lucidic client already initialized. Please call lai.reset() before reinitializing.")
-    except LucidicNotInitializedError:
-        pass
     if lucidic_api_key is None:
         lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
         if lucidic_api_key is None:
@@ -81,16 +76,17 @@ def init(
     if agent_id is None:
         agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
         if agent_id is None:
-            raise InvalidOperationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-
-    client = Client(
-        lucidic_api_key=lucidic_api_key,
-        agent_id=agent_id,
-        session_name=session_name,
-        mass_sim_id=mass_sim_id,
-        task=task,
-        rubrics=rubrics
-    )
+            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
+    try:
+        client = Client()
+        if client.session:
+            raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.reset() first.")
+    except LucidicNotInitializedError:
+        client = Client(
+            lucidic_api_key=lucidic_api_key,
+            agent_id=agent_id,
+        )
+    
     # Set up provider
     if provider == "openai":
         client.set_provider(OpenAIHandler(client))
@@ -98,7 +94,12 @@ def init(
         client.set_provider(AnthropicHandler(client))
     elif provider == "langchain":
         print(f"[Lucidic] For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
-    client.init_session()
+    client.init_session(
+        session_name=session_name,
+        mass_sim_id=mass_sim_id,
+        task=task,
+        rubrics=rubrics
+    )
 
 
 def update_session(
@@ -118,7 +119,7 @@ def update_session(
         is_successful: Whether the session was successful.
         is_successful_reason: Session success reason.
     """
-    client = Client()
+    client = Client()  # TODO: Fail silently if client not initialized yet
     if not client.session:
         print("[Lucidic] Warning: update_session called when session not initialized. Please call lai.init() first.")
         return
@@ -154,6 +155,46 @@ def reset() -> None:
     """
     end_session()
     Client().reset()
+
+
+def create_mass_sim(
+    mass_sim_name: str,
+    total_num_sessions: int,
+    lucidic_api_key: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    task: Optional[str] = None,
+) -> str:
+    """
+    Create a new mass simulation.
+    
+    Args:
+        mass_sim_name: Name of the mass simulation.
+        total_num_sessions: Total intended number of sessions. More sessions can be added later.
+        lucidic_api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
+        agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
+        task: Task description.
+    
+    Returns:
+        mass_sim_id: ID of the created mass simulation. Pass this to lai.init() to create a new session in the mass sim.
+    """
+    if lucidic_api_key is None:
+        lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
+        if lucidic_api_key is None:
+            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
+    if agent_id is None:
+        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
+        if agent_id is None:
+            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
+    try:
+        client = Client()
+    except LucidicNotInitializedError:
+        client = Client( # TODO: fail hard if incorrect API key or agent ID provided and wrong, fail silently if not provided
+            lucidic_api_key=lucidic_api_key,
+            agent_id=agent_id,
+        )
+    mass_sim_id = client.init_mass_sim(mass_sim_name=mass_sim_name, total_num_sims=total_num_sessions, task=task)  # TODO: change total_num_sims to total_num_sessions everywhere
+    print(f"[Lucidic] Created mass simulation with ID: {mass_sim_id}")
+    return mass_sim_id
 
 
 def create_step(
