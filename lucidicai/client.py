@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter, Retry
+from urllib3.util import Retry
+
 
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError
 from .providers.base_providers import BaseProvider
@@ -21,14 +24,25 @@ class Client:
         self.base_url = "https://analytics.lucidic.ai/api" if not (os.getenv("LUCIDIC_DEBUG", 'False') == 'True') else "http://localhost:8000/api"
         self._initialized = False
         self._session = None
-        self.api_key = None
-        self.agent_id = None
         self._provider = None
-        self.prompts = dict()
-        self.configure(
-            lucidic_api_key=lucidic_api_key,
-            agent_id=agent_id,
+        self.api_key = lucidic_api_key
+        self.agent_id = agent_id
+        self._initialized = True
+        self.request_session = requests.Session()
+        retry_cfg = Retry(
+            total=3,                     # 3 attempts in total
+            backoff_factor=0.5,          # exponential back-off: 0.5s, 1s, 2s …
+            status_forcelist=[502, 503, 504],
+            allowed_methods=["GET", "POST", "PUT", "DELETE"],
         )
+        adapter = HTTPAdapter(max_retries=retry_cfg, pool_connections=20, pool_maxsize=100)
+        self.request_session.mount("https://", adapter)
+        self.request_session.headers.update({"Authorization": f"Api-Key {self.api_key}", "User-Agent": "lucidic-sdk/1.1"})
+        self.prompts = dict()
+        try:
+            self.verify_api_key(self.base_url, lucidic_api_key)
+        except APIKeyVerificationError as e:
+            raise APIKeyVerificationError(str(e))
     
     @property
     def session(self) -> Optional[Session]:
@@ -38,19 +52,6 @@ class Client:
         if self._provider:
             self._provider.undo_override()
         self._session = None
-
-    def configure(
-        self,
-        lucidic_api_key: Optional[str] = None,
-        agent_id: Optional[str] = None,
-    ) -> None:
-        self.api_key = lucidic_api_key
-        try:
-            self.verify_api_key(self.base_url, lucidic_api_key)
-        except APIKeyVerificationError as e:
-            raise APIKeyVerificationError(str(e))
-        self.agent_id = agent_id
-        self._initialized = True
     
     def reset(self):
         clear_singletons()
@@ -116,10 +117,10 @@ class Client:
 
     def make_request(self, endpoint, method, data):
         http_methods = {
-            "GET": lambda data: requests.get(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, params=data),
-            "POST": lambda data: requests.post(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, json=data),
-            "PUT": lambda data: requests.put(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, json=data),
-            "DELETE": lambda data: requests.delete(f"{self.base_url}/{endpoint}", headers={"Authorization": f"Api-Key {self.api_key}"}, params=data),
+            "GET": lambda data: self.request_session.get(f"{self.base_url}/{endpoint}", params=data),
+            "POST": lambda data: self.request_session.post(f"{self.base_url}/{endpoint}", json=data),
+            "PUT": lambda data: self.request_session.put(f"{self.base_url}/{endpoint}", json=data),
+            "DELETE": lambda data: self.request_session.delete(f"{self.base_url}/{endpoint}", params=data),
         }  # TODO: make into enum
         data['current_time'] = datetime.now().astimezone(timezone.utc).isoformat()
         func = http_methods[method]

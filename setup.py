@@ -6,6 +6,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
+        "urllib3",
         "boto3",
         "python-dotenv",
         "langchain",
