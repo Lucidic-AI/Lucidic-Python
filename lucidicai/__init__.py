@@ -51,7 +51,8 @@ def init(
     task: Optional[str] = None,
     provider: Optional[ProviderType] = None,
     mass_sim_id: Optional[str] = None,
-    rubrics: Optional[list] = None
+    rubrics: Optional[list] = None,
+    tags: Optional[list] = None,
 ) -> None:
     """
     Initialize the Lucidic client.
@@ -64,6 +65,7 @@ def init(
         provider: Provider type ("openai", "anthropic", "langchain").
         mass_sim_id: Optional mass simulation ID, if session is to be part of a mass simulation.
         rubrics: Optional rubrics for evaluation, list of strings.
+        tags: Optional tags for the session, list of strings.
     
     Raises:
         InvalidOperationError: If the client is already initialized.
@@ -98,7 +100,8 @@ def init(
         session_name=session_name,
         mass_sim_id=mass_sim_id,
         task=task,
-        rubrics=rubrics
+        rubrics=rubrics,
+        tags=tags
     )
     print("[Lucidic] Session initialized successfully")
 
@@ -164,6 +167,7 @@ def create_mass_sim(
     lucidic_api_key: Optional[str] = None,
     agent_id: Optional[str] = None,
     task: Optional[str] = None,
+    tags: Optional[list] = None
 ) -> str:
     """
     Create a new mass simulation.
@@ -174,6 +178,7 @@ def create_mass_sim(
         lucidic_api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
         agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
         task: Task description.
+        tags: Tags for the mass simulation.
     
     Returns:
         mass_sim_id: ID of the created mass simulation. Pass this to lai.init() to create a new session in the mass sim.
@@ -193,7 +198,7 @@ def create_mass_sim(
             lucidic_api_key=lucidic_api_key,
             agent_id=agent_id,
         )
-    mass_sim_id = client.init_mass_sim(mass_sim_name=mass_sim_name, total_num_sims=total_num_sessions, task=task)  # TODO: change total_num_sims to total_num_sessions everywhere
+    mass_sim_id = client.init_mass_sim(mass_sim_name=mass_sim_name, total_num_sims=total_num_sessions, task=task, tags=tags)  # TODO: change total_num_sims to total_num_sessions everywhere
     print(f"[Lucidic] Created mass simulation with ID: {mass_sim_id}")
     return mass_sim_id
 

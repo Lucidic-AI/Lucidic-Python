@@ -74,7 +74,8 @@ class Client:
         session_name: str,
         mass_sim_id: Optional[str] = None,
         task: Optional[str] = None,
-        rubrics: Optional[list] = None
+        rubrics: Optional[list] = None,
+        tags: Optional[list] = None
     ) -> None:
         if not self._initialized:  # TODO: unnecessary I think
             raise LucidicNotInitializedError()
@@ -84,7 +85,8 @@ class Client:
             session_name=session_name,
             mass_sim_id=mass_sim_id,
             task=task,
-            rubrics=rubrics
+            rubrics=rubrics,
+            tags=tags
         )
         if self._provider:
             self._provider.override()

@@ -15,7 +15,8 @@ class Session:
         session_name: str, 
         mass_sim_id: Optional[str] = None, 
         task: Optional[str] = None,
-        rubrics: Optional[list] = None
+        rubrics: Optional[list] = None,
+        tags: Optional[list] = None
     ):
         self.agent_id = agent_id
         self.session_name = session_name
@@ -32,6 +33,7 @@ class Session:
         self.session_eval = None
         self.session_eval_reason = None
         self.has_gif = None
+        self.tags = tags
         self.init_session()
 
     def init_session(self) -> None:
@@ -41,7 +43,8 @@ class Session:
             "session_name": self.session_name,
             "task": self.task,
             "mass_sim_id": self.mass_sim_id,
-            "rubrics": self.rubrics
+            "rubrics": self.rubrics,
+            "tags": self.tags
         }
         data = Client().make_request('initsession', 'POST', request_data)
         self.session_id = data["session_id"]
@@ -66,7 +69,8 @@ class Session:
             "is_successful": self.is_successful,
             "is_successful_reason": self.is_successful_reason,
             "session_eval": self.session_eval,
-            "session_eval_reason": self.session_eval_reason
+            "session_eval_reason": self.session_eval_reason,
+            "tags": self.tags
         }
         Client().make_request('updatesession', 'PUT', request_data)
 
