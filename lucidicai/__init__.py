@@ -100,6 +100,7 @@ def init(
         task=task,
         rubrics=rubrics
     )
+    print("[Lucidic] Session initialized successfully")
 
 
 def update_session(
@@ -481,7 +482,7 @@ def cleanup():
             if client.session:
                 end_session()
         except LucidicNotInitializedError:
-            print("[Lucidic] Client not yet initialized, shutting down")
+            pass
     finally:
         signal.signal(signal.SIGINT, original_handler)
         pass

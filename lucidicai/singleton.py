@@ -13,5 +13,4 @@ def singleton(class_):
     return getinstance
 
 def clear_singletons():
-    global lai_inst
-    lai_inst = {}
+    lai_inst.clear()

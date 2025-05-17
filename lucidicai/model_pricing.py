@@ -36,7 +36,7 @@ MODEL_PRICING = {
 
 def calculate_cost(model: str, token_usage: dict) -> float:
     model_lower = model.lower()
-    model_lower = model_lower.replace("anthropic/", "").replace("openai/", "").replace("google/", "").replace("models/", "")
+    model_lower = model_lower.replace("anthropic/", "").replace("openai/", "").replace("google/", "").replace("models/", "").replace("chatgroq/", "")
     
     found_prefix = False
     for prefix in MODEL_PRICING.keys():

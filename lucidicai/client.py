@@ -38,14 +38,6 @@ class Client:
         if self._provider:
             self._provider.undo_override()
         self._session = None
-        
-    @property
-    def is_initialized(self) -> bool:
-        return self._initialized
-        
-    @property
-    def has_session(self) -> bool:
-        return self._session is not None
 
     def configure(
         self,
@@ -61,9 +53,6 @@ class Client:
         self._initialized = True
     
     def reset(self):
-        if self.session:
-            self.session.end_session()
-            self.clear_session()
         clear_singletons()
         del self
 
