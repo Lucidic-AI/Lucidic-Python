@@ -14,6 +14,9 @@ from .session import Session
 from .singleton import singleton, clear_singletons
 
 
+NETWORK_RETRIES = 3
+
+
 @singleton
 class Client:
     def __init__(
@@ -126,7 +129,12 @@ class Client:
         }  # TODO: make into enum
         data['current_time'] = datetime.now().astimezone(timezone.utc).isoformat()
         func = http_methods[method]
-        response = func(data)  # TODO: retry logic on failure
+        for _ in range(NETWORK_RETRIES):
+            try:
+                response = func(data)
+                break
+            except Exception:
+                pass
         if response.status_code == 401:
             raise APIKeyVerificationError("Invalid API key: 401 Unauthorized")
         if response.status_code == 403:
