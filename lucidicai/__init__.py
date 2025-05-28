@@ -108,7 +108,7 @@ def init(
 
 def update_session(
     task: Optional[str] = None,
-    session_eval: Optional[int] = None,
+    session_eval: Optional[float] = None,
     session_eval_reason: Optional[str] = None,
     is_successful: Optional[bool] = None,
     is_successful_reason: Optional[str] = None
@@ -131,7 +131,7 @@ def update_session(
 
 
 def end_session(
-    session_eval: Optional[int] = None,
+    session_eval: Optional[float] = None,
     session_eval_reason: Optional[str] = None,
     is_successful: Optional[bool] = None,
     is_successful_reason: Optional[str] = None
