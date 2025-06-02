@@ -21,13 +21,18 @@ class OpenAIHandler(BaseProvider):
                 content = msg.get('content', '')
                 out = []
                 images = []
-                for content_piece in content:
-                    if content_piece.get('type') == 'text':
-                        out.append(content_piece)
-                    elif content_piece.get('type') == 'image_url':
-                        image_str = content_piece.get('image_url').get('url')
-                        images.append(image_str[image_str.find(',') + 1:])
-            return out, images
+                if isinstance(content, list):
+                    for content_piece in content:
+                        if content_piece.get('type') == 'text':
+                            out.append(content_piece)
+                        elif content_piece.get('type') == 'image_url':
+                            image_str = content_piece.get('image_url').get('url')
+                            images.append(image_str[image_str.find(',') + 1:])
+                        elif content_piece.get('type') == 'output_text':
+                            out.append(content_piece)
+                elif isinstance(content, str):
+                    out.append(content)
+                return out, images
         
         return str(messages)
 
