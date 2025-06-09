@@ -29,10 +29,10 @@ class AnthropicHandler(BaseProvider):
                 for piece in content:
                     if piece.get("type") == "text":
                         descriptions.append(piece.get("text", ""))
-                    elif piece.get("type") == "image_url":
-                        url = piece.get("image_url", {}).get("url")
-                        if url:
-                            screenshots.append(url)
+                    elif piece.get("type") == "image":
+                        img = piece.get("image", {}).get("data")
+                        if img:
+                            screenshots.append(img)
             elif isinstance(content, str):
                 descriptions.append(content)
 
