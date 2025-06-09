@@ -40,6 +40,11 @@ class AnthropicHandler(BaseProvider):
 
     def handle_response(self, response, kwargs, event = None):
 
+        print("handling response")
+
+        if not event:
+            return response
+
         # for synchronous streaming responses
         if isinstance(response, Stream):
             return self._handle_stream_response(response, kwargs, event)
@@ -142,11 +147,12 @@ class AnthropicHandler(BaseProvider):
             if hasattr(response, "usage"):
                 cost = response.usage.input_tokens + response.usage.output_tokens
 
-            event.update_event(result=response_text)
-            event.finish_event(
+            event.update_event(
+                result=response_text,
+                is_finished=True,
                 is_successful=True,
                 cost_added=cost,
-                model=getattr(response, "model", kwargs.get("model"))
+                model=getattr(response, "model", kwargs.get("model")),
             )
 
         except Exception as e:
@@ -164,55 +170,60 @@ class AnthropicHandler(BaseProvider):
 
     def override(self):
 
-        # sync
-        self.original_create = Anthropic().messages.create
-        def patched_create(*args, **kwargs):
 
-            step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
-            description, images = self._format_messages(kwargs.get("messages", []))
-            event = None
+        if isinstance(self.client, Anthropic):
+            self.original_create = Anthropic().messages.create
+            # sync
+            def patched_create(*args, **kwargs):
 
-            if step:
-                event = step.create_event(
-                    description=description,
-                    result="Waiting for response...",
-                    screenshots=images
-                )
+                print("patching - sync")
 
-            result = self.original_create(*args, **kwargs)
-            return self.handle_response(result, kwargs, event)
-        
-        Anthropic().messages.create = patched_create
+                step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
+                description, images = self._format_messages(kwargs.get("messages", []))
+                event = None
 
-        self.original_create_async = AsyncAnthropic().messages.create
+                if step:
+                    event = step.create_event(
+                        description=description,
+                        result="Waiting for response...",
+                        screenshots=images
+                    )
 
-        # async
-        self.original_create_async = AsyncAnthropic().messages.create
-        async def patched_create_async(*args, **kwargs):
+                result = self.original_create(*args, **kwargs)
+                return self.handle_response(result, kwargs, event)
+            
+            Anthropic().messages.create = patched_create
 
-            step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
-            description, images = self._format_messages(kwargs.get("messages", []))
-            event = None
+        elif isinstance(self.client, AsyncAnthropic):
+            self.original_create = AsyncAnthropic().messages.create
+            # async
+            async def patched_create_async(*args, **kwargs):
 
-            if step:
-                event = step.create_event(
-                    description=description,
-                    result="Waiting for response...",
-                    screenshots=images
-                )
+                print("patching - async")
 
-            result = await self.original_create_async(*args, **kwargs)
-            return self.handle_response(result, kwargs, event)
-        
-        AsyncAnthropic.messages.create = patched_create_async
+                step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
+                description, images = self._format_messages(kwargs.get("messages", []))
+                event = None
+
+                if step:
+                    event = step.create_event(
+                        description=description,
+                        result="Waiting for response...",
+                        screenshots=images
+                    )
+
+                result = await self.original_create_async(*args, **kwargs)
+                return self.handle_response(result, kwargs, event)
+            
+            AsyncAnthropic().messages.create = patched_create_async
 
 
     def undo_override(self):
 
         if self.original_create:
-            Anthropic().messages.create = self.original_create
+            self.client.messages.create = self.original_create
             self.original_create = None
             
         if self.original_create_async:
-            AsyncAnthropic().messages.create = self.original_create_async
+            self.client.messages.create = self.original_create_async
             self.original_create_async = None
