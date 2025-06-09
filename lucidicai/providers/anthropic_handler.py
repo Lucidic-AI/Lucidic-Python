@@ -1,10 +1,9 @@
-from typing import Optional
+from typing import Optional, Tuple, List
 
 from .base_providers import BaseProvider
 from lucidicai.singleton import singleton
 
-from anthropic import AsyncStream, Stream
-from anthropic import Anthropic, AsyncAnthropic
+from anthropic import Anthropic, AsyncAnthropic, Stream, AsyncStream
 
 
 @singleton
@@ -15,6 +14,29 @@ class AnthropicHandler(BaseProvider):
         self.original_create = None
         self.original_create_async = None
 
+    def _format_messages(self, messages) -> Tuple[str, List[str]]:
+        """
+        Extract plain-text description and list of image URLs from Anthropic-formatted messages.
+        """
+        descriptions: List[str] = []
+        screenshots: List[str] = []
+        if not messages:
+            return "", []
+
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for piece in content:
+                    if piece.get("type") == "text":
+                        descriptions.append(piece.get("text", ""))
+                    elif piece.get("type") == "image_url":
+                        url = piece.get("image_url", {}).get("url")
+                        if url:
+                            screenshots.append(url)
+            elif isinstance(content, str):
+                descriptions.append(content)
+
+        return " ".join(descriptions), screenshots
 
     def handle_response(self, response, kwargs, event = None):
 
@@ -108,13 +130,13 @@ class AnthropicHandler(BaseProvider):
     def _handle_regular_response(self, response, kwargs, event):
 
         try:
-            response_text = (
-                response.content[0].text
-                if hasattr(response, "content") and response.content
-                else str(response)
-            )
-            
-            # capture token counts
+            # extract text
+            if hasattr(response, "content") and response.content:
+                response_text = response.content[0].text
+            else:
+                response_text = str(response)
+
+            # calculate token-based cost
             cost = None
 
             if hasattr(response, "usage"):
@@ -147,12 +169,14 @@ class AnthropicHandler(BaseProvider):
         def patched_create(*args, **kwargs):
 
             step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
+            description, images = self._format_messages(kwargs.get("messages", []))
             event = None
 
             if step:
                 event = step.create_event(
-                    description=str(kwargs.get("messages", "")),
-                    result="Waiting for response..."
+                    description=description,
+                    result="Waiting for response...",
+                    screenshots=images
                 )
 
             result = self.original_create(*args, **kwargs)
@@ -167,12 +191,14 @@ class AnthropicHandler(BaseProvider):
         async def patched_create_async(*args, **kwargs):
 
             step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
+            description, images = self._format_messages(kwargs.get("messages", []))
             event = None
 
             if step:
                 event = step.create_event(
-                    description=str(kwargs.get("messages", "")),
-                    result="Waiting for response..."
+                    description=description,
+                    result="Waiting for response...",
+                    screenshots=images
                 )
 
             result = await self.original_create_async(*args, **kwargs)
@@ -184,9 +210,9 @@ class AnthropicHandler(BaseProvider):
     def undo_override(self):
 
         if self.original_create:
-            Anthropic.messages.create = self.original_create
+            Anthropic().messages.create = self.original_create
             self.original_create = None
             
         if self.original_create_async:
-            AsyncAnthropic.messages.create = self.original_create_async
+            AsyncAnthropic().messages.create = self.original_create_async
             self.original_create_async = None
