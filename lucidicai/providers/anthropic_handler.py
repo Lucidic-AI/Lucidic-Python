@@ -3,6 +3,10 @@ from typing import Optional
 from .base_providers import BaseProvider
 from lucidicai.singleton import singleton
 
+from anthropic import AsyncStream, Stream
+from anthropic import Anthropic, AsyncAnthropic
+
+
 @singleton
 class AnthropicHandler(BaseProvider):
     def __init__(self, client):
@@ -10,115 +14,179 @@ class AnthropicHandler(BaseProvider):
         self._provider_name = "Anthropic"
         self.original_create = None
         self.original_create_async = None
-    
-    def handle_response(self, response, kwargs, step = None):
-        """Handle responses for Anthropic"""
-        import anthropic
-        from anthropic import AsyncStream, Stream
+
+
+    def handle_response(self, response, kwargs, event = None):
+
+        # for synchronous streaming responses
+        if isinstance(response, Stream):
+            return self._handle_stream_response(response, kwargs, event)
         
-        # For streaming responses
-        if isinstance(response, (AsyncStream, Stream)):
-            input_messages = kwargs.get('messages', '')
-            event = step.create_event(
-                description=str(input_messages),
-                result=None
-            )
-            
-            accumulated_response = ""
-            
-            # For synchronous streams
-            if isinstance(response, Stream):
+        # for async streaming responses -- added new
+        if isinstance(response, AsyncStream):
+            return self._handle_async_stream_response(response, kwargs, event)
+        
+        # for non streaming responses
+        return self._handle_regular_response(response, kwargs, event)
+    
+    def _handle_stream_response(self, response: Stream, kwargs, event):
+
+        accumulated_reponse = ""
+
+        def generate():
+
+            nonlocal accumulated_reponse
+
+            try:
                 for chunk in response:
-                    try:
-                        if chunk.type == "message_start":
-                            continue
-                        elif chunk.type == "content_block_start":
-                            if chunk.content_block.type == "text":
-                                accumulated_response += chunk.content_block.text
-                        elif chunk.type == "content_block_delta":
-                            if chunk.delta.type == "text_delta":
-                                accumulated_response += chunk.delta.text
-                    except Exception as e:
-                        event.update_event(
-                            is_finished=True,
-                            result=accumulated_response,
-                            is_successful=False,
-                            cost_added=None,
-                            model=kwargs.get('model')
-                        )
-                        raise
-            
-            # Update final response before finishing
-            event.update_event(result=accumulated_response)
-            event.finish_event(
-                is_successful=True,
-                cost_added=None,  # Streaming doesn't provide token count
-                model=kwargs.get('model')
-            )
-            
-            return response
-            
-        # For non-streaming responses
-        try:
-            input_messages = kwargs.get('messages', '')
-            event = step.create_event(
-                description=str(input_messages),
-                result=None
-            )
-            
-            # Extract and update response text
-            if hasattr(response, 'content'):
-                response_text = response.content[0].text
-            else:
-                response_text = str(response)
-            
-            event.update_event(result=response_text)
-            
-            # Calculate token count if available
-            token_count = None
-            if hasattr(response, 'usage'):
-                token_count = response.usage.input_tokens + response.usage.output_tokens
-            
-            # Finish event with metadata
-            event.finish_event(
-                is_successful=True,
-                cost_added=token_count,
-                model=response.model if hasattr(response, 'model') else kwargs.get('model')
-            )
-            
-        except Exception as e:
-            if step:
-                # Try to update with error message if we fail
+                    if chunk.type == "content_block_start" and chunk.content_block.type == "text":
+                        accumulated_reponse += chunk.content_block.text
+                    elif chunk.type == "content_block_delta" and chunk.delta.type == "text_delta":
+                        accumulated_reponse += chunk.delta.text
+                    yield chunk
+
+                event.update_event(
+                    is_finished=True,
+                    is_successful=True,
+                    cost_added=None,
+                    model=kwargs.get("model"),
+                    result=accumulated_reponse
+                )
+
+            except Exception as e:
                 event.update_event(
                     is_finished=True,
                     result=f"anthropic Error: {str(e)}",
                     is_successful=False,
                     cost_added=None,
-                    model=kwargs.get('model')
+                    model=kwargs.get("model"),
                 )
+                
+                raise
+
+        return generate()
+    
+    def _handle_async_stream_response(self, response: AsyncStream, kwargs, event):
+
+        accumulated_reponse = ""
+
+        async def agenerate():
+
+            nonlocal accumulated_reponse
+
+            try:
+                async for chunk in response:
+                    if chunk.type == "content_block_start" and chunk.content_block.type == "text":
+                        accumulated_reponse += chunk.content_block.text
+                    elif chunk.type == "content_block_delta" and chunk.delta.type == "text_delta":
+                        accumulated_reponse += chunk.delta.text
+                    yield chunk
+
+                event.update_event(
+                    is_finished=True,
+                    is_successful=True,
+                    cost_added=None,
+                    model=kwargs.get("model"),
+                    result=accumulated_reponse
+                )
+
+            except Exception as e:
+
+                event.update_event(
+                    is_finished=True,
+                    result=f"anthropic Error: {str(e)}",
+                    is_successful=False,
+                    cost_added=None,
+                    model=kwargs.get("model"),
+                )
+
+                raise
+            
+        return agenerate()
+    
+
+    def _handle_regular_response(self, response, kwargs, event):
+
+        try:
+            response_text = (
+                response.content[0].text
+                if hasattr(response, "content") and response.content
+                else str(response)
+            )
+            
+            # capture token counts
+            cost = None
+
+            if hasattr(response, "usage"):
+                cost = response.usage.input_tokens + response.usage.output_tokens
+
+            event.update_event(result=response_text)
+            event.finish_event(
+                is_successful=True,
+                cost_added=cost,
+                model=getattr(response, "model", kwargs.get("model"))
+            )
+
+        except Exception as e:
+            event.update_event(
+                is_finished=True,
+                is_successful=False,
+                cost_added=None,
+                model=kwargs.get("model"),
+                result=f"Error processing response: {e}"
+            )
+
             raise
-        
+
         return response
 
     def override(self):
-        import anthropic
-        
-        # Store original methods
-        self.original_create = anthropic.messages.Messages.create
-        
-        def patched_function(*args, **kwargs):
-            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
-            if not step:
-                return self.original_create(*args, **kwargs)
-            
+
+        # sync
+        self.original_create = Anthropic().messages.create
+        def patched_create(*args, **kwargs):
+
+            step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
+            event = None
+
+            if step:
+                event = step.create_event(
+                    description=str(kwargs.get("messages", "")),
+                    result="Waiting for response..."
+                )
+
             result = self.original_create(*args, **kwargs)
-            return self.handle_response(result, kwargs, step=step)
-            
-        # Override the methods
-        anthropic.messages.Messages.create = patched_function
+            return self.handle_response(result, kwargs, event)
+        
+        Anthropic().messages.create = patched_create
+
+        self.original_create_async = AsyncAnthropic().messages.create
+
+        # async
+        self.original_create_async = AsyncAnthropic().messages.create
+        async def patched_create_async(*args, **kwargs):
+
+            step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
+            event = None
+
+            if step:
+                event = step.create_event(
+                    description=str(kwargs.get("messages", "")),
+                    result="Waiting for response..."
+                )
+
+            result = await self.original_create_async(*args, **kwargs)
+            return self.handle_response(result, kwargs, event)
+        
+        AsyncAnthropic.messages.create = patched_create_async
+
 
     def undo_override(self):
+
         if self.original_create:
-            import anthropic
-            anthropic.messages.Messages.create = self.original_create
+            Anthropic.messages.create = self.original_create
             self.original_create = None
+            
+        if self.original_create_async:
+            AsyncAnthropic.messages.create = self.original_create_async
+            self.original_create_async = None
