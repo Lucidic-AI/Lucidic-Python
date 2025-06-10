@@ -7,6 +7,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResult
 
+from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
 from langchain_core.load.dump import dumps
 import json
@@ -61,8 +62,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                 images.append(prompt['image'])
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot create event - no active session or step")
             return
@@ -113,7 +112,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
 
 
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot create event - no active session or step")
             return
@@ -158,7 +156,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             cost = calculate_cost(model, usage)
         
         # Make sure we have a valid session
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
@@ -207,7 +204,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         model = self.run_to_model.get(run_str, "unknown")
         
         # Make sure we have a valid session
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
@@ -263,7 +259,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
 
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot create event - no active session or step")
             return
@@ -281,7 +276,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
@@ -314,7 +308,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
@@ -341,7 +334,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         description = f"Tool Call ({tool_name}): {input_str[:100]}..."
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot create event - no active session or step")
             return
@@ -361,7 +353,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
@@ -390,7 +381,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
@@ -416,7 +406,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         description = f"Retriever ({retriever_type}): {query[:100]}..."
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot create event - no active session or step")
             return
@@ -436,7 +425,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
@@ -472,7 +460,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
@@ -498,7 +485,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         description = f"Agent Action: {tool}"
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot create event - no active session or step")
             return
@@ -543,7 +529,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
 
         
         # Make sure we have a valid session and step
-        from lucidicai.client import Client
         if not (Client().session and Client().session.active_step):
             print(f"[Lucidic] Cannot end event - no active session or step")
             return
