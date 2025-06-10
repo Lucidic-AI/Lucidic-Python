@@ -2,6 +2,7 @@ from typing import Optional, Tuple, List
 
 from .base_providers import BaseProvider
 from lucidicai.singleton import singleton
+from lucidicai.model_pricing import calculate_cost
 
 from anthropic import Anthropic, AsyncAnthropic, Stream, AsyncStream
 
@@ -13,11 +14,13 @@ class AnthropicHandler(BaseProvider):
         self._provider_name = "Anthropic"
         self.original_create = None
         self.original_create_async = None
+        print("AnthropicHandler initialized")
 
     def _format_messages(self, messages) -> Tuple[str, List[str]]:
         """
         Extract plain-text description and list of image URLs from Anthropic-formatted messages.
         """
+        print("formatting messages")
         descriptions: List[str] = []
         screenshots: List[str] = []
         if not messages:
@@ -30,7 +33,9 @@ class AnthropicHandler(BaseProvider):
                     if piece.get("type") == "text":
                         descriptions.append(piece.get("text", ""))
                     elif piece.get("type") == "image":
-                        img = piece.get("image", {}).get("data")
+                        # Fix: Anthropic uses "source" instead of "image"
+                        source = piece.get("source", {})
+                        img = source.get("data")
                         if img:
                             screenshots.append(img)
             elif isinstance(content, str):
@@ -59,10 +64,13 @@ class AnthropicHandler(BaseProvider):
     def _handle_stream_response(self, response: Stream, kwargs, event):
 
         accumulated_reponse = ""
+        input_tokens = 0
+        output_tokens = 0
+        print("streaming response")
 
         def generate():
 
-            nonlocal accumulated_reponse
+            nonlocal accumulated_reponse, input_tokens, output_tokens
 
             try:
                 for chunk in response:
@@ -70,15 +78,29 @@ class AnthropicHandler(BaseProvider):
                         accumulated_reponse += chunk.content_block.text
                     elif chunk.type == "content_block_delta" and chunk.delta.type == "text_delta":
                         accumulated_reponse += chunk.delta.text
-                    yield chunk
+                    elif chunk.type == "message_start" and hasattr(chunk, "message") and hasattr(chunk.message, "usage"):
+                        input_tokens = chunk.message.usage.input_tokens
+                    elif chunk.type == "message_delta" and hasattr(chunk, "delta") and hasattr(chunk.delta, "usage"):
+                        output_tokens = chunk.delta.usage.output_tokens
+                    elif chunk.type == "message_stop":
+                        # Calculate cost on final chunk
+                        cost = None
+                        if input_tokens > 0 or output_tokens > 0:
+                            model = kwargs.get("model")
+                            cost = calculate_cost(model, {
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens
+                            })
 
-                event.update_event(
-                    is_finished=True,
-                    is_successful=True,
-                    cost_added=None,
-                    model=kwargs.get("model"),
-                    result=accumulated_reponse
-                )
+                        event.update_event(
+                            is_finished=True,
+                            is_successful=True,
+                            cost_added=cost,
+                            model=kwargs.get("model"),
+                            result=accumulated_reponse
+                        )
+                    
+                    yield chunk
 
             except Exception as e:
                 event.update_event(
@@ -96,10 +118,12 @@ class AnthropicHandler(BaseProvider):
     def _handle_async_stream_response(self, response: AsyncStream, kwargs, event):
 
         accumulated_reponse = ""
+        input_tokens = 0
+        output_tokens = 0
 
         async def agenerate():
 
-            nonlocal accumulated_reponse
+            nonlocal accumulated_reponse, input_tokens, output_tokens
 
             try:
                 async for chunk in response:
@@ -107,15 +131,29 @@ class AnthropicHandler(BaseProvider):
                         accumulated_reponse += chunk.content_block.text
                     elif chunk.type == "content_block_delta" and chunk.delta.type == "text_delta":
                         accumulated_reponse += chunk.delta.text
-                    yield chunk
+                    elif chunk.type == "message_start" and hasattr(chunk, "message") and hasattr(chunk.message, "usage"):
+                        input_tokens = chunk.message.usage.input_tokens
+                    elif chunk.type == "message_delta" and hasattr(chunk, "delta") and hasattr(chunk.delta, "usage"):
+                        output_tokens = chunk.delta.usage.output_tokens
+                    elif chunk.type == "message_stop":
+                        # Calculate cost on final chunk
+                        cost = None
+                        if input_tokens > 0 or output_tokens > 0:
+                            model = kwargs.get("model")
+                            cost = calculate_cost(model, {
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens
+                            })
 
-                event.update_event(
-                    is_finished=True,
-                    is_successful=True,
-                    cost_added=None,
-                    model=kwargs.get("model"),
-                    result=accumulated_reponse
-                )
+                        event.update_event(
+                            is_finished=True,
+                            is_successful=True,
+                            cost_added=cost,
+                            model=kwargs.get("model"),
+                            result=accumulated_reponse
+                        )
+                    
+                    yield chunk
 
             except Exception as e:
 
@@ -141,11 +179,14 @@ class AnthropicHandler(BaseProvider):
             else:
                 response_text = str(response)
 
-            # calculate token-based cost
             cost = None
 
             if hasattr(response, "usage"):
-                cost = response.usage.input_tokens + response.usage.output_tokens
+                model = getattr(response, "model", kwargs.get("model"))
+                cost = calculate_cost(model, {
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens
+                })
 
             event.update_event(
                 result=response_text,
@@ -169,61 +210,57 @@ class AnthropicHandler(BaseProvider):
         return response
 
     def override(self):
-
-
-        if isinstance(self.client, Anthropic):
-            self.original_create = Anthropic().messages.create
-            # sync
-            def patched_create(*args, **kwargs):
-
-                print("patching - sync")
-
-                step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
-                description, images = self._format_messages(kwargs.get("messages", []))
-                event = None
-
-                if step:
-                    event = step.create_event(
-                        description=description,
-                        result="Waiting for response...",
-                        screenshots=images
-                    )
-
-                result = self.original_create(*args, **kwargs)
-                return self.handle_response(result, kwargs, event)
+        from anthropic.resources.messages import messages
+        from anthropic.resources.messages.messages import AsyncMessages
+        
+        self.original_create = messages.Messages.create
+        self.original_create_async = AsyncMessages.create
+        
+        def patched_create(*args, **kwargs):
+            print("patching - sync")
             
-            Anthropic().messages.create = patched_create
-
-        elif isinstance(self.client, AsyncAnthropic):
-            self.original_create = AsyncAnthropic().messages.create
-            # async
-            async def patched_create_async(*args, **kwargs):
-
-                print("patching - async")
-
-                step = kwargs.pop("step", getattr(self.client.session, "active_step", None))
-                description, images = self._format_messages(kwargs.get("messages", []))
-                event = None
-
-                if step:
-                    event = step.create_event(
-                        description=description,
-                        result="Waiting for response...",
-                        screenshots=images
-                    )
-
-                result = await self.original_create_async(*args, **kwargs)
-                return self.handle_response(result, kwargs, event)
+            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+            description, images = self._format_messages(kwargs.get("messages", []))
+            event = None
             
-            AsyncAnthropic().messages.create = patched_create_async
+            if step:
+                event = step.create_event(
+                    description=description,
+                    result="Waiting for response...",
+                    screenshots=images
+                )
+            
+            result = self.original_create(*args, **kwargs)
+            return self.handle_response(result, kwargs, event)
+        
+        async def patched_create_async(*args, **kwargs):
+            print("patching - async")
+            
+            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+            description, images = self._format_messages(kwargs.get("messages", []))
+            event = None
+            
+            if step:
+                event = step.create_event(
+                    description=description,
+                    result="Waiting for response...",
+                    screenshots=images
+                )
+            
+            result = await self.original_create_async(*args, **kwargs)
+            return self.handle_response(result, kwargs, event)
+        
+        messages.Messages.create = patched_create
+        AsyncMessages.create = patched_create_async
 
 
     def undo_override(self):
-
         if self.original_create:
-            self.client.messages.create = self.original_create
+            from anthropic.resources.messages import messages
+            messages.Messages.create = self.original_create
             self.original_create = None
             
         if self.original_create_async:
-            self.client.messages.create = self.original_create_async
+            from anthropic.resources.messages.messages import AsyncMessages
+            AsyncMessages.create = self.original_create_async
             self.original_create_async = None

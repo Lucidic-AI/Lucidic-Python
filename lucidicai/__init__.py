@@ -10,11 +10,12 @@ from .event import Event
 from .providers.anthropic_handler import AnthropicHandler
 from .providers.langchain import LucidicLangchainHandler
 from .providers.openai_handler import OpenAIHandler
+from .providers.pydantic_ai_handler import PydanticAIHandler
 from .session import Session
 from .state import State
 from .step import Step
 
-ProviderType = Literal["openai", "anthropic", "langchain"]
+ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai"]
 
 __all__ = [
     'Client',
@@ -40,7 +41,8 @@ __all__ = [
     'InvalidOperationError',
     'LucidicLangchainHandler',
     'AnthropicHandler',
-    'OpenAIHandler'
+    'OpenAIHandler',
+    'PydanticAIHandler'
 ]
 
 
@@ -62,7 +64,7 @@ def init(
         lucidic_api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
         agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
         task: Task description.
-        provider: Provider type ("openai", "anthropic", "langchain").
+        provider: Provider type ("openai", "anthropic", "langchain", "pydantic_ai").
         mass_sim_id: Optional mass simulation ID, if session is to be part of a mass simulation.
         rubrics: Optional rubrics for evaluation, list of strings.
         tags: Optional tags for the session, list of strings.
@@ -96,6 +98,8 @@ def init(
         client.set_provider(AnthropicHandler(client))
     elif provider == "langchain":
         print(f"[Lucidic] For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
+    elif provider == "pydantic_ai":
+        client.set_provider(PydanticAIHandler(client))
     client.init_session(
         session_name=session_name,
         mass_sim_id=mass_sim_id,

@@ -72,6 +72,13 @@ class Client:
         if self._session:
             self._provider.override()
     
+    def track_pydantic_ai(self):
+        """Initialize PydanticAI tracking"""
+        from .providers.pydantic_ai_handler import PydanticAIHandler
+        handler = PydanticAIHandler(self)
+        self.set_provider(handler)
+        return handler
+    
     def init_session(
         self,
         session_name: str,
