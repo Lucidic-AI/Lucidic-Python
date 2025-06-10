@@ -56,15 +56,23 @@ class OpenAIHandler(BaseProvider):
                         delta = chunk.choices[0].delta
                         if hasattr(delta, 'content') and delta.content:
                             accumulated_response += delta.content
+                    
+                    # Handle final chunk with usage information
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        cost = None
+                        model = kwargs.get('model')
+                        cost = calculate_cost(model, dict(chunk.usage))
+                        
+                        event.update_event(
+                            is_finished=True,
+                            is_successful=True,
+                            cost_added=cost,
+                            model=model,
+                            result=accumulated_response
+                        )
+                    
                     yield chunk
-                
-                event.update_event(
-                    is_finished=True,
-                    is_successful=True,
-                    cost_added=None,
-                    model=kwargs.get('model'),
-                    result=accumulated_response
-                )
+                    
             except Exception as e:
                 event.update_event(
                     is_finished=True,
@@ -115,6 +123,11 @@ class OpenAIHandler(BaseProvider):
         
         def patched_function(*args, **kwargs):
             step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+            
+            # Add stream_options for usage tracking if streaming is enabled
+            if kwargs.get('stream', False) and 'stream_options' not in kwargs:
+                kwargs['stream_options'] = {"include_usage": True}
+            
             # Create event before API call
             if step:
                 description, images = self._format_messages(kwargs.get('messages', ''))

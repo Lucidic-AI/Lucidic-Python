@@ -7,7 +7,7 @@ class BaseProvider(ABC):
         self._provider_name = None
     
     @abstractmethod
-    def handle_response(self, response, kwargs, session: Optional['Session'] = None):
+    def handle_response(self, response, kwargs, session: Optional = None):
         """Handle responses from the LLM provider"""
         pass
         
