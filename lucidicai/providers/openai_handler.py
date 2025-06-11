@@ -54,7 +54,8 @@ class OpenAIHandler(BaseProvider):
             try:
                 for chunk in response:
                     # Add null checks for Anthropic compatibility
-                    if hasattr(chunk, 'choices') and chunk.choices is not None and len(chunk.choices) > 0:
+                    if (hasattr(chunk, 'choices') and chunk.choices is not None and 
+                        len(chunk.choices) > 0):
                         delta = chunk.choices[0].delta
                         if hasattr(delta, 'content') and delta.content:
                             accumulated_response += delta.content
@@ -171,7 +172,10 @@ class OpenAIHandler(BaseProvider):
                     result="Waiting for structured response...",
                     screenshots=images
                 )
-                
+            
+            # Check if we're using Anthropic base URL and handle differently
+            if self._is_using_anthropic_base_url(args, kwargs):
+                return self._handle_anthropic_parse(*args, **kwargs, event=event)
             
             # Make API call
             result = self.original_parse(*args, **kwargs)
@@ -180,6 +184,97 @@ class OpenAIHandler(BaseProvider):
         # Apply patches
         completions.Completions.create = patched_create_function
         beta_completions.Completions.parse = patched_parse_function
+
+    def _is_using_anthropic_base_url(self, args, kwargs):
+        """Check if we're using Anthropic base URL by inspecting the client"""
+        try:
+            # Try to get the client from args (it's usually the first argument)
+            if args and hasattr(args[0], '_client'):
+                client = args[0]._client
+                if hasattr(client, 'base_url') and 'anthropic.com' in str(client.base_url):
+                    return True
+            return False
+        except:
+            return False
+    
+    def _handle_anthropic_parse(self, *args, **kwargs):
+        """Handle structured output for Anthropic base URL by using regular completion + JSON parsing"""
+        import json
+        import re
+        
+        # Get the response format (Pydantic model)
+        response_format = kwargs.get('response_format')
+        event = kwargs.pop('event', None)
+        
+        if not response_format:
+            # Fall back to regular parse if no format specified
+            result = self.original_parse(*args, **kwargs)
+            return self.handle_response(result, kwargs, event=event)
+        
+        # Modify the messages to request JSON output
+        modified_kwargs = kwargs.copy()
+        messages = modified_kwargs.get('messages', [])
+        
+        # Add instruction for JSON output
+        json_instruction = f"\n\nPlease respond with valid JSON that matches this schema: {response_format.model_json_schema()}\nRespond ONLY with valid JSON, no other text."
+        
+        if messages and len(messages) > 0:
+            last_message = messages[-1].copy()
+            if isinstance(last_message.get('content'), str):
+                last_message['content'] += json_instruction
+            modified_kwargs['messages'] = messages[:-1] + [last_message]
+        
+        # Remove response_format since Anthropic doesn't support it
+        modified_kwargs.pop('response_format', None)
+        
+        # Make regular completion call instead of parse
+        try:
+            result = self.original_create(*args, **modified_kwargs)
+            
+            # Extract JSON from the response
+            if hasattr(result, 'choices') and result.choices and len(result.choices) > 0:
+                content = result.choices[0].message.content
+                
+                # Try to extract JSON from the response
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    try:
+                        parsed_data = json.loads(json_str)
+                        parsed_obj = response_format(**parsed_data)
+                        
+                        # Create a mock response with parsed object
+                        result.choices[0].message.parsed = parsed_obj
+                        
+                    except (json.JSONDecodeError, ValueError) as e:
+                        # If JSON parsing fails, create error response
+                        if event:
+                            event.update_event(
+                                is_finished=True,
+                                is_successful=False,
+                                result=f"Failed to parse JSON from Anthropic response: {str(e)}"
+                            )
+                        raise
+                else:
+                    # No JSON found in response
+                    if event:
+                        event.update_event(
+                            is_finished=True,
+                            is_successful=False,
+                            result="No JSON found in Anthropic response for structured output"
+                        )
+                    raise ValueError("No JSON found in Anthropic response")
+            
+            return self.handle_response(result, modified_kwargs, event=event)
+            
+        except Exception as e:
+            if event:
+                event.update_event(
+                    is_finished=True,
+                    is_successful=False,
+                    result=f"Error in Anthropic parse workaround: {str(e)}"
+                )
+            raise
 
     def undo_override(self):
         if self.original_create:

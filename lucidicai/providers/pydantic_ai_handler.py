@@ -17,6 +17,8 @@ class PydanticAIHandler(BaseProvider):
         self._original_anthropic_request_stream = None
         self._original_openai_request = None
         self._original_openai_request_stream = None
+        self._original_gemini_request = None
+        self._original_gemini_request_stream = None
 
     def handle_response(self, response, kwargs, event=None):
         """Handle responses from Pydantic AI models"""
@@ -80,25 +82,25 @@ class PydanticAIHandler(BaseProvider):
         
         return response
 
-    def _wrap_stream(self, original_stream, event, messages, model_settings):
+    def _wrap_stream(self, original_stream, event, messages, model_instance):
         """Wrap streaming response to track accumulation"""
         
         class StreamWrapper:
-            def __init__(self, original_stream, event, handler, model_settings):
+            def __init__(self, original_stream, event, handler, model_instance):
                 self._original_stream = original_stream
                 self._event = event
                 self._handler = handler
-                self._model_settings = model_settings
+                self._model_instance = model_instance
                 self._accumulated_text = ""
                 self._iterator = None
                 
             def __aiter__(self):
                 """Return an async iterator that properly implements the protocol"""
-                return AsyncStreamIterator(self._original_stream, self._event, self._handler, self._model_settings)
+                return AsyncStreamIterator(self._original_stream, self._event, self._handler, self._model_instance)
                 
             def stream_text(self, delta=True):
                 """Return the wrapped stream iterator for compatibility with PydanticAI"""
-                return AsyncStreamIterator(self._original_stream, self._event, self._handler, self._model_settings)
+                return AsyncStreamIterator(self._original_stream, self._event, self._handler, self._model_instance)
                 
             def stream(self):
                 """Deprecated compatibility method - use stream_text instead"""
@@ -109,13 +111,14 @@ class PydanticAIHandler(BaseProvider):
                 return getattr(self._original_stream, name)
                 
         class AsyncStreamIterator:
-            def __init__(self, original_stream, event, handler, model_settings):
+            def __init__(self, original_stream, event, handler, model_instance):
                 self._original_stream = original_stream
                 self._event = event
                 self._handler = handler
-                self._model_settings = model_settings
+                self._model_instance = model_instance
                 self._accumulated_text = ""
                 self._original_iterator = None
+                self._final_chunk_with_usage = None
                 
             def __aiter__(self):
                 """Return self to implement async iterator protocol"""
@@ -136,16 +139,33 @@ class PydanticAIHandler(BaseProvider):
                     if chunk_text:
                         self._accumulated_text += chunk_text
                     
+                    # Check if this chunk contains usage information (final chunk)
+                    if self._handler._is_final_chunk(chunk):
+                        self._final_chunk_with_usage = chunk
+                    
                     return chunk
                     
                 except StopAsyncIteration:
                     # Stream is done, update the event with accumulated text
                     if self._event and not self._event.is_finished:
-                        model_name = self._handler._extract_model_name(None, self._model_settings)
+                        model_name = self._handler._extract_model_name(None, self._model_instance)
                         # Try to get usage info from the original stream
                         usage_info = None
-                        if hasattr(self._original_stream, 'usage'):
+                        
+                        # Try multiple ways to get usage info from streaming response
+                        # First try the final chunk if we captured one with usage
+                        if hasattr(self, '_final_chunk_with_usage') and self._final_chunk_with_usage:
+                            usage_info = self._handler._extract_usage_info(self._final_chunk_with_usage)
+                        elif hasattr(self._original_stream, 'usage') and self._original_stream.usage:
+                            # Get the actual usage data by calling the method
+                            usage_data = self._original_stream.usage()
+                            usage_info = self._handler._extract_usage_info(usage_data)
+                        elif hasattr(self._original_stream, 'usage_metadata') and self._original_stream.usage_metadata:
                             usage_info = self._handler._extract_usage_info(self._original_stream)
+                        elif hasattr(self._original_stream, '_usage') and self._original_stream._usage:
+                            usage_info = self._handler._extract_usage_info(self._original_stream._usage)
+                        elif hasattr(self._original_stream, 'response') and hasattr(self._original_stream.response, 'usage'):
+                            usage_info = self._handler._extract_usage_info(self._original_stream.response)
                         
                         cost = None
                         if usage_info and model_name:
@@ -174,7 +194,7 @@ class PydanticAIHandler(BaseProvider):
                         )
                     raise
         
-        return StreamWrapper(original_stream, event, self, model_settings)
+        return StreamWrapper(original_stream, event, self, model_instance)
 
     def _extract_response_text(self, response):
         """Extract text content from response"""
@@ -232,6 +252,18 @@ class PydanticAIHandler(BaseProvider):
                 elif hasattr(choice, 'text') and choice.text:
                     return choice.text
         
+        # Check for candidates (Gemini style)
+        if hasattr(chunk, 'candidates') and chunk.candidates:
+            for candidate in chunk.candidates:
+                if hasattr(candidate, 'content') and candidate.content:
+                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                        for part in candidate.content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                return part.text
+                elif hasattr(candidate, 'delta') and candidate.delta:
+                    if hasattr(candidate.delta, 'content') and candidate.delta.content:
+                        return candidate.delta.content
+        
         return ""
 
     def _extract_usage_info(self, response_or_chunk):
@@ -239,61 +271,108 @@ class PydanticAIHandler(BaseProvider):
         if not response_or_chunk:
             return None
         
-        # Common usage patterns
-        usage_attrs = ['usage', 'usage_metadata', 'token_usage']
+        # Check if this is directly a Usage object from PydanticAI
+        if hasattr(response_or_chunk, 'request_tokens') and hasattr(response_or_chunk, 'response_tokens'):
+            # This is a PydanticAI Usage object, extract directly
+            usage_dict = {
+                'request_tokens': response_or_chunk.request_tokens,
+                'response_tokens': response_or_chunk.response_tokens,
+                'total_tokens': response_or_chunk.total_tokens,
+            }
+            # Add details if available
+            if hasattr(response_or_chunk, 'details') and response_or_chunk.details:
+                usage_dict['details'] = response_or_chunk.details
+        else:
+            # Common usage patterns for other response types
+            usage_attrs = ['usage', 'usage_metadata', 'token_usage']
+            usage_dict = None
+            
+            for attr in usage_attrs:
+                if hasattr(response_or_chunk, attr):
+                    usage = getattr(response_or_chunk, attr)
+                    if usage:
+                        # Convert to dict format expected by calculate_cost
+                        if hasattr(usage, '__dict__'):
+                            usage_dict = usage.__dict__
+                        elif isinstance(usage, dict):
+                            usage_dict = usage
+                        else:
+                            continue
+                        break
+            
+            if not usage_dict:
+                return None
         
-        for attr in usage_attrs:
-            if hasattr(response_or_chunk, attr):
-                usage = getattr(response_or_chunk, attr)
-                if usage:
-                    # Convert to dict format expected by calculate_cost
-                    if hasattr(usage, '__dict__'):
-                        usage_dict = usage.__dict__
-                    elif isinstance(usage, dict):
-                        usage_dict = usage
-                    else:
-                        continue
-                    
-                    # Normalize token keys for PydanticAI format
-                    normalized_usage = {}
-                    
-                    # Map PydanticAI token keys to standard format
-                    if 'request_tokens' in usage_dict:
-                        normalized_usage['prompt_tokens'] = usage_dict['request_tokens']
-                        normalized_usage['input_tokens'] = usage_dict['request_tokens']
-                    
-                    if 'response_tokens' in usage_dict:
-                        normalized_usage['completion_tokens'] = usage_dict['response_tokens']
-                        normalized_usage['output_tokens'] = usage_dict['response_tokens']
-                    
-                    # Copy other standard keys if they exist
-                    for key in ['prompt_tokens', 'completion_tokens', 'input_tokens', 'output_tokens', 'total_tokens']:
-                        if key in usage_dict:
-                            normalized_usage[key] = usage_dict[key]
-                    
-                    # Copy all original keys for completeness
-                    normalized_usage.update(usage_dict)
-                    
-                    return normalized_usage
+        # Normalize token keys for PydanticAI format  
+        normalized_usage = {}
         
-        return None
+        # Map PydanticAI token keys to standard format
+        if 'request_tokens' in usage_dict:
+            normalized_usage['prompt_tokens'] = usage_dict['request_tokens']
+            normalized_usage['input_tokens'] = usage_dict['request_tokens']
+        
+        if 'response_tokens' in usage_dict:
+            normalized_usage['completion_tokens'] = usage_dict['response_tokens']
+            normalized_usage['output_tokens'] = usage_dict['response_tokens']
+        
+        # Map Gemini token keys to standard format
+        if 'prompt_token_count' in usage_dict:
+            normalized_usage['prompt_tokens'] = usage_dict['prompt_token_count']
+            normalized_usage['input_tokens'] = usage_dict['prompt_token_count']
+        
+        if 'candidates_token_count' in usage_dict:
+            normalized_usage['completion_tokens'] = usage_dict['candidates_token_count']
+            normalized_usage['output_tokens'] = usage_dict['candidates_token_count']
+        
+        if 'total_token_count' in usage_dict:
+            normalized_usage['total_tokens'] = usage_dict['total_token_count']
+        
+        # Copy other standard keys if they exist
+        for key in ['prompt_tokens', 'completion_tokens', 'input_tokens', 'output_tokens', 'total_tokens']:
+            if key in usage_dict:
+                normalized_usage[key] = usage_dict[key]
+        
+        # Copy all original keys for completeness
+        normalized_usage.update(usage_dict)
+        
+        return normalized_usage
 
-    def _extract_model_name(self, response_or_chunk, model_settings=None):
-        """Extract model name from response or settings"""
+    def _extract_model_name(self, response_or_chunk, model_instance=None):
+        """Extract model name from response or model instance"""
         # Try to get from response first
         if response_or_chunk and hasattr(response_or_chunk, 'model'):
             return response_or_chunk.model
         
-        # Try from model settings
-        if model_settings and isinstance(model_settings, dict):
-            return model_settings.get('model')
+        # Try from model instance
+        if model_instance:
+            if hasattr(model_instance, 'model_name'):
+                return model_instance.model_name
+            elif hasattr(model_instance, 'model'):
+                return model_instance.model
+            elif hasattr(model_instance, '_model_name'):
+                return model_instance._model_name
+            elif hasattr(model_instance, 'name'):
+                return model_instance.name
         
         # Default fallback for PydanticAI models
-        return "claude-3-5-sonnet-20241022"
+        return "gpt-4o-mini"
 
     def _is_final_chunk(self, chunk):
         """Check if this is the final chunk with usage information"""
-        return hasattr(chunk, 'usage') and chunk.usage is not None
+        if not chunk:
+            return False
+        
+        # Check various usage attributes that might indicate final chunk
+        usage_attrs = ['usage', 'usage_metadata', 'token_usage', '_usage']
+        for attr in usage_attrs:
+            if hasattr(chunk, attr) and getattr(chunk, attr) is not None:
+                return True
+        
+        # Check if chunk has response with usage
+        if hasattr(chunk, 'response') and hasattr(chunk.response, 'usage') and chunk.response.usage:
+            return True
+            
+        return False
 
     def _wrap_request(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Wrap regular request method to track LLM calls"""
@@ -315,7 +394,7 @@ class PydanticAIHandler(BaseProvider):
                 response = await original_method(model_instance, messages, model_settings, model_request_parameters)
                 
                 # Handle the response
-                return self._handle_response(response, event, messages, model_settings)
+                return self._handle_response(response, event, messages, model_instance)
                 
             except Exception as e:
                 if event:
@@ -364,7 +443,7 @@ class PydanticAIHandler(BaseProvider):
                     original_stream = await self.original_context_manager.__aenter__()
                     
                     # Wrap the stream to capture the actual streamed content
-                    return self.handler._wrap_stream(original_stream, self.event, self.messages, self.model_settings)
+                    return self.handler._wrap_stream(original_stream, self.event, self.messages, self.model_instance)
                     
                 except Exception as e:
                     if self.event:
@@ -401,7 +480,7 @@ class PydanticAIHandler(BaseProvider):
             original_stream = await original_method(model_instance, messages, model_settings, model_request_parameters)
             
             # Return wrapped stream
-            return self._wrap_stream(original_stream, event, messages, model_settings)
+            return self._wrap_stream(original_stream, event, messages, model_instance)
             
         except Exception as e:
             if event:
@@ -427,18 +506,16 @@ class PydanticAIHandler(BaseProvider):
         Override PydanticAI model methods to enable automatic tracking.
         
         This method uses monkey-patching to intercept calls to PydanticAI's 
-        AnthropicModel and OpenAIModel request methods, allowing Lucidic to
+        AnthropicModel, OpenAIModel, and GeminiModel request methods, allowing Lucidic to
         track all LLM interactions automatically.
         """
+        # Patch Anthropic models
         try:
             from pydantic_ai.models.anthropic import AnthropicModel
-            from pydantic_ai.models.openai import OpenAIModel
             
             # Store original methods for restoration later
             self._original_anthropic_request = AnthropicModel.request
             self._original_anthropic_request_stream = AnthropicModel.request_stream
-            self._original_openai_request = OpenAIModel.request
-            self._original_openai_request_stream = OpenAIModel.request_stream
             
             # Create patched methods for Anthropic models
             def patched_anthropic_request(model_instance, messages, model_settings=None, model_request_parameters=None):
@@ -446,6 +523,22 @@ class PydanticAIHandler(BaseProvider):
             
             def patched_anthropic_request_stream(model_instance, messages, model_settings=None, model_request_parameters=None):
                 return self._wrap_request_stream_context_manager(model_instance, messages, model_settings, model_request_parameters, self._original_anthropic_request_stream)
+            
+            # Apply the patches
+            AnthropicModel.request = patched_anthropic_request
+            AnthropicModel.request_stream = patched_anthropic_request_stream
+            
+        except ImportError:
+            # AnthropicModel not available, skip patching
+            pass
+        
+        # Patch OpenAI models
+        try:
+            from pydantic_ai.models.openai import OpenAIModel
+            
+            # Store original methods for restoration later
+            self._original_openai_request = OpenAIModel.request
+            self._original_openai_request_stream = OpenAIModel.request_stream
             
             # Create patched methods for OpenAI models
             def patched_openai_request(model_instance, messages, model_settings=None, model_request_parameters=None):
@@ -455,13 +548,34 @@ class PydanticAIHandler(BaseProvider):
                 return self._wrap_request_stream_context_manager(model_instance, messages, model_settings, model_request_parameters, self._original_openai_request_stream)
             
             # Apply the patches
-            AnthropicModel.request = patched_anthropic_request
-            AnthropicModel.request_stream = patched_anthropic_request_stream
             OpenAIModel.request = patched_openai_request
             OpenAIModel.request_stream = patched_openai_request_stream
             
         except ImportError:
-            # PydanticAI models not available, skip patching
+            # OpenAIModel not available, skip patching
+            pass
+        
+        # Patch Gemini models
+        try:
+            from pydantic_ai.models.gemini import GeminiModel
+            
+            # Store original methods for restoration later
+            self._original_gemini_request = GeminiModel.request
+            self._original_gemini_request_stream = GeminiModel.request_stream
+            
+            # Create patched methods for Gemini models
+            def patched_gemini_request(model_instance, messages, model_settings=None, model_request_parameters=None):
+                return self._wrap_request(model_instance, messages, model_settings, model_request_parameters, self._original_gemini_request)
+            
+            def patched_gemini_request_stream(model_instance, messages, model_settings=None, model_request_parameters=None):
+                return self._wrap_request_stream_context_manager(model_instance, messages, model_settings, model_request_parameters, self._original_gemini_request_stream)
+            
+            # Apply the patches
+            GeminiModel.request = patched_gemini_request
+            GeminiModel.request_stream = patched_gemini_request_stream
+            
+        except ImportError:
+            # GeminiModel not available, skip patching
             pass
 
     def undo_override(self):
@@ -471,17 +585,41 @@ class PydanticAIHandler(BaseProvider):
         This method restores the original, unpatched methods to their
         respective model classes, effectively disabling Lucidic tracking.
         """
+        # Restore Anthropic models
         try:
             from pydantic_ai.models.anthropic import AnthropicModel
-            from pydantic_ai.models.openai import OpenAIModel
             
             # Restore original methods if they were previously stored
             if hasattr(self, '_original_anthropic_request'):
                 AnthropicModel.request = self._original_anthropic_request
                 AnthropicModel.request_stream = self._original_anthropic_request_stream
+                
+        except ImportError:
+            # AnthropicModel not available, nothing to restore
+            pass
+        
+        # Restore OpenAI models
+        try:
+            from pydantic_ai.models.openai import OpenAIModel
+            
+            # Restore original methods if they were previously stored
+            if hasattr(self, '_original_openai_request'):
                 OpenAIModel.request = self._original_openai_request
                 OpenAIModel.request_stream = self._original_openai_request_stream
                 
         except ImportError:
-            # PydanticAI models not available, nothing to restore
+            # OpenAIModel not available, nothing to restore
+            pass
+        
+        # Restore Gemini models
+        try:
+            from pydantic_ai.models.gemini import GeminiModel
+            
+            # Restore original methods if they were previously stored
+            if hasattr(self, '_original_gemini_request'):
+                GeminiModel.request = self._original_gemini_request
+                GeminiModel.request_stream = self._original_gemini_request_stream
+                
+        except ImportError:
+            # GeminiModel not available, nothing to restore
             pass
