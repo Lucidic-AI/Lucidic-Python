@@ -11,6 +11,7 @@ class OpenAIHandler(BaseProvider):
         super().__init__(client)
         self._provider_name = "OpenAI"
         self.original_create = None
+        self.original_parse = None
 
     def _format_messages(self, messages):
         if not messages:
@@ -87,9 +88,14 @@ class OpenAIHandler(BaseProvider):
 
     def _handle_regular_response(self, response, kwargs, event):
         try:
-            response_text = (response.choices[0].message.content 
-                           if hasattr(response, 'choices') and response.choices 
-                           else str(response))
+            # Handle structured output response (beta.chat.completions.parse)
+            if hasattr(response, 'choices') and response.choices and hasattr(response.choices[0].message, 'parsed'):
+                response_text = str(response.choices[0].message.parsed)
+            else:
+                # Handle regular response
+                response_text = (response.choices[0].message.content 
+                               if hasattr(response, 'choices') and response.choices 
+                               else str(response))
 
             cost = None
             if hasattr(response, 'usage'):
@@ -119,9 +125,13 @@ class OpenAIHandler(BaseProvider):
 
     def override(self):
         from openai.resources.chat import completions
-        self.original_create = completions.Completions.create
+        from openai.resources.beta.chat import completions as beta_completions
         
-        def patched_function(*args, **kwargs):
+        # Store original methods
+        self.original_create = completions.Completions.create
+        self.original_parse = beta_completions.Completions.parse
+        
+        def patched_create_function(*args, **kwargs):
             step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
             
             # Add stream_options for usage tracking if streaming is enabled
@@ -142,10 +152,39 @@ class OpenAIHandler(BaseProvider):
             result = self.original_create(*args, **kwargs)
             return self.handle_response(result, kwargs, event=event)
         
-        completions.Completions.create = patched_function
+        def patched_parse_function(*args, **kwargs):
+            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+            
+            # Create event before API call
+            if step:
+                description, images = self._format_messages(kwargs.get('messages', ''))
+                # Add info about structured output format
+                response_format = kwargs.get('response_format')
+                if response_format:
+                    description += f"\n[Structured Output: {response_format.__name__}]"
+                
+                event = step.create_event(
+                    description=description,
+                    result="Waiting for structured response...",
+                    screenshots=images
+                )
+                
+            
+            # Make API call
+            result = self.original_parse(*args, **kwargs)
+            return self.handle_response(result, kwargs, event=event)
+        
+        # Apply patches
+        completions.Completions.create = patched_create_function
+        beta_completions.Completions.parse = patched_parse_function
 
     def undo_override(self):
         if self.original_create:
             from openai.resources.chat import completions
             completions.Completions.create = self.original_create
             self.original_create = None
+            
+        if self.original_parse:
+            from openai.resources.beta.chat import completions as beta_completions
+            beta_completions.Completions.parse = self.original_parse
+            self.original_parse = None
