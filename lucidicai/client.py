@@ -144,6 +144,8 @@ class Client:
                 pass
         if response.status_code == 401:
             raise APIKeyVerificationError("Invalid API key: 401 Unauthorized")
+        if response.status_code == 402:
+            raise InvalidOperationError("Invalid operation: 402 Insufficient Credits")
         if response.status_code == 403:
             raise APIKeyVerificationError(f"Invalid API key: 403 Forbidden")
         try:
