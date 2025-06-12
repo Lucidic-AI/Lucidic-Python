@@ -54,6 +54,7 @@ async def run_test():
 
     # --- Structured output call ---
     print("=== Structured output response ===")
+    
     resp = client.beta.chat.completions.parse(
         model="gpt-4o-2024-08-06",
         messages=[{"role":"user","content":"Solve step by step: What is 25 * 4 + 10?"}],

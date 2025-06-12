@@ -53,7 +53,8 @@ class OpenAIHandler(BaseProvider):
             nonlocal accumulated_response
             try:
                 for chunk in response:
-                    if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
+                    # Add null checks for Anthropic compatibility
+                    if hasattr(chunk, 'choices') and chunk.choices is not None and len(chunk.choices) > 0:
                         delta = chunk.choices[0].delta
                         if hasattr(delta, 'content') and delta.content:
                             accumulated_response += delta.content
@@ -89,16 +90,18 @@ class OpenAIHandler(BaseProvider):
     def _handle_regular_response(self, response, kwargs, event):
         try:
             # Handle structured output response (beta.chat.completions.parse)
-            if hasattr(response, 'choices') and response.choices and hasattr(response.choices[0].message, 'parsed'):
+            if (hasattr(response, 'choices') and response.choices and 
+                len(response.choices) > 0 and hasattr(response.choices[0].message, 'parsed')):
                 response_text = str(response.choices[0].message.parsed)
             else:
-                # Handle regular response
-                response_text = (response.choices[0].message.content 
-                               if hasattr(response, 'choices') and response.choices 
-                               else str(response))
+                # Handle regular response with better null checks
+                response_text = str(response)
+                if (hasattr(response, 'choices') and response.choices and 
+                    len(response.choices) > 0 and hasattr(response.choices[0].message, 'content')):
+                    response_text = response.choices[0].message.content
 
             cost = None
-            if hasattr(response, 'usage'):
+            if hasattr(response, 'usage') and response.usage:
                 model = response.model if hasattr(response, 'model') else kwargs.get('model')
                 cost = calculate_cost(model, dict(response.usage))
 
