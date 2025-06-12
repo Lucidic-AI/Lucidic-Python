@@ -62,82 +62,84 @@ async def run_test():
         }
     )
 
+    # --- Regular chat completion call ---
+    print("=== Regular chat completion ===")
+    resp = client.chat.completions.create(
+        model="claude-3-5-sonnet-20241022",
+        messages=[{"role":"user","content":"What is 25 * 4 + 10? Show your work."}],
+        max_tokens=150
+    )
+    
+    # This should work but may have issues with the Lucidic handler
+    result = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
+    print("Response:", result)
+    print("Usage:", resp.usage if hasattr(resp, 'usage') else "No usage info")
+
+    # --- Test streaming response ---
+    print("\n=== Streaming response test ===")
+    stream_resp = client.chat.completions.create(
+        model="claude-3-5-sonnet-20241022",
+        messages=[{"role":"user","content":"Count from 1 to 5"}],
+        max_tokens=50,
+        stream=True
+    )
+    
+    print("Stream response:")
+    chunk_count = 0
+    for chunk in stream_resp:
+        if chunk_count > 10:  # Prevent hanging
+            print("\n(truncated)")
+            break
+            
+        if (hasattr(chunk, 'choices') and chunk.choices is not None and 
+            len(chunk.choices) > 0):
+            delta = chunk.choices[0].delta
+            if hasattr(delta, 'content') and delta.content:
+                print(delta.content, end='', flush=True)
+        chunk_count += 1
+    print("\n")
+
+    # --- Test structured output (parse) - this will likely fail ---
+    print("\n=== Structured output (parse) test ===")
     try:
-        # --- Regular chat completion call ---
-        print("=== Regular chat completion ===")
-        resp = client.chat.completions.create(
+        resp = client.beta.chat.completions.parse(
             model="claude-3-5-sonnet-20241022",
-            messages=[{"role":"user","content":"What is 25 * 4 + 10? Show your work."}],
-            max_tokens=150
+            messages=[{"role":"user","content":"Solve step by step: What is 25 * 4 + 10?"}],
+            response_format=MathReasoning,
         )
-        
-        # This should work but may have issues with the Lucidic handler
-        result = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
-        print("Response:", result)
-        print("Usage:", resp.usage if hasattr(resp, 'usage') else "No usage info")
+        result = resp.choices[0].message.parsed if hasattr(resp, "choices") else str(resp)
+        print("Final answer:", result.final_answer)
+        print("Steps:")
+        for step in result.steps:
+            print(f"  - {step.explanation}: {step.output}")
+    except Exception as parse_error:
+        print(f"PARSE ERROR: {type(parse_error).__name__}: {str(parse_error)}")
+        print("This demonstrates that structured output doesn't work with Anthropic base URL")
 
-        # --- Test streaming response ---
-        print("\n=== Streaming response test ===")
-        stream_resp = client.chat.completions.create(
-            model="claude-3-5-sonnet-20241022",
-            messages=[{"role":"user","content":"Count from 1 to 5"}],
-            max_tokens=50,
-            stream=True
-        )
-        
-        print("Stream response:")
-        for chunk in stream_resp:
-            if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
-                content = chunk.choices[0].delta.content
-                if content:
-                    print(content, end='', flush=True)
-        print("\n")
+    # --- Test with image (if supported) ---
+    print("\n=== Image analysis test ===")
+    with open("tests/ord_runways.jpg", "rb") as f:
+        img_bytes = f.read()
+    data_uri = f"data:image/jpeg;base64,{base64.standard_b64encode(img_bytes).decode()}"
 
-        # --- Test structured output (parse) - this will likely fail ---
-        print("\n=== Structured output (parse) test ===")
-        try:
-            resp = client.beta.chat.completions.parse(
-                model="claude-3-5-sonnet-20241022",
-                messages=[{"role":"user","content":"Solve step by step: What is 25 * 4 + 10?"}],
-                response_format=MathReasoning,
-            )
-            result = resp.choices[0].message.parsed if hasattr(resp, "choices") else str(resp)
-            print("Final answer:", result.final_answer)
-            print("Steps:")
-            for step in result.steps:
-                print(f"  - {step.explanation}: {step.output}")
-        except Exception as parse_error:
-            print(f"PARSE ERROR: {type(parse_error).__name__}: {str(parse_error)}")
-            print("This demonstrates that structured output doesn't work with Anthropic base URL")
+    # OpenAI format message with image - this may cause issues with Anthropic API
+    image_message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe this image briefly:"},
+            {"type": "image_url", "image_url": {"url": data_uri}}
+        ]
+    }
 
-        # --- Test with image (if supported) ---
-        print("\n=== Image analysis test ===")
-        with open("tests/ord_runways.jpg", "rb") as f:
-            img_bytes = f.read()
-        data_uri = f"data:image/jpeg;base64,{base64.standard_b64encode(img_bytes).decode()}"
+    resp = client.chat.completions.create(
+        model="claude-3-5-sonnet-20241022",
+        messages=[image_message],
+        max_tokens=100
+    )
 
-        # OpenAI format message with image - this may cause issues with Anthropic API
-        image_message = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Describe this image briefly:"},
-                {"type": "image_url", "image_url": {"url": data_uri}}
-            ]
-        }
-
-        resp = client.chat.completions.create(
-            model="claude-3-5-sonnet-20241022",
-            messages=[image_message],
-            max_tokens=100
-        )
-
-        result = resp.choices[0].message.content
-        print("Image description:", result)
-        print("Usage:", resp.usage if hasattr(resp, 'usage') else "No usage info")
-
-    except Exception as e:
-        print(f"ERROR: {type(e).__name__}: {str(e)}")
-        print("This error demonstrates the compatibility issue between OpenAI SDK + Anthropic base URL and the Lucidic OpenAI handler")
+    result = resp.choices[0].message.content
+    print("Image description:", result)
+    print("Usage:", resp.usage if hasattr(resp, 'usage') else "No usage info")
 
     # tear down
     lai.end_step()
