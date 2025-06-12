@@ -53,6 +53,8 @@ class Step:
             self.screenshot = screenshot_path_to_jpeg(self.screenshot_path)
         if self.screenshot is not None:
             presigned_url, bucket_name, object_key = get_presigned_url(Client().agent_id, step_id=self.step_id)
+            if self.screenshot.startswith("data:image"):
+                self.screenshot = self.screenshot.split(",")[1]
             upload_image_to_s3(presigned_url, self.screenshot, "JPEG")
         if 'state' in kwargs and kwargs['state'] is not None:
             self.state = State(kwargs['state'])

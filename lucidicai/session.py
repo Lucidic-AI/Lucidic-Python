@@ -100,9 +100,13 @@ class Session:
         events_b64 = [] # (event_id, nth screenshot, b64)
         for step in self.step_history:
             if step.screenshot is not None:
+                if step.screenshot.startswith("data:image"):
+                    step.screenshot = step.screenshot.split(",")[1]
                 images_b64.append(step.screenshot)
             for event in step.event_history:
                 for j, event_screenshot in enumerate(event.screenshots):
+                    if event_screenshot.startswith("data:image"):
+                        event_screenshot = event_screenshot.split(",")[1]
                     events_b64.append((event.event_id, j, event_screenshot))
         has_gif = False
         if images_b64:
