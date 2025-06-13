@@ -2,6 +2,7 @@
 from typing import Any, Dict, Optional
 
 from .base_providers import BaseProvider
+from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
 from lucidicai.singleton import singleton
 
@@ -10,8 +11,8 @@ from lucidicai.singleton import singleton
 class PydanticAIHandler(BaseProvider):
     """Handler for tracking PydanticAI model interactions with Lucidic"""
     
-    def __init__(self, client):
-        super().__init__(client)
+    def __init__(self):
+        super().__init__()
         self._provider_name = "PydanticAI"
         self._original_anthropic_request = None
         self._original_anthropic_request_stream = None
@@ -49,9 +50,9 @@ class PydanticAIHandler(BaseProvider):
         
         return ' | '.join(formatted_messages[:3])  # Limit to first 3 messages
 
-    def _handle_response(self, response, event, messages, model_settings):
+    def _handle_response(self, response, event_id, messages, model_settings):
         """Handle non-streaming response"""
-        if not event:
+        if not event_id:
             return response
         
         try:
@@ -65,7 +66,8 @@ class PydanticAIHandler(BaseProvider):
             if usage_info and model_name:
                 cost = calculate_cost(model_name, usage_info)
             
-            event.update_event(
+            Client().session.update_event(
+                event_id=event_id,
                 is_finished=True,
                 is_successful=True,
                 cost_added=cost,
@@ -74,7 +76,8 @@ class PydanticAIHandler(BaseProvider):
             )
             
         except Exception as e:
-            event.update_event(
+            Client().session.update_event(
+                event_id=event_id,
                 is_finished=True,
                 is_successful=False,
                 result=f"Error processing response: {str(e)}"
@@ -82,13 +85,13 @@ class PydanticAIHandler(BaseProvider):
         
         return response
 
-    def _wrap_stream(self, original_stream, event, messages, model_instance):
+    def _wrap_stream(self, original_stream, event_id, messages, model_instance):
         """Wrap streaming response to track accumulation"""
         
         class StreamWrapper:
-            def __init__(self, original_stream, event, handler, model_instance):
+            def __init__(self, original_stream, event_id, handler, model_instance):
                 self._original_stream = original_stream
-                self._event = event
+                self._event_id = event_id
                 self._handler = handler
                 self._model_instance = model_instance
                 self._accumulated_text = ""
@@ -96,11 +99,11 @@ class PydanticAIHandler(BaseProvider):
                 
             def __aiter__(self):
                 """Return an async iterator that properly implements the protocol"""
-                return AsyncStreamIterator(self._original_stream, self._event, self._handler, self._model_instance)
+                return AsyncStreamIterator(self._original_stream, self._event_id, self._handler, self._model_instance)
                 
             def stream_text(self, delta=True):
                 """Return the wrapped stream iterator for compatibility with PydanticAI"""
-                return AsyncStreamIterator(self._original_stream, self._event, self._handler, self._model_instance)
+                return AsyncStreamIterator(self._original_stream, self._event_id, self._handler, self._model_instance)
                 
             def stream(self):
                 """Deprecated compatibility method - use stream_text instead"""
@@ -111,9 +114,9 @@ class PydanticAIHandler(BaseProvider):
                 return getattr(self._original_stream, name)
                 
         class AsyncStreamIterator:
-            def __init__(self, original_stream, event, handler, model_instance):
+            def __init__(self, original_stream, event_id, handler, model_instance):
                 self._original_stream = original_stream
-                self._event = event
+                self._event_id = event_id
                 self._handler = handler
                 self._model_instance = model_instance
                 self._accumulated_text = ""
@@ -147,7 +150,7 @@ class PydanticAIHandler(BaseProvider):
                     
                 except StopAsyncIteration:
                     # Stream is done, update the event with accumulated text
-                    if self._event and not self._event.is_finished:
+                    if self._event_id and not Client().session._active_event.is_finished:
                         model_name = self._handler._extract_model_name(None, self._model_instance)
                         # Try to get usage info from the original stream
                         usage_info = None
@@ -173,7 +176,8 @@ class PydanticAIHandler(BaseProvider):
                         
                         final_result = self._accumulated_text or "No content streamed"
                         
-                        self._event.update_event(
+                        Client().session.update_event(
+                            event_id=self._event_id,
                             is_finished=True,
                             is_successful=True,
                             model=model_name,
@@ -186,8 +190,9 @@ class PydanticAIHandler(BaseProvider):
                     
                 except Exception as e:
                     # Handle errors
-                    if self._event and not self._event.is_finished:
-                        self._event.update_event(
+                    if self._event_id and not Client().session._active_event.is_finished:
+                        Client().session.update_event(
+                            event_id=self._event_id,
                             is_finished=True,
                             is_successful=False,
                             result=f"Error during streaming: {str(e)}"
@@ -377,16 +382,15 @@ class PydanticAIHandler(BaseProvider):
     def _wrap_request(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Wrap regular request method to track LLM calls"""
         # Create event before API call
-        event = None
-        from lucidicai.client import Client
-        step = Client().session.active_step if Client().session else None
+        step = Client().session.active_step
+        if step is None:
+            return original_method(model_instance, messages, model_settings, model_request_parameters)
         
-        if step:
-            description = self._format_messages(messages)
-            event = step.create_event(
-                description=description,
-                result="Waiting for response..."
-            )
+        description = self._format_messages(messages)
+        event_id = Client().session.create_event(
+            description=description,
+            result="Waiting for response..."
+        )
         
         async def async_wrapper():
             try:
@@ -394,15 +398,14 @@ class PydanticAIHandler(BaseProvider):
                 response = await original_method(model_instance, messages, model_settings, model_request_parameters)
                 
                 # Handle the response
-                return self._handle_response(response, event, messages, model_instance)
+                return self._handle_response(response, event_id, messages, model_instance)
                 
             except Exception as e:
-                if event:
-                    event.update_event(
-                        is_finished=True,
-                        is_successful=False,
-                        result=f"Error during request: {str(e)}"
-                    )
+                Client().session.update_event(
+                    is_finished=True,
+                    is_successful=False,
+                    result=f"Error during request: {str(e)}"
+                )
                 raise
         
         return async_wrapper()
@@ -410,25 +413,25 @@ class PydanticAIHandler(BaseProvider):
     def _wrap_request_stream_context_manager(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Return an async context manager for streaming requests"""
         # Create event before API call
-        event = None
-        from lucidicai.client import Client
-        step = Client().session.active_step if Client().session else None
+        event_id = None
+        step = Client().session.active_step
         
-        if step:
-            description = self._format_messages(messages)
-            event = step.create_event(
-                description=description,
-                result="Streaming response..."
-            )
+        if step is None:
+            return original_method(model_instance, messages, model_settings, model_request_parameters)
+        
+        description = self._format_messages(messages)
+        event_id = Client().session.create_event(
+            description=description,
+            result="Streaming response..."
+        )
         
         class WrappedStreamContextManager:
-            def __init__(self, original_method, model_instance, messages, model_settings, model_request_parameters, event, handler):
+            def __init__(self, original_method, model_instance, messages, model_settings, model_request_parameters, handler):
                 self.original_method = original_method
                 self.model_instance = model_instance
                 self.messages = messages
                 self.model_settings = model_settings
                 self.model_request_parameters = model_request_parameters
-                self.event = event
                 self.handler = handler
                 self.original_context_manager = None
             
@@ -443,11 +446,11 @@ class PydanticAIHandler(BaseProvider):
                     original_stream = await self.original_context_manager.__aenter__()
                     
                     # Wrap the stream to capture the actual streamed content
-                    return self.handler._wrap_stream(original_stream, self.event, self.messages, self.model_instance)
+                    return self.handler._wrap_stream(original_stream, event_id, self.messages, self.model_instance)
                     
                 except Exception as e:
-                    if self.event:
-                        self.event.update_event(
+                    if Client().session._active_event:
+                        Client().session.update_event(
                             is_finished=True,
                             is_successful=False,
                             result=f"Error during streaming: {str(e)}"
@@ -459,21 +462,20 @@ class PydanticAIHandler(BaseProvider):
                 if self.original_context_manager:
                     return await self.original_context_manager.__aexit__(exc_type, exc_val, exc_tb)
         
-        return WrappedStreamContextManager(original_method, model_instance, messages, model_settings, model_request_parameters, event, self)
+        return WrappedStreamContextManager(original_method, model_instance, messages, model_settings, model_request_parameters, self)
 
     async def _wrap_request_stream(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Wrap streaming request method"""
         # Create event before API call
-        event = None
-        from lucidicai.client import Client
-        step = Client().session.active_step if Client().session else None
-        
-        if step:
-            description = self._format_messages(messages)
-            event = step.create_event(
-                description=description,
-                result="Streaming response..."
-            )
+        step = Client().session.active_step
+        if step is None:
+            return original_method(model_instance, messages, model_settings, model_request_parameters)
+
+        description = self._format_messages(messages)
+        event = step.create_event(
+            description=description,
+            result="Streaming response..."
+        )
         
         try:
             # Get the original stream
@@ -483,23 +485,13 @@ class PydanticAIHandler(BaseProvider):
             return self._wrap_stream(original_stream, event, messages, model_instance)
             
         except Exception as e:
-            if event:
-                event.update_event(
+            if Client().session._active_event:
+                Client().session.update_event(
                     is_finished=True,
                     is_successful=False,
                     result=f"Error during streaming: {str(e)}"
                 )
             raise
-
-    def wrap_agent(self, agent):
-        """
-        Wrap a PydanticAI agent to enable tracking.
-        
-        Note: This method is deprecated as we now use monkey-patching.
-        The handler automatically tracks all PydanticAI model calls when override() is called.
-        """
-        # No longer needed due to monkey-patching approach
-        return agent
 
     def override(self):
         """

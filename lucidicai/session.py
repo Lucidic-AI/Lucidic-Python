@@ -7,12 +7,14 @@ from PIL import Image
 from .errors import InvalidOperationError, LucidicNotInitializedError
 from .image_upload import get_presigned_url, upload_image_to_s3
 from .step import Step
+from .event import Event
 
 class Session:
     def __init__(
         self, 
         agent_id: str, 
-        session_name: str, 
+        session_name: Optional[str] = "", 
+        session_id: Optional[str] = None,
         mass_sim_id: Optional[str] = None, 
         task: Optional[str] = None,
         rubrics: Optional[list] = None,
@@ -23,9 +25,10 @@ class Session:
         self.mass_sim_id = mass_sim_id
         self.task = task
         self.session_id = None
-        self.step_history: List[Step] = []
-        self._active_step: Optional[Step] = None
-        self.base_url = "https://analytics.lucidic.ai/api"
+        self.step_history = dict()
+        self._active_step: Optional[str] = None  # Rename to latest_step
+        self.event_history = dict()
+        self.latest_event = None
         self.is_finished = False
         self.rubrics = rubrics
         self.is_successful = None
@@ -34,7 +37,10 @@ class Session:
         self.session_eval_reason = None
         self.has_gif = None
         self.tags = tags
-        self.init_session()
+        if session_id is None:  # The kwarg, not the attribute
+            self.init_session()
+        else:
+            self.continue_session(session_id)
 
     def init_session(self) -> None:
         from .client import Client
@@ -48,6 +54,14 @@ class Session:
         }
         data = Client().make_request('initsession', 'POST', request_data)
         self.session_id = data["session_id"]
+    
+    def continue_session(self, session_id: str) -> None:
+        from .client import Client
+        self.session_id = session_id
+        data = Client().make_request('continuesession', 'POST', {"session_id": session_id})
+        self.session_id = data["session_id"]
+        self.session_name = data["session_name"]
+        return self.session_id
 
     @property   
     def active_step(self) -> Optional[Step]:
@@ -65,7 +79,6 @@ class Session:
             "session_id": self.session_id,
             "is_finished": self.is_finished,
             "task": self.task,
-            "has_gif": self.has_gif,
             "is_successful": self.is_successful,
             "is_successful_reason": self.is_successful_reason,
             "session_eval": self.session_eval,
@@ -77,47 +90,44 @@ class Session:
     def create_step(self, **kwargs) -> Step:
         if not self.session_id:
             raise LucidicNotInitializedError()
-            
-        if self._active_step:
-            raise InvalidOperationError("Cannot create new step while another step is active. Please finish current step first.")
-                
-        step = Step(session_id=self.session_id, **kwargs)
+        step = Step(session_id=self.session_id)
+        self.step_history[step.step_id] = step
         self._active_step = step
-        self.step_history.append(step)
-        return step
+        return step.step_id
 
     def update_step(self, **kwargs) -> None:
-        if not self._active_step:
-            raise InvalidOperationError("Cannot update step without active step")
-        self._active_step.update_step(**kwargs)
-        if 'is_finished' in kwargs and kwargs['is_finished']:
-            self._active_step = None
+        if 'step_id' in kwargs and kwargs['step_id'] is not None:
+            if kwargs['step_id'] not in self.step_history:
+                raise InvalidOperationError("Step ID not found in session history")
+            self.step_history[kwargs['step_id']].update_step(**kwargs)
+        else:
+            if not self._active_step:
+                raise InvalidOperationError("No active step to update")
+            self._active_step.update_step(**kwargs)
 
-    def end_session(self, **kwargs) -> bool:
-        if self._active_step:
-            print("[Warning] Ending Lucidic session while current step is unfinished...")
-        images_b64 = []
-        events_b64 = [] # (event_id, nth screenshot, b64)
-        for step in self.step_history:
-            if step.screenshot is not None:
-                if step.screenshot.startswith("data:image"):
-                    step.screenshot = step.screenshot.split(",")[1]
-                images_b64.append(step.screenshot)
-            for event in step.event_history:
-                for j, event_screenshot in enumerate(event.screenshots):
-                    if event_screenshot.startswith("data:image"):
-                        event_screenshot = event_screenshot.split(",")[1]
-                    events_b64.append((event.event_id, j, event_screenshot))
-        has_gif = False
-        if images_b64:
-            images = [Image.open(io.BytesIO(base64.b64decode(b64))) for b64 in images_b64]
-            gif_buffer = io.BytesIO()
-            images[0].save(gif_buffer, format="GIF", save_all=True, append_images=images[1:], duration=2000, loop=0)
-            gif_buffer.seek(0)
-            presigned_url, bucket_name, object_key = get_presigned_url(self.agent_id, session_id=self.session_id)
-            upload_image_to_s3(presigned_url, gif_buffer, "GIF")
-            has_gif = True
-        for event_id, nthscreenshot, event_b64 in events_b64:
-            presigned_url, bucket_name, object_key = get_presigned_url(self.agent_id, session_id=self.session_id, event_id=event_id, nthscreenshot=nthscreenshot)
-            upload_image_to_s3(presigned_url, event_b64, "JPEG")
-        return self.update_session(has_gif=has_gif, **kwargs)
+
+    def create_event(self, **kwargs):
+        step_id = self._active_step.step_id
+        if 'step_id' in kwargs and kwargs['step_id'] is not None:
+            step_id = kwargs['step_id']
+        kwargs.pop('step_id', None)
+        event = Event(
+            session_id=self.session_id,
+            step_id=step_id,
+            **kwargs
+        )
+        self.event_history[event.event_id] = event
+        self._active_event = event
+        return event.event_id
+
+    def update_event(self, **kwargs):
+        if 'event_id' in kwargs and kwargs['event_id'] is not None:
+            if kwargs['event_id'] not in self.event_history:
+                raise InvalidOperationError("Event ID not found in session history")
+            self.event_history[kwargs['event_id']].update_event(**kwargs)
+        else:
+            if not self._active_event:
+                raise InvalidOperationError("No active event to update")
+            self._active_event.update_event(**kwargs)
+
+            

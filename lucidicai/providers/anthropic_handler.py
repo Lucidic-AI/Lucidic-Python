@@ -1,6 +1,7 @@
 from typing import Optional, Tuple, List
 
 from .base_providers import BaseProvider
+from lucidicai.client import Client
 from lucidicai.singleton import singleton
 from lucidicai.model_pricing import calculate_cost
 
@@ -9,8 +10,8 @@ from anthropic import Anthropic, AsyncAnthropic, Stream, AsyncStream
 
 @singleton
 class AnthropicHandler(BaseProvider):
-    def __init__(self, client):
-        super().__init__(client)
+    def __init__(self):
+        super().__init__()
         self._provider_name = "Anthropic"
         self.original_create = None
         self.original_create_async = None
@@ -30,43 +31,41 @@ class AnthropicHandler(BaseProvider):
             content = msg.get("content")
             if isinstance(content, list):
                 for piece in content:
-                    if piece.get("type") == "text":
-                        descriptions.append(piece.get("text", ""))
-                    elif piece.get("type") == "image":
-                        # Fix: Anthropic uses "source" instead of "image"
-                        source = piece.get("source", {})
-                        img = source.get("data")
-                        if img:
-                            screenshots.append(img)
+                    if isinstance(piece, dict):
+                        if piece.get("type") == "text":
+                            descriptions.append(piece.get("text", ""))
+                        elif piece.get("type") == "image":
+                            # Fix: Anthropic uses "source" instead of "image"
+                            source = piece.get("source", {})
+                            img = source.get("data")
+                            if img:
+                                screenshots.append(img)
+                    else:  # Assume ContentBlock
+                        descriptions.append(str(piece))
             elif isinstance(content, str):
                 descriptions.append(content)
 
         return " ".join(descriptions), screenshots
 
-    def handle_response(self, response, kwargs, event = None):
-
-        print("handling response")
-
-        if not event:
-            return response
+    def handle_response(self, response, kwargs):
+        event = Client().session.active_step
 
         # for synchronous streaming responses
         if isinstance(response, Stream):
-            return self._handle_stream_response(response, kwargs, event)
+            return self._handle_stream_response(response, kwargs)
         
         # for async streaming responses -- added new
         if isinstance(response, AsyncStream):
-            return self._handle_async_stream_response(response, kwargs, event)
+            return self._handle_async_stream_response(response, kwargs)
         
         # for non streaming responses
-        return self._handle_regular_response(response, kwargs, event)
+        return self._handle_regular_response(response, kwargs)
     
-    def _handle_stream_response(self, response: Stream, kwargs, event):
+    def _handle_stream_response(self, response: Stream, kwargs):
 
         accumulated_reponse = ""
         input_tokens = 0
         output_tokens = 0
-        print("streaming response")
 
         def generate():
 
@@ -92,7 +91,7 @@ class AnthropicHandler(BaseProvider):
                                 "output_tokens": output_tokens
                             })
 
-                        event.update_event(
+                        Client().session.update_event(
                             is_finished=True,
                             is_successful=True,
                             cost_added=cost,
@@ -103,7 +102,7 @@ class AnthropicHandler(BaseProvider):
                     yield chunk
 
             except Exception as e:
-                event.update_event(
+                Client().session.update_event(
                     is_finished=True,
                     result=f"anthropic Error: {str(e)}",
                     is_successful=False,
@@ -115,7 +114,7 @@ class AnthropicHandler(BaseProvider):
 
         return generate()
     
-    def _handle_async_stream_response(self, response: AsyncStream, kwargs, event):
+    def _handle_async_stream_response(self, response: AsyncStream, kwargs):
 
         accumulated_reponse = ""
         input_tokens = 0
@@ -145,7 +144,7 @@ class AnthropicHandler(BaseProvider):
                                 "output_tokens": output_tokens
                             })
 
-                        event.update_event(
+                        Client().session.update_event(
                             is_finished=True,
                             is_successful=True,
                             cost_added=cost,
@@ -157,7 +156,7 @@ class AnthropicHandler(BaseProvider):
 
             except Exception as e:
 
-                event.update_event(
+                Client().session.update_event(
                     is_finished=True,
                     result=f"anthropic Error: {str(e)}",
                     is_successful=False,
@@ -170,12 +169,15 @@ class AnthropicHandler(BaseProvider):
         return agenerate()
     
 
-    def _handle_regular_response(self, response, kwargs, event):
+    def _handle_regular_response(self, response, kwargs):
 
         try:
             # extract text
             if hasattr(response, "content") and response.content:
-                response_text = response.content[0].text
+                if hasattr(response.content[0], "text"):
+                    response_text = response.content[0].text
+                else:
+                    response_text = str(response.content[0])
             else:
                 response_text = str(response)
 
@@ -188,7 +190,7 @@ class AnthropicHandler(BaseProvider):
                     "output_tokens": response.usage.output_tokens
                 })
 
-            event.update_event(
+            Client().session.update_event(
                 result=response_text,
                 is_finished=True,
                 is_successful=True,
@@ -197,7 +199,7 @@ class AnthropicHandler(BaseProvider):
             )
 
         except Exception as e:
-            event.update_event(
+            Client().session.update_event(
                 is_finished=True,
                 is_successful=False,
                 cost_added=None,
@@ -216,39 +218,35 @@ class AnthropicHandler(BaseProvider):
         self.original_create = messages.Messages.create
         self.original_create_async = AsyncMessages.create
         
-        def patched_create(*args, **kwargs):
-            print("patching - sync")
-            
-            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+        def patched_create(*args, **kwargs):            
+            step = Client().session.active_step
+            if not step:
+                return self.original_create(*args, **kwargs)
             description, images = self._format_messages(kwargs.get("messages", []))
-            event = None
             
-            if step:
-                event = step.create_event(
-                    description=description,
-                    result="Waiting for response...",
-                    screenshots=images
-                )
+            event_id = Client().session.create_event(
+                description=description,
+                result="Waiting for response...",
+                screenshots=images
+            )
             
             result = self.original_create(*args, **kwargs)
-            return self.handle_response(result, kwargs, event)
+            return self.handle_response(result, kwargs)
         
         async def patched_create_async(*args, **kwargs):
-            print("patching - async")
-            
-            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+            step = Client().session.active_step
+            if not step:
+                return self.original_create_async(*args, **kwargs)
             description, images = self._format_messages(kwargs.get("messages", []))
-            event = None
             
-            if step:
-                event = step.create_event(
-                    description=description,
-                    result="Waiting for response...",
-                    screenshots=images
-                )
+            event_id = Client().session.create_event(
+                description=description,
+                result="Waiting for response...",
+                screenshots=images
+            )
             
             result = await self.original_create_async(*args, **kwargs)
-            return self.handle_response(result, kwargs, event)
+            return self.handle_response(result, kwargs)
         
         messages.Messages.create = patched_create
         AsyncMessages.create = patched_create_async
