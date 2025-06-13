@@ -2,13 +2,14 @@
 from typing import Optional
 
 from .base_providers import BaseProvider
+from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
 from lucidicai.singleton import singleton
 
 @singleton
 class OpenAIHandler(BaseProvider):
-    def __init__(self, client):
-        super().__init__(client)
+    def __init__(self):
+        super().__init__()
         self._provider_name = "OpenAI"
         self.original_create = None
         self.original_parse = None
@@ -18,10 +19,10 @@ class OpenAIHandler(BaseProvider):
             return "No messages provided"
         
         if isinstance(messages, list):
+            out = []
+            images = []
             for msg in messages:
                 content = msg.get('content', '')
-                out = []
-                images = []
                 if isinstance(content, list):
                     for content_piece in content:
                         if content_piece.get('type') == 'text':
@@ -33,20 +34,17 @@ class OpenAIHandler(BaseProvider):
                             out.append(content_piece)
                 elif isinstance(content, str):
                     out.append(content)
-                return out, images
+            return out, images
         
-        return str(messages)
+        return str(messages), []
 
-    def handle_response(self, response, kwargs, event = None):
-        if not event:
-            return response
-
+    def handle_response(self, response, kwargs):
         from openai import Stream
         if isinstance(response, Stream):
-            return self._handle_stream_response(response, kwargs, event)
-        return self._handle_regular_response(response, kwargs, event)
+            return self._handle_stream_response(response, kwargs)
+        return self._handle_regular_response(response, kwargs)
 
-    def _handle_stream_response(self, response, kwargs, event):
+    def _handle_stream_response(self, response, kwargs):
         accumulated_response = ""
 
         def generate():
@@ -66,7 +64,7 @@ class OpenAIHandler(BaseProvider):
                         model = kwargs.get('model')
                         cost = calculate_cost(model, dict(chunk.usage))
                         
-                        event.update_event(
+                        Client().session.update_event(
                             is_finished=True,
                             is_successful=True,
                             cost_added=cost,
@@ -77,7 +75,7 @@ class OpenAIHandler(BaseProvider):
                     yield chunk
                     
             except Exception as e:
-                event.update_event(
+                Client().session.update_event(
                     is_finished=True,
                     is_successful=False,
                     cost_added=None,
@@ -88,7 +86,7 @@ class OpenAIHandler(BaseProvider):
 
         return generate()
 
-    def _handle_regular_response(self, response, kwargs, event):
+    def _handle_regular_response(self, response, kwargs):
         try:
             # Handle structured output response (beta.chat.completions.parse)
             if (hasattr(response, 'choices') and response.choices and 
@@ -106,7 +104,7 @@ class OpenAIHandler(BaseProvider):
                 model = response.model if hasattr(response, 'model') else kwargs.get('model')
                 cost = calculate_cost(model, dict(response.usage))
 
-            event.update_event(
+            Client().session.update_event(
                 is_finished=True,
                 is_successful=True,
                 cost_added=cost,
@@ -118,7 +116,7 @@ class OpenAIHandler(BaseProvider):
             return response
 
         except Exception as e:
-            event.update_event(
+            Client().session.update_event(
                 is_finished=True,
                 is_successful=False,
                 cost_added=None,
@@ -136,50 +134,51 @@ class OpenAIHandler(BaseProvider):
         self.original_parse = beta_completions.Completions.parse
         
         def patched_create_function(*args, **kwargs):
-            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+            step = Client().session.active_step
+            if step is None:
+                return self.original_create(*args, **kwargs)
             
             # Add stream_options for usage tracking if streaming is enabled
             if kwargs.get('stream', False) and 'stream_options' not in kwargs:
                 kwargs['stream_options'] = {"include_usage": True}
             
             # Create event before API call
-            if step:
-                description, images = self._format_messages(kwargs.get('messages', ''))
-                event = step.create_event(
-                    description=description,
-                    result="Waiting for response...",
-                    screenshots=images
-                )
-                
+            description, images = self._format_messages(kwargs.get('messages', ''))
+            event_id = Client().session.create_event(
+                description=description,
+                result="Waiting for response...",
+                screenshots=images
+            )
+            
             
             # Make API call
             result = self.original_create(*args, **kwargs)
-            return self.handle_response(result, kwargs, event=event)
+            return self.handle_response(result, kwargs)
         
         def patched_parse_function(*args, **kwargs):
-            step = kwargs.pop("step", self.client.session.active_step) if "step" in kwargs else self.client.session.active_step
+            step = Client().session.active_step
+            if step is None:
+                return self.original_parse(*args, **kwargs)
             
-            # Create event before API call
-            if step:
-                description, images = self._format_messages(kwargs.get('messages', ''))
-                # Add info about structured output format
-                response_format = kwargs.get('response_format')
-                if response_format:
-                    description += f"\n[Structured Output: {response_format.__name__}]"
-                
-                event = step.create_event(
-                    description=description,
-                    result="Waiting for structured response...",
-                    screenshots=images
-                )
+            description, images = self._format_messages(kwargs.get('messages', ''))
+            # Add info about structured output format
+            response_format = kwargs.get('response_format')
+            if response_format:
+                description += f"\n[Structured Output: {response_format.__name__}]"
+            
+            event_id = Client().session.create_event(
+                description=description,
+                result="Waiting for structured response...",
+                screenshots=images
+            )
             
             # Check if we're using Anthropic base URL and handle differently
             if self._is_using_anthropic_base_url(args, kwargs):
-                return self._handle_anthropic_parse(*args, **kwargs, event=event)
-            
+                return self._handle_anthropic_parse(*args, **kwargs, event_id=event_id)
+
             # Make API call
             result = self.original_parse(*args, **kwargs)
-            return self.handle_response(result, kwargs, event=event)
+            return self.handle_response(result, kwargs)
         
         # Apply patches
         completions.Completions.create = patched_create_function
@@ -204,12 +203,12 @@ class OpenAIHandler(BaseProvider):
         
         # Get the response format (Pydantic model)
         response_format = kwargs.get('response_format')
-        event = kwargs.pop('event', None)
+        event_id = kwargs.pop('event_id', None)
         
         if not response_format:
             # Fall back to regular parse if no format specified
             result = self.original_parse(*args, **kwargs)
-            return self.handle_response(result, kwargs, event=event)
+            return self.handle_response(result, kwargs, event_id=event_id)
         
         # Modify the messages to request JSON output
         modified_kwargs = kwargs.copy()

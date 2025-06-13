@@ -68,8 +68,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create a new event
-            event = Client().session.active_step.create_event(description=text, screenshots=images)
-            self.run_to_event[run_str] = event
+            event_id = Client().session.create_event(description=text, screenshots=images)
+            self.run_to_event[run_str] = event_id
         except Exception as e:
             print(f"[Lucidic] Error creating event: {e}")
             print(traceback.format_exc())
@@ -118,8 +118,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create a new event
-            event = Client().session.active_step.create_event(description=text, screenshots=images_b64)
-            self.run_to_event[run_str] = event
+            event_id = Client().session.create_event(description=text, screenshots=images_b64)
+            self.run_to_event[run_str] = event_id
         except Exception as e:
             print(f"[Lucidic] Error creating event: {e}")
 
@@ -162,14 +162,15 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             if run_str in self.run_to_event:
-                event = self.run_to_event[run_str]
+                event_id = self.run_to_event[run_str]
                 
-                if not event.is_finished:
+                if not Client().session.event_history[event_id].is_finished:
                     result = None
                     if message:
                         result = message.pretty_repr()
                         
-                    event.update_event(
+                    Client().session.update_event(
+                        event_id=event_id,
                         is_finished=True, 
                         is_successful=True, 
                         cost_added=cost, 
@@ -210,9 +211,15 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             if run_str in self.run_to_event:
-                event = self.run_to_event[run_str]
-                if not event.is_finished:
-                    event.update_event(is_finished=True, model=model)
+                event_id = self.run_to_event[run_str]
+                if not Client().session.event_history[event_id].is_finished:
+                    Client().session.update_event(
+                        event_id=event_id,
+                        is_finished=True, 
+                        is_successful=False, 
+                        model=model,
+                        result=str(error)
+                    )
                     print(f"[Lucidic] Ended event with error")
                 del self.run_to_event[run_str]
             else:
@@ -265,8 +272,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create a new event
-            event = Client().session.active_step.create_event(description=text, screenshots=images_b64)
-            self.run_to_event[run_str] = event
+            event_id = Client().session.active_step.create_event(description=text, screenshots=images_b64)
+            self.run_to_event[run_str] = event_id
         except Exception as e:
             print(f"[Lucidic] Error creating chain event: {e}")
 
@@ -293,9 +300,14 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             if run_id in self.run_to_event:
-                event = self.run_to_event[run_id]
-                if not event.is_finished:
-                    event.update_event(is_finished=True, is_successful=True, result=result)
+                event_id = self.run_to_event[run_id]
+                if not Client().session.event_history[event_id].is_finished:
+                    Client().session.update_event(
+                        event_id=event_id,
+                        is_finished=True, 
+                        is_successful=True, 
+                        result=result
+                    )
                 del self.run_to_event[run_id]
             else:
                 print(f"[Lucidic] No event found")
@@ -314,9 +326,14 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             if run_id in self.run_to_event:
-                event = self.run_to_event[run_id]
-                if not event.is_finished:
-                    event.update_event(is_finished=True, is_successful=False)
+                event_id = self.run_to_event[run_id]
+                if not Client().session.event_history[event_id].is_finished:
+                    Client().session.update_event(
+                        event_id=event_id,
+                        is_finished=True, 
+                        is_successful=False, 
+                        result=str(error)
+                    )
                 del self.run_to_event[run_id]
             else:
                 print(f"[Lucidic] No event found")
@@ -340,8 +357,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create event
-            event = Client().session.active_step.create_event(description=description)
-            self.run_to_event[run_id] = event
+            event_id = Client().session.active_step.create_event(description=description)
+            self.run_to_event[run_id] = event_id
         except Exception as e:
             print(f"[Lucidic] Error creating tool event: {e}")
 
@@ -364,9 +381,14 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             if run_id in self.run_to_event:
-                event = self.run_to_event[run_id]
-                if not event.is_finished:
-                    event.update_event(is_finished=True, is_successful=True, result=result)
+                event_id = self.run_to_event[run_id]
+                if not Client().session.event_history[event_id].is_finished:
+                    Client().session.update_event(
+                        event_id=event_id,
+                        is_finished=True, 
+                        is_successful=True, 
+                        result=result
+                    )
                 del self.run_to_event[run_id]
             else:
                 print(f"[Lucidic] No event found")
@@ -387,9 +409,14 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             if run_id in self.run_to_event:
-                event = self.run_to_event[run_id]
-                if not event.is_finished:
-                    event.update_event(is_finished=True, is_successful=False)
+                event_id = self.run_to_event[run_id]
+                if not Client().session.event_history[event_id].is_finished:
+                    Client().session.update_event(
+                        event_id=event_id,
+                        is_finished=True, 
+                        is_successful=False, 
+                        result=str(error)
+                    )
                 del self.run_to_event[run_id]
             else:
                 print(f"[Lucidic] No event found")
@@ -412,8 +439,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create event
-            event = Client().session.active_step.create_event(description=description)
-            self.run_to_event[run_id] = event
+            event_id = Client().session.active_step.create_event(description=description)
+            self.run_to_event[run_id] = event_id
         except Exception as e:
             print(f"[Lucidic] Error creating retriever event: {e}")
 
@@ -443,9 +470,14 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             if run_id in self.run_to_event:
-                event = self.run_to_event[run_id]
-                if not event.is_finished:
-                    event.update_event(is_finished=True, is_successful=True, result=result)
+                event_id = self.run_to_event[run_id]
+                if not Client().session.event_history[event_id].is_finished:
+                    Client().session.update_event(
+                        event_id=event_id,
+                        is_finished=True, 
+                        is_successful=True, 
+                        result=result
+                    )
                 del self.run_to_event[run_id]
             else:
                 print(f"[Lucidic] No event found")
@@ -466,9 +498,14 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             if run_id in self.run_to_event:
-                event = self.run_to_event[run_id]
-                if not event.is_finished:
-                    event.update_event(is_finished=True, is_successful=False)
+                event_id = self.run_to_event[run_id]
+                if not Client().session.event_history[event_id].is_finished:
+                    Client().session.update_event(
+                        event_id=event_id,
+                        is_finished=True, 
+                        is_successful=False, 
+                        result=str(error)
+                    )
                 del self.run_to_event[run_id]
             else:
                 print(f"[Lucidic] No event found")
@@ -507,13 +544,18 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create event
-            event = Client().session.active_step.create_event(description=description)
-            self.run_to_event[run_id] = event
+            event_id = Client().session.active_step.create_event(description=description)
+            self.run_to_event[run_id] = event_id
             
             # Note: Agent actions are immediately ended in the original code
             # This seems intentional so we'll keep the behavior but use our event
-            if not event.is_finished:
-                event.update_event(is_finished=True, is_successful=True, result=result)
+            if not Client().session.event_history[event_id].is_finished:
+                Client().session.update_event(
+                    event_id=event_id,
+                    is_finished=True, 
+                    is_successful=True, 
+                    result=result
+                )
             del self.run_to_event[run_id]
             
             print(f"[Lucidic] Processed agent action")
@@ -548,7 +590,12 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             
         try:
             # Create event
-            Client().session.active_step.update_event(is_finished=True, is_successful=True, result=result)
+            if not Client().session._active_event.is_finished:
+                Client().session.update_event(
+                    is_finished=True, 
+                    is_successful=True, 
+                    result=result
+                )
         
             
             print(f"[Lucidic] Processed agent finish")

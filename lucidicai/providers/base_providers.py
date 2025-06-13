@@ -2,8 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 class BaseProvider(ABC):
-    def __init__(self, client):
-        self.client = client  # TODO: never store reference to client, always get fresh instance from Client()
+    def __init__(self):
         self._provider_name = None
     
     @abstractmethod

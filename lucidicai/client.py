@@ -25,12 +25,11 @@ class Client:
         agent_id: str,
     ):
         self.base_url = "https://analytics.lucidic.ai/api" if not (os.getenv("LUCIDIC_DEBUG", 'False') == 'True') else "http://localhost:8000/api"
-        self._initialized = False
-        self._session = None
-        self._provider = None
+        self.initialized = False
+        self.session = None
+        self.providers = []
         self.api_key = lucidic_api_key
         self.agent_id = agent_id
-        self._initialized = True
         self.request_session = requests.Session()
         retry_cfg = Retry(
             total=3,                     # 3 attempts in total
@@ -44,20 +43,15 @@ class Client:
         self.prompts = dict()
         try:
             self.verify_api_key(self.base_url, lucidic_api_key)
-        except APIKeyVerificationError as e:
-            raise APIKeyVerificationError(str(e))
+        except APIKeyVerificationError:
+            raise APIKeyVerificationError("Invalid API Key")
     
-    @property
-    def session(self) -> Optional[Session]:
-        return self._session
-
-    def clear_session(self) -> None:
-        if self._provider:
-            self._provider.undo_override()
-        self._session = None
-    
-    def reset(self):
+    def clear(self):
+        self.undo_overrides()
         clear_singletons()
+        self.initialized = False
+        self.session = None
+        self.providers = []
         del self
 
     def verify_api_key(self, base_url: str, api_key: str) -> Tuple[str, str]:
@@ -66,18 +60,12 @@ class Client:
 
     def set_provider(self, provider: BaseProvider) -> None:
         """Set the LLM provider to track"""
-        if self._provider:
-            self._provider.undo_override()
-        self._provider = provider
-        if self._session:
-            self._provider.override()
-    
-    def track_pydantic_ai(self):
-        """Initialize PydanticAI tracking"""
-        from .providers.pydantic_ai_handler import PydanticAIHandler
-        handler = PydanticAIHandler(self)
-        self.set_provider(handler)
-        return handler
+        self.providers.append(provider)
+        provider.override()
+
+    def undo_overrides(self):
+        for provider in self.providers:
+            provider.undo_override()
     
     def init_session(
         self,
@@ -87,10 +75,7 @@ class Client:
         rubrics: Optional[list] = None,
         tags: Optional[list] = None
     ) -> None:
-        if not self._initialized:  # TODO: unnecessary I think
-            raise LucidicNotInitializedError()
-        
-        self._session = Session(
+        self.session = Session(
             agent_id=self.agent_id,
             session_name=session_name,
             mass_sim_id=mass_sim_id,
@@ -98,8 +83,16 @@ class Client:
             rubrics=rubrics,
             tags=tags
         )
-        if self._provider:
-            self._provider.override()
+        self.initialized = True
+        return self.session.session_id
+
+    def continue_session(self, session_id: str) -> None:
+        self.session = Session(
+            agent_id=self.agent_id,
+            session_id=session_id
+        )
+        self.initialized = True
+        return self.session.session_id
 
     def init_mass_sim(self, **kwargs) -> str:
         kwargs['agent_id'] = self.agent_id
