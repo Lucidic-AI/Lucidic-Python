@@ -1,5 +1,6 @@
 """Langchain integration for Lucidic API with detailed logging"""
 import base64
+import logging
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
@@ -13,6 +14,8 @@ from langchain_core.load.dump import dumps
 import json
 import traceback
 
+logger = logging.getLogger("Lucidic")
+
 
 class LucidicLangchainHandler(BaseCallbackHandler):
     
@@ -24,7 +27,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         self.run_to_model = {}
         # Keep track of which run is associated with which event
         self.run_to_event = {}
-        print("[Lucidic] Initialized LucidicLangchainHandler")
+        logger.debug("Initialized LucidicLangchainHandler")
 
     def _get_model_name(self, serialized: Dict, kwargs: Dict) -> str:
         """Extract model name from input parameters"""
@@ -48,7 +51,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Handle start of LLM calls"""
-        print(f"[Lucidic] Starting LLM call in Langchain Handler, creating event...")
+        logger.debug("Starting LLM call in Langchain Handler, creating event...")
         run_str = str(run_id)
         model = self._get_model_name(serialized, kwargs)
         self.run_to_model[run_str] = model
@@ -63,7 +66,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot create event - no active session or step")
+            logger.warning("Cannot create event - no active session or step")
             return
             
         try:
@@ -71,8 +74,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             event_id = Client().session.create_event(description=text, screenshots=images)
             self.run_to_event[run_str] = event_id
         except Exception as e:
-            print(f"[Lucidic] Error creating event: {e}")
-            print(traceback.format_exc())
+            logger.error(f"Error creating event: {e}")
+            logger.error(traceback.format_exc())
 
 #TODO: Don't really know when this is used probably need to check documentation. 
     def on_chat_model_start(
@@ -87,7 +90,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Handle start of chat model calls"""
-        print(f"[Lucidic] Starting LLM call in Langchain Handler, creating event...")
+        logger.debug("Starting LLM call in Langchain Handler, creating event...")
         run_str = str(run_id)
         model = self._get_model_name(serialized, kwargs)
         self.run_to_model[run_str] = model
@@ -113,7 +116,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
 
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot create event - no active session or step")
+            logger.warning("Cannot create event - no active session or step")
             return
             
         try:
@@ -121,7 +124,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             event_id = Client().session.create_event(description=text, screenshots=images_b64)
             self.run_to_event[run_str] = event_id
         except Exception as e:
-            print(f"[Lucidic] Error creating event: {e}")
+            logger.error(f"Error creating event: {e}")
 
     def on_llm_new_token(
         self,
@@ -144,7 +147,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Handle end of LLM call"""
-        print(f"[Lucidic] Ending LLM call in Langchain Handler, ending event...")
+        logger.debug("Ending LLM call in Langchain Handler, ending event...")
         run_str = str(run_id)
         model = self.run_to_model.get(run_str, "unknown")
         
@@ -157,7 +160,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         
         # Make sure we have a valid session
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
             
         try:
@@ -178,14 +181,14 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                         result=result
                     )
                 else:
-                    print(f"[Lucidic] Event already finished")
+                    logger.debug("Event already finished")
                 
                 del self.run_to_event[run_str]
             else:
-                print(f"[Lucidic] No event found")
+                logger.warning("No event found")
         except Exception as e:
-            print(f"[Lucidic] Error in event ending: {e}")
-            print(traceback.format_exc())
+            logger.error(f"Error in event ending: {e}")
+            logger.error(traceback.format_exc())
             
         # Clean up
         if run_str in self.run_to_model:
@@ -200,13 +203,13 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Handle LLM errors"""
-        print(f"[Lucidic] Handling LLM error in Langchain Handler, ending event...")
+        logger.debug("Handling LLM error in Langchain Handler, ending event...")
         run_str = str(run_id)
         model = self.run_to_model.get(run_str, "unknown")
         
         # Make sure we have a valid session
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
             
         try:
@@ -220,12 +223,12 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                         model=model,
                         result=str(error)
                     )
-                    print(f"[Lucidic] Ended event with error")
+                    logger.debug("Ended event with error")
                 del self.run_to_event[run_str]
             else:
-                print(f"[Lucidic] No event found for")
+                logger.warning("No event found")
         except Exception as e:
-            print(f"[Lucidic] Error ending event: {e}")
+            logger.error(f"Error ending event: {e}")
             
         # Clean up
         if run_str in self.run_to_model:
@@ -243,7 +246,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         **kwargs: Any
     ) -> None:
         """Handle start of chain execution"""
-        print(f"[Lucidic] Starting chain execution in Langchain Handler, creating event...")
+        logger.debug("Starting chain execution in Langchain Handler, creating event...")
         run_str = str(run_id)
         
         text = []
@@ -267,7 +270,7 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot create event - no active session or step")
+            logger.warning("Cannot create event - no active session or step")
             return
             
         try:
@@ -275,16 +278,16 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             event_id = Client().session.active_step.create_event(description=text, screenshots=images_b64)
             self.run_to_event[run_str] = event_id
         except Exception as e:
-            print(f"[Lucidic] Error creating chain event: {e}")
+            logger.error(f"Error creating chain event: {e}")
 
     def on_chain_end(self, outputs: Dict[str, Any], **kwargs: Any) -> None:
         """Handle end of chain execution"""
-        print(f"[Lucidic] Ending chain execution in Langchain Handler, ending event...")
+        logger.debug("Ending chain execution in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
         
         # Extract result from outputs
@@ -310,18 +313,18 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                     )
                 del self.run_to_event[run_id]
             else:
-                print(f"[Lucidic] No event found")
+                logger.warning("No event found")
         except Exception as e:
-            print(f"[Lucidic] Error ending chain event: {e}")
+            logger.error(f"Error ending chain event: {e}")
 
     def on_chain_error(self, error: BaseException, **kwargs: Any) -> None:
         """Handle chain errors"""
-        print(f"[Lucidic] Handling chain error in Langchain Handler, ending event...")
+        logger.debug("Handling chain error in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
             
         try:
@@ -336,23 +339,23 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                     )
                 del self.run_to_event[run_id]
             else:
-                print(f"[Lucidic] No event found")
+                logger.warning("No event found")
         except Exception as e:
-            print(f"[Lucidic] Error ending chain event: {e}")
+            logger.error(f"Error ending chain event: {e}")
 
     # Simple implementations for remaining methods:
     def on_tool_start(self, serialized, input_str, **kwargs):
         """
         Handle start of tool execution
         """
-        print(f"[Lucidic] Starting tool execution in Langchain Handler, creating event...")
+        logger.debug("Starting tool execution in Langchain Handler, creating event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         tool_name = serialized.get("name", "Unknown Tool")
         description = f"Tool Call ({tool_name}): {input_str[:100]}..."
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot create event - no active session or step")
+            logger.warning("Cannot create event - no active session or step")
             return
             
         try:
@@ -360,18 +363,18 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             event_id = Client().session.active_step.create_event(description=description)
             self.run_to_event[run_id] = event_id
         except Exception as e:
-            print(f"[Lucidic] Error creating tool event: {e}")
+            logger.error(f"Error creating tool event: {e}")
 
     def on_tool_end(self, output, **kwargs):
         """
         Handle end of tool execution
         """
-        print(f"[Lucidic] Ending tool execution in Langchain Handler, ending event...")
+        logger.debug("Ending tool execution in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
         
         # Get result from output
@@ -391,20 +394,20 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                     )
                 del self.run_to_event[run_id]
             else:
-                print(f"[Lucidic] No event found")
+                logger.warning("No event found")
         except Exception as e:
-            print(f"[Lucidic] Error ending tool event: {e}")
+            logger.error(f"Error ending tool event: {e}")
 
     def on_tool_error(self, error, **kwargs):
         """
         Handle tool errors
         """
-        print(f"[Lucidic] Handling tool error in Langchain Handler, ending event...")
+        logger.debug("Handling tool error in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
             
         try:
@@ -419,22 +422,22 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                     )
                 del self.run_to_event[run_id]
             else:
-                print(f"[Lucidic] No event found")
+                logger.warning("No event found")
         except Exception as e:
-            print(f"[Lucidic] Error ending tool event: {e}")
+            logger.error(f"Error ending tool event: {e}")
 
     def on_retriever_start(self, serialized, query, **kwargs):
         """
         Handle start of retriever execution
         """
-        print(f"[Lucidic] Starting retriever execution in Langchain Handler, creating event...")
+        logger.debug("Starting retriever execution in Langchain Handler, creating event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         retriever_type = serialized.get("name", "Unknown Retriever")
         description = f"Retriever ({retriever_type}): {query[:100]}..."
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot create event - no active session or step")
+            logger.warning("Cannot create event - no active session or step")
             return
             
         try:
@@ -442,18 +445,18 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             event_id = Client().session.active_step.create_event(description=description)
             self.run_to_event[run_id] = event_id
         except Exception as e:
-            print(f"[Lucidic] Error creating retriever event: {e}")
+            logger.error(f"Error creating retriever event: {e}")
 
     def on_retriever_end(self, documents, **kwargs):
         """
         Handle end of retriever execution
         """ 
-        print(f"[Lucidic] Ending retriever execution in Langchain Handler, ending event...")
+        logger.debug("Ending retriever execution in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
         
         # Extract result from documents
@@ -480,20 +483,20 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                     )
                 del self.run_to_event[run_id]
             else:
-                print(f"[Lucidic] No event found")
+                logger.warning("No event found")
         except Exception as e:
-            print(f"[Lucidic] Error ending retriever event: {e}")
+            logger.error(f"Error ending retriever event: {e}")
 
     def on_retriever_error(self, error, **kwargs):
         """
         Handle retriever errors
         """
-        print(f"[Lucidic] Handling retriever error in Langchain Handler, ending event...")
+        logger.debug("Handling retriever error in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
             
         try:
@@ -508,22 +511,22 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                     )
                 del self.run_to_event[run_id]
             else:
-                print(f"[Lucidic] No event found")
+                logger.warning("No event found")
         except Exception as e:
-            print(f"[Lucidic] Error ending retriever event: {e}")
+            logger.error(f"Error ending retriever event: {e}")
 
     def on_agent_action(self, action, **kwargs):
         """
         Handle agent actions
         """
-        print(f"[Lucidic] Starting agent action in Langchain Handler, creating event...")
+        logger.debug("Starting agent action in Langchain Handler, creating event...")
         run_id = str(kwargs.get("run_id", "unknown"))
         tool = getattr(action, 'tool', 'unknown_tool')
         description = f"Agent Action: {tool}"
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot create event - no active session or step")
+            logger.warning("Cannot create event - no active session or step")
             return
         
         # Extract useful information from the action
@@ -558,21 +561,21 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                 )
             del self.run_to_event[run_id]
             
-            print(f"[Lucidic] Processed agent action")
+            logger.debug("Processed agent action")
         except Exception as e:
-            print(f"[Lucidic] Error processing agent action: {e}")
+            logger.error(f"Error processing agent action: {e}")
 
     def on_agent_finish(self, finish, **kwargs):
         """
         Handle agent finish events
         """
-        print(f"[Lucidic] Handling agent finish in Langchain Handler, ending event...")
+        logger.debug("Handling agent finish in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
 
         
         # Make sure we have a valid session and step
         if not (Client().session and Client().session.active_step):
-            print(f"[Lucidic] Cannot end event - no active session or step")
+            logger.warning("Cannot end event - no active session or step")
             return
         
         # Extract result from finish
@@ -598,22 +601,22 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                 )
         
             
-            print(f"[Lucidic] Processed agent finish")
+            logger.debug("Processed agent finish")
         except Exception as e:
-            print(f"[Lucidic] Error processing agent finish: {e}")
+            logger.error(f"Error processing agent finish: {e}")
     
     def attach_to_llms(self, llm_or_chain_or_agent) -> None:
         """Attach this handler to an LLM, chain, or agent"""
         # If it's a direct LLM
-        print(f"[Lucidic] Attempting to attach to {llm_or_chain_or_agent.__class__.__name__}")
+        logger.debug(f"Attempting to attach to {llm_or_chain_or_agent.__class__.__name__}")
         if hasattr(llm_or_chain_or_agent, 'callbacks'):
             callbacks = llm_or_chain_or_agent.callbacks or []
             if not any(isinstance(callback, LucidicLangchainHandler) for callback in callbacks):
                 callbacks.append(self)
                 llm_or_chain_or_agent.callbacks = callbacks
-                print(f"[Lucidic] Successfully attached to {llm_or_chain_or_agent.__class__.__name__}")
+                logger.debug(f"Successfully attached to {llm_or_chain_or_agent.__class__.__name__}")
             else:
-                print(f"[Lucidic] Already attached to {llm_or_chain_or_agent.__class__.__name__}")
+                logger.debug(f"Already attached to {llm_or_chain_or_agent.__class__.__name__}")
         # If it's a chain or agent, try to find LLMs recursively
         for attr_name in dir(llm_or_chain_or_agent):
             try:
@@ -625,8 +628,8 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                     if not any(isinstance(callback, LucidicLangchainHandler) for callback in callbacks):
                         callbacks.append(self)
                         attr.callbacks = callbacks
-                        print(f"[Lucidic] Successfully attached to {attr.__class__.__name__} in {attr_name}")
+                        logger.debug(f"Successfully attached to {attr.__class__.__name__} in {attr_name}")
                     else:
-                        print(f"[Lucidic] Already attached to {attr.__class__.__name__} in {attr_name}")
+                        logger.debug(f"Already attached to {attr.__class__.__name__} in {attr_name}")
             except Exception as e:
-                print(f"[Lucidic] Warning: Could not attach to {attr_name}: {e}")
+                logger.warning(f"Could not attach to {attr_name}: {e}")

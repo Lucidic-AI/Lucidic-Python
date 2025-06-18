@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, Tuple, List
 
 from .base_providers import BaseProvider
@@ -7,6 +8,8 @@ from lucidicai.model_pricing import calculate_cost
 
 from anthropic import Anthropic, AsyncAnthropic, Stream, AsyncStream
 
+logger = logging.getLogger("Lucidic")
+
 
 @singleton
 class AnthropicHandler(BaseProvider):
@@ -15,13 +18,13 @@ class AnthropicHandler(BaseProvider):
         self._provider_name = "Anthropic"
         self.original_create = None
         self.original_create_async = None
-        print("AnthropicHandler initialized")
+        logger.debug("AnthropicHandler initialized")
 
     def _format_messages(self, messages) -> Tuple[str, List[str]]:
         """
         Extract plain-text description and list of image URLs from Anthropic-formatted messages.
         """
-        print("formatting messages")
+        logger.debug("formatting messages")
         descriptions: List[str] = []
         screenshots: List[str] = []
         if not messages:

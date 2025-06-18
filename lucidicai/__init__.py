@@ -1,4 +1,5 @@
 import atexit
+import logging
 import os
 import signal
 from typing import List, Literal, Optional
@@ -14,6 +15,15 @@ from .session import Session
 from .step import Step
 
 ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai"]
+
+# Configure logging
+logger = logging.getLogger("Lucidic")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('[Lucidic] %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 __all__ = [
     'Client',
@@ -94,7 +104,7 @@ def init(
         elif provider == "anthropic":
             client.set_provider(AnthropicHandler())
         elif provider == "langchain":
-            print(f"[Lucidic] For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
+            logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
         elif provider == "pydantic_ai":
             client.set_provider(PydanticAIHandler())
     session_id = client.init_session(
@@ -104,7 +114,7 @@ def init(
         rubrics=rubrics,
         tags=tags
     )
-    print("[Lucidic] Session initialized successfully")
+    logger.info("Session initialized successfully")
     return session_id
 
 
@@ -139,11 +149,11 @@ def continue_session(
         elif provider == "anthropic":
             client.set_provider(AnthropicHandler())
         elif provider == "langchain":
-            print(f"[Lucidic] For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
+            logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
         elif provider == "pydantic_ai":
             client.set_provider(PydanticAIHandler())
     session_id = client.continue_session(session_id=session_id)
-    print(f"[Lucidic] Session {session_id} continuing...")
+    logger.info(f"Session {session_id} continuing...")
     return session_id  # For consistency
 
 
@@ -166,7 +176,7 @@ def update_session(
     """
     client = Client()  # TODO: Fail silently if client not initialized yet
     if not client.session:
-        print("[Lucidic] Warning: update_session called when session not initialized. Please call lai.init() first.")
+        logger.warning("update_session called when session not initialized. Please call lai.init() first.")
         return
     client.session.update_session(**locals())
 
@@ -188,7 +198,7 @@ def end_session(
     """
     client = Client()
     if not client.session:
-        print("[Lucidic] Warning: end_session called when session not initialized. Please call lai.init() first.")
+        logger.warning("end_session called when session not initialized. Please call lai.init() first.")
         return
     client.session.update_session(is_finished=True, **locals())
     client.clear()
@@ -200,7 +210,7 @@ def reset_sdk() -> None:
     """
     client = Client()
     if not client.initialized:
-        print("[Lucidic] Warning: reset_sdk called when SDK not initialized. Please call lai.init() first.")
+        logger.warning("reset_sdk called when SDK not initialized. Please call lai.init() first.")
         return
     client.clear()
 
@@ -243,7 +253,7 @@ def create_mass_sim(
             agent_id=agent_id,
         )
     mass_sim_id = client.init_mass_sim(mass_sim_name=mass_sim_name, total_num_sims=total_num_sessions, task=task, tags=tags)  # TODO: change total_num_sims to total_num_sessions everywhere
-    print(f"[Lucidic] Created mass simulation with ID: {mass_sim_id}")
+    logger.info(f"Created mass simulation with ID: {mass_sim_id}")
     return mass_sim_id
 
 
@@ -270,7 +280,7 @@ def create_step(
     """
     client = Client()
     if not client.session:
-        print("[Lucidic] Warning: create_step called when session not initialized. Please call lai.init() first.")
+        logger.warning("create_step called when session not initialized. Please call lai.init() first.")
         return
     return client.session.create_step(**locals())
 
@@ -300,7 +310,7 @@ def update_step(
     """
     client = Client()
     if not client.session:
-        print("[Lucidic] Warning: update_step called when session not initialized. Please call lai.init() first.")
+        logger.warning("update_step called when session not initialized. Please call lai.init() first.")
         return
     if not client.session.active_step:
         raise InvalidOperationError("No active step to update")
@@ -332,7 +342,7 @@ def end_step(
     """
     client = Client()
     if not client.session:
-        print("[Lucidic] Warning: end_step called when session not initialized. Please call lai.init() first.")
+        logger.warning("end_step called when session not initialized. Please call lai.init() first.")
         return
     if not client.session.active_step:
         raise InvalidOperationError("No active step to end")
@@ -360,7 +370,7 @@ def create_event(
 
     client = Client()
     if not client.session:
-        print("[Lucidic] Warning: create_event called when session not initialized. Please call lai.init() first.")
+        logger.warning("create_event called when session not initialized. Please call lai.init() first.")
         return
     return client.session.create_event(**locals())
 
@@ -386,7 +396,7 @@ def update_event(
     """
     client = Client()
     if not client.session:
-        print("[Lucidic] Warning: update_event called when session not initialized. Please call lai.init() first.")
+        logger.warning("update_event called when session not initialized. Please call lai.init() first.")
         return
     client.session.update_event(**locals())
 
@@ -411,7 +421,7 @@ def end_event(
     """
     client = Client()
     if not client.session:
-        print("[Lucidic] Warning: end_event called when session not initialized. Please call lai.init() first.")
+        logger.warning("end_event called when session not initialized. Please call lai.init() first.")
         return
     client.session.update_event(is_finished=True, **locals())
 
@@ -436,7 +446,7 @@ def get_prompt(
     """
     client = Client()
     if not client.session:
-        print("[Lucidic] Warning: get_prompt called when session not initialized, and will return an empty string. Please call lai.init() first.")
+        logger.warning("get_prompt called when session not initialized, and will return an empty string. Please call lai.init() first.")
         return ""
     prompt = client.get_prompt(prompt_name, cache_ttl, label)
     if variables:
@@ -446,7 +456,7 @@ def get_prompt(
                 raise PromptError("Supplied variable not found in prompt")
             prompt = prompt.replace("{{" + key +"}}", str(val))
     if "{{" in prompt and "}}" in prompt and prompt.find("{{") < prompt.find("}}"):
-        print("[Lucidic] Warning: Unreplaced variable(s) left in prompt. Please check your prompt.")
+        logger.warning("Unreplaced variable(s) left in prompt. Please check your prompt.")
     return prompt
 
 

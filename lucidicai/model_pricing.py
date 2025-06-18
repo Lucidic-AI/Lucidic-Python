@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger("Lucidic")
+
 MODEL_PRICING = {
     # OpenAI GPT-4o Series (Verified 2025)
     "gpt-4o": {"input": 2.5, "output": 10.0},
@@ -239,9 +243,9 @@ def calculate_cost(model: str, token_usage: dict) -> float:
     if model_lower not in MODEL_PRICING:
         provider = get_provider_from_model(model)
         if provider in PROVIDER_AVERAGES:
-            print(f"[Warning] No pricing found for model: {model}, using {provider} average pricing")
+            logger.warning(f"No pricing found for model: {model}, using {provider} average pricing")
         else:
-            print(f"[Warning] No pricing found for model: {model}, using default pricing")
+            logger.warning(f"No pricing found for model: {model}, using default pricing")
     
     input_tokens = token_usage.get("prompt_tokens", token_usage.get("input_tokens", 0))
     output_tokens = token_usage.get("completion_tokens", token_usage.get("output_tokens", 0))

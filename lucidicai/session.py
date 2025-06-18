@@ -1,5 +1,6 @@
 import base64
 import io
+import logging
 from typing import List, Optional
 
 from PIL import Image
@@ -8,6 +9,8 @@ from .errors import InvalidOperationError, LucidicNotInitializedError
 from .image_upload import get_presigned_url, upload_image_to_s3
 from .step import Step
 from .event import Event
+
+logger = logging.getLogger("Lucidic")
 
 class Session:
     def __init__(
@@ -50,7 +53,7 @@ class Session:
         self.session_id = session_id
         data = Client().make_request('continuesession', 'POST', {"session_id": session_id})
         self.session_id = data["session_id"]
-        print(f"[Lucidic] Session {data['session_name']} continuing...")
+        logger.info(f"Session {data['session_name']} continuing...")
         return self.session_id
 
     @property   

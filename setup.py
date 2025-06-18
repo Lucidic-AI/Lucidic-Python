@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="lucidicai",
-    version="1.2.7",
+    version="1.2.8",
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
@@ -14,10 +14,12 @@ setup(
         "langchain-core",
         "openai>=1.3.0",
         "pillow",
+        "anthropic",
+        "pydantic_ai",
     ],
     author="Andy Liang",
     author_email="andy@lucidic.ai",
-    description="Lucidic AI API",
+    description="Lucidic AI Python SDK",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     classifiers=[
