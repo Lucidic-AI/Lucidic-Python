@@ -77,7 +77,7 @@ class Session:
     def create_step(self, **kwargs) -> Step:
         if not self.session_id:
             raise LucidicNotInitializedError()
-        step = Step(session_id=self.session_id)
+        step = Step(session_id=self.session_id, **kwargs)
         self.step_history[step.step_id] = step
         self._active_step = step
         return step.step_id
