@@ -194,6 +194,17 @@ def end_session(
     client.clear()
 
 
+def reset_sdk() -> None:
+    """
+    Reset the SDK.
+    """
+    client = Client()
+    if not client.initialized:
+        print("[Lucidic] Warning: reset_sdk called when SDK not initialized. Please call lai.init() first.")
+        return
+    client.clear()
+
+
 def create_mass_sim(
     mass_sim_name: str,
     total_num_sessions: int,
