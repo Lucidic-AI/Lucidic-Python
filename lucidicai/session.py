@@ -13,44 +13,34 @@ class Session:
     def __init__(
         self, 
         agent_id: str, 
-        session_name: Optional[str] = "", 
-        session_id: Optional[str] = None,
-        mass_sim_id: Optional[str] = None, 
-        task: Optional[str] = None,
-        rubrics: Optional[list] = None,
-        tags: Optional[list] = None
+        **kwargs
     ):
         self.agent_id = agent_id
-        self.session_name = session_name
-        self.mass_sim_id = mass_sim_id
-        self.task = task
         self.session_id = None
         self.step_history = dict()
         self._active_step: Optional[str] = None  # Rename to latest_step
         self.event_history = dict()
         self.latest_event = None
         self.is_finished = False
-        self.rubrics = rubrics
         self.is_successful = None
         self.is_successful_reason = None
         self.session_eval = None
         self.session_eval_reason = None
         self.has_gif = None
-        self.tags = tags
-        if session_id is None:  # The kwarg, not the attribute
-            self.init_session()
+        if kwargs.get("session_id", None) is None:  # The kwarg, not the attribute
+            self.init_session(**kwargs)
         else:
-            self.continue_session(session_id)
+            self.continue_session(kwargs["session_id"])
 
-    def init_session(self) -> None:
+    def init_session(self, **kwargs) -> None:
         from .client import Client
         request_data = {
             "agent_id": self.agent_id,
-            "session_name": self.session_name,
-            "task": self.task,
-            "mass_sim_id": self.mass_sim_id,
-            "rubrics": self.rubrics,
-            "tags": self.tags
+            "session_name": kwargs.get("session_name", None),
+            "task": kwargs.get("task", None),
+            "mass_sim_id": kwargs.get("mass_sim_id", None),
+            "rubrics": kwargs.get("rubrics", None),
+            "tags": kwargs.get("tags", None)
         }
         data = Client().make_request('initsession', 'POST', request_data)
         self.session_id = data["session_id"]
@@ -60,7 +50,7 @@ class Session:
         self.session_id = session_id
         data = Client().make_request('continuesession', 'POST', {"session_id": session_id})
         self.session_id = data["session_id"]
-        self.session_name = data["session_name"]
+        print(f"[Lucidic] Session {data['session_name']} continuing...")
         return self.session_id
 
     @property   
@@ -72,18 +62,15 @@ class Session:
         **kwargs
     ) -> None:
         from .client import Client
-        update_attrs = {k: v for k, v in kwargs.items() 
-                       if k != 'self' and v is not None}
-        self.__dict__.update(update_attrs)
         request_data = {
             "session_id": self.session_id,
-            "is_finished": self.is_finished,
-            "task": self.task,
-            "is_successful": self.is_successful,
-            "is_successful_reason": self.is_successful_reason,
-            "session_eval": self.session_eval,
-            "session_eval_reason": self.session_eval_reason,
-            "tags": self.tags
+            "is_finished": kwargs.get("is_finished", None),
+            "task": kwargs.get("task", None),
+            "is_successful": kwargs.get("is_successful", None),
+            "is_successful_reason": kwargs.get("is_successful_reason", None),
+            "session_eval": kwargs.get("session_eval", None),
+            "session_eval_reason": kwargs.get("session_eval_reason", None),
+            "tags": kwargs.get("tags", None)
         }
         Client().make_request('updatesession', 'PUT', request_data)
 
