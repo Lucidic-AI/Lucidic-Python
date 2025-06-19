@@ -21,7 +21,7 @@ class Session:
         self.agent_id = agent_id
         self.session_id = None
         self.step_history = dict()
-        self._active_step: Optional[str] = None  # Rename to latest_step
+        self._active_step: Optional[str] = None  # Step ID, not Step object
         self.event_history = dict()
         self.latest_event = None
         self.is_finished = False
