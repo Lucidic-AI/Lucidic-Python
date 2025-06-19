@@ -119,9 +119,23 @@ class OpenAIHandler(BaseProvider):
                 logger.info(f"[OpenAI Handler] Intercepted {method_name}")
                 
                 session = Client().session
-                if session is None or session.active_step is None:
-                    logger.info(f"[OpenAI Handler] {NO_ACTIVE_STEP}")
+                if session is None:
+                    logger.info(f"[OpenAI Handler] No session, skipping tracking")
                     return await original_method(*args, **kwargs)
+                
+                # Auto-create step if no active step exists
+                if session.active_step is None:
+                    logger.info(f"[OpenAI Handler] No active step, auto-creating step")
+                    try:
+                        step_id = session.create_step(
+                            state="Auto-created step for API call",
+                            action=f"Execute {method_name}",
+                            goal="Process API request"
+                        )
+                        logger.info(f"[OpenAI Handler] Created step: {step_id}")
+                    except Exception as e:
+                        logger.error(f"[OpenAI Handler] Failed to auto-create step: {e}")
+                        return await original_method(*args, **kwargs)
                 
                 # Prepare kwargs
                 self._prepare_streaming_kwargs(method_name, kwargs)
@@ -139,9 +153,23 @@ class OpenAIHandler(BaseProvider):
                 logger.info(f"[OpenAI Handler] Intercepted {method_name}")
                 
                 session = Client().session
-                if session is None or session.active_step is None:
-                    logger.info(f"[OpenAI Handler] {NO_ACTIVE_STEP}")
+                if session is None:
+                    logger.info(f"[OpenAI Handler] No session, skipping tracking")
                     return original_method(*args, **kwargs)
+                
+                # Auto-create step if no active step exists
+                if session.active_step is None:
+                    logger.info(f"[OpenAI Handler] No active step, auto-creating step")
+                    try:
+                        step_id = session.create_step(
+                            state="Auto-created step for API call",
+                            action=f"Execute {method_name}",
+                            goal="Process API request"
+                        )
+                        logger.info(f"[OpenAI Handler] Created step: {step_id}")
+                    except Exception as e:
+                        logger.error(f"[OpenAI Handler] Failed to auto-create step: {e}")
+                        return original_method(*args, **kwargs)
                 
                 # Prepare kwargs
                 self._prepare_streaming_kwargs(method_name, kwargs)
@@ -362,9 +390,23 @@ class OpenAIHandler(BaseProvider):
         async def _handle_async_responses_call(original_method, args, kwargs):
             """Handle async responses API call"""
             session = Client().session
-            if session is None or session.active_step is None:
-                logger.info(f"[OpenAI Handler] {NO_ACTIVE_STEP}")
+            if session is None:
+                logger.info(f"[OpenAI Handler] No session, skipping tracking")
                 return await original_method(*args, **kwargs)
+            
+            # Auto-create step if no active step exists
+            if session.active_step is None:
+                logger.info(f"[OpenAI Handler] No active step, auto-creating step")
+                try:
+                    step_id = session.create_step(
+                        state="Auto-created step for responses API call",
+                        action="Execute responses.create",
+                        goal="Process API request"
+                    )
+                    logger.info(f"[OpenAI Handler] Created step: {step_id}")
+                except Exception as e:
+                    logger.error(f"[OpenAI Handler] Failed to auto-create step: {e}")
+                    return await original_method(*args, **kwargs)
             
             # Check for agent context
             agent_name = self._get_agent_name_from_input(kwargs.get('input', []))
@@ -454,9 +496,23 @@ class OpenAIHandler(BaseProvider):
         def _handle_sync_responses_call(original_method, args, kwargs):
             """Handle sync responses API call"""
             session = Client().session
-            if session is None or session.active_step is None:
-                logger.info(f"[OpenAI Handler] {NO_ACTIVE_STEP}")
+            if session is None:
+                logger.info(f"[OpenAI Handler] No session, skipping tracking")
                 return original_method(*args, **kwargs)
+            
+            # Auto-create step if no active step exists
+            if session.active_step is None:
+                logger.info(f"[OpenAI Handler] No active step, auto-creating step")
+                try:
+                    step_id = session.create_step(
+                        state="Auto-created step for responses API call",
+                        action="Execute responses.create",
+                        goal="Process API request"
+                    )
+                    logger.info(f"[OpenAI Handler] Created step: {step_id}")
+                except Exception as e:
+                    logger.error(f"[OpenAI Handler] Failed to auto-create step: {e}")
+                    return original_method(*args, **kwargs)
             
             # Check for agent context
             agent_name = self._get_agent_name_from_input(kwargs.get('input', []))
