@@ -43,7 +43,7 @@ async def run_test():
     # init Lucidic with OpenAI handler (this will be used even with Anthropic base URL)
     lai.init(
         session_name="OpenAI SDK + Anthropic Base URL Test",
-        provider="openai",  # Using OpenAI handler with Anthropic API
+        providers=["openai"],  # Using OpenAI handler with Anthropic API
     )
 
     # open a step so `active_step` exists for event logging
@@ -69,7 +69,7 @@ async def run_test():
         messages=[{"role":"user","content":"What is 25 * 4 + 10? Show your work."}],
         max_tokens=150
     )
-    
+
     # This should work but may have issues with the Lucidic handler
     result = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
     print("Response:", result)
@@ -83,14 +83,14 @@ async def run_test():
         max_tokens=50,
         stream=True
     )
-    
+
     print("Stream response:")
     chunk_count = 0
     for chunk in stream_resp:
         if chunk_count > 10:  # Prevent hanging
             print("\n(truncated)")
             break
-            
+
         if (hasattr(chunk, 'choices') and chunk.choices is not None and 
             len(chunk.choices) > 0):
             delta = chunk.choices[0].delta

@@ -20,8 +20,6 @@ setup(
     author="Andy Liang",
     author_email="andy@lucidic.ai",
     description="Lucidic AI Python SDK",
-    long_description=open("README.md").read(),
-    long_description_content_type="text/markdown",
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",

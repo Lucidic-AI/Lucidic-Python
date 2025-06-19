@@ -32,7 +32,7 @@ def run_test():
     # init Lucidic with OpenAI handler (this will be used even with Anthropic base URL)
     lai.init(
         session_name="OpenAI SDK + Anthropic Base URL Simple Test",
-        provider="openai",  # Using OpenAI handler with Anthropic API
+        providers=["openai"],  # Using OpenAI handler with Anthropic API
     )
 
     # open a step so `active_step` exists for event logging
@@ -58,7 +58,7 @@ def run_test():
             messages=[{"role":"user","content":"What is 25 * 4 + 10? Show your work."}],
             max_tokens=100
         )
-        
+
         result = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
         print("✓ Regular chat completion works")
         print("Response:", result[:50] + "..." if len(result) > 50 else result)
@@ -74,14 +74,14 @@ def run_test():
             max_tokens=20,
             stream=True
         )
-        
+
         print("Stream response: ", end="")
         chunk_count = 0
         for chunk in stream_resp:
             if chunk_count > 10:  # Limit chunks to prevent hanging
                 print("\n(truncated after 10 chunks)")
                 break
-            
+
             if (hasattr(chunk, 'choices') and chunk.choices is not None and 
                 len(chunk.choices) > 0):
                 delta = chunk.choices[0].delta
@@ -92,15 +92,44 @@ def run_test():
     except Exception as e:
         print(f"✗ Streaming failed: {type(e).__name__}: {str(e)}")
 
-    print("\n=== Test 3: Structured output (parse) - Should now work! ===")
+    print("\n=== Test 3: Structured output (using JSON mode) ===")
     try:
-        resp = client.beta.chat.completions.parse(
+        # For Anthropic via OpenAI SDK, use regular chat completion with JSON instructions
+        resp = client.chat.completions.create(
             model="claude-3-5-sonnet-20241022",
-            messages=[{"role":"user","content":"Solve step by step: 25 * 4 + 10"}],
-            response_format=MathReasoning,
+            messages=[{
+                "role": "user",
+                "content": f"""Solve step by step: 25 * 4 + 10
+
+Please respond with a JSON object in this exact format:
+{{
+    "steps": [
+        {{"explanation": "step explanation", "output": "step result"}},
+        ...
+    ],
+    "final_answer": "the final answer"
+}}"""
+            }],
+            max_tokens=300
         )
-        result = resp.choices[0].message.parsed if hasattr(resp, "choices") else str(resp)
-        print("✓ Structured output works with Anthropic workaround!")
+        
+        import json
+        result_text = resp.choices[0].message.content
+        # Extract JSON from the response
+        if "```json" in result_text:
+            json_text = result_text.split("```json")[1].split("```")[0].strip()
+        elif "{" in result_text:
+            # Find the JSON object in the response
+            start = result_text.find("{")
+            end = result_text.rfind("}") + 1
+            json_text = result_text[start:end]
+        else:
+            json_text = result_text
+            
+        parsed = json.loads(json_text)
+        result = MathReasoning(**parsed)
+        
+        print("✓ Structured output works using JSON mode!")
         print("Final answer:", result.final_answer)
         print("Steps:")
         for step in result.steps:
@@ -110,7 +139,10 @@ def run_test():
 
     print("\n=== Test 4: Image analysis ===")
     try:
-        with open("tests/ord_runways.jpg", "rb") as f:
+        # Use absolute path for the image file
+        import os
+        image_path = os.path.join(os.path.dirname(__file__), "ord_runways.jpg")
+        with open(image_path, "rb") as f:
             img_bytes = f.read()
         data_uri = f"data:image/jpeg;base64,{base64.standard_b64encode(img_bytes).decode()}"
 

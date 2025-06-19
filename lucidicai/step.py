@@ -27,9 +27,14 @@ class Step:
         self.update_step(**kwargs)
     
     def update_step(self, **kwargs) -> None:
+        """Update the step with the API"""
         from .client import Client
         request_data = self.build_request_data(**kwargs)
         Client().make_request('updatestep', 'PUT', request_data)
+        
+        # Update local state
+        if 'is_finished' in kwargs:
+            self.is_finished = kwargs['is_finished']
 
     def build_request_data(self, **kwargs):
         from .client import Client

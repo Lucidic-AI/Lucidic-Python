@@ -199,7 +199,7 @@ class PydanticAIHandler(BaseProvider):
                         )
                     raise
         
-        return StreamWrapper(original_stream, event, self, model_instance)
+        return StreamWrapper(original_stream, event_id, self, model_instance)
 
     def _extract_response_text(self, response):
         """Extract text content from response"""

@@ -39,7 +39,7 @@ async def run_test():
     # init Lucidic with your OpenAI handler
     lai.init(
         session_name="OpenAI Parse Handler Test",
-        provider="openai",
+        providers=["openai"],
     )
 
     # open a step so `active_step` exists for event logging
@@ -80,7 +80,10 @@ async def run_test():
     print(f"Skills: {', '.join(result.skills)}")
 
     # == test structured output with image ==
-    with open("tests/ord_runways.jpg", "rb") as f:
+    print("\n=== Image analysis test ===")
+    import os
+    image_path = os.path.join(os.path.dirname(__file__), "ord_runways.jpg")
+    with open(image_path, "rb") as f:
         img_bytes = f.read()
     data_uri = f"data:image/jpeg;base64,{base64.standard_b64encode(img_bytes).decode()}"
 

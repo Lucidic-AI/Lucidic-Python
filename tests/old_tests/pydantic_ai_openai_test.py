@@ -47,7 +47,7 @@ async def run_test():
     # init Lucidic with PydanticAI handler
     lai.init(
         session_name="PydanticAI OpenAI Handler Test",
-        provider="pydantic_ai",
+        providers=["pydantic_ai"],
     )
 
     # open a step so `active_step` exists for event logging
@@ -88,9 +88,11 @@ async def run_test():
     print("Response:", planner_response.output)
     
     # Check the last event for cost information
-    last_event = lai.Client().session.active_step.event_history[-1] if lai.Client().session.active_step.event_history else None
+    event_history = lai.Client().session.event_history
+    last_event_id = list(event_history.keys())[-1] if event_history else None
+    last_event = event_history[last_event_id] if last_event_id else None
     if last_event:
-        print(f"Non-streaming cost: {last_event.cost_added}")
+        print(f"Non-streaming cost: {getattr(last_event, 'cost_added', 'N/A')}")
     else:
         print("No event found for non-streaming")
 
@@ -104,9 +106,11 @@ async def run_test():
         print("\n")
     
     # Check the last event for streaming cost information
-    last_event = lai.Client().session.active_step.event_history[-1] if lai.Client().session.active_step.event_history else None
+    event_history = lai.Client().session.event_history
+    last_event_id = list(event_history.keys())[-1] if event_history else None
+    last_event = event_history[last_event_id] if last_event_id else None
     if last_event:
-        print(f"Streaming cost: {last_event.cost_added}")
+        print(f"Streaming cost: {getattr(last_event, 'cost_added', 'N/A')}")
     else:
         print("No event found for streaming")
 

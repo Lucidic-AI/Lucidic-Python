@@ -10,11 +10,12 @@ from .event import Event
 from .providers.anthropic_handler import AnthropicHandler
 from .providers.langchain import LucidicLangchainHandler
 from .providers.openai_handler import OpenAIHandler
+from .providers.openai_agents_handler import OpenAIAgentsHandler
 from .providers.pydantic_ai_handler import PydanticAIHandler
 from .session import Session
 from .step import Step
 
-ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai"]
+ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai", "openai_agents"]
 
 # Configure logging
 logger = logging.getLogger("Lucidic")
@@ -24,6 +25,46 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+
+def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
+    """Set up providers for the client, avoiding duplication
+    
+    Args:
+        client: The Lucidic client instance
+        providers: List of provider types to set up
+    """
+    # Track which providers have been set up to avoid duplication
+    setup_providers = set()
+    
+    for provider in providers:
+        if provider in setup_providers:
+            continue
+            
+        if provider == "openai":
+            client.set_provider(OpenAIHandler())
+            setup_providers.add("openai")
+        elif provider == "anthropic":
+            client.set_provider(AnthropicHandler())
+            setup_providers.add("anthropic")
+        elif provider == "langchain":
+            logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
+            setup_providers.add("langchain")
+        elif provider == "pydantic_ai":
+            client.set_provider(PydanticAIHandler())
+            setup_providers.add("pydantic_ai")
+        elif provider == "openai_agents":
+            try:
+                # For OpenAI Agents SDK, we want both handlers
+                client.set_provider(OpenAIAgentsHandler())
+                setup_providers.add("openai_agents")
+                # Also enable OpenAI handler if not already set up
+                if "openai" not in setup_providers:
+                    client.set_provider(OpenAIHandler())
+                    setup_providers.add("openai")
+            except Exception as e:
+                logger.error(f"Failed to set up OpenAI Agents provider: {e}")
+                raise
 
 __all__ = [
     'Client',
@@ -40,6 +81,7 @@ __all__ = [
     'end_event',
     'end_session',
     'get_prompt',
+    'get_session',
     'ProviderType',
     'APIKeyVerificationError',
     'LucidicNotInitializedError',
@@ -48,6 +90,7 @@ __all__ = [
     'LucidicLangchainHandler',
     'AnthropicHandler',
     'OpenAIHandler',
+    'OpenAIAgentsHandler',
     'PydanticAIHandler'
 ]
 
@@ -97,16 +140,8 @@ def init(
             agent_id=agent_id,
         )
     
-    # Set up provider
-    for provider in providers:
-        if provider == "openai":
-            client.set_provider(OpenAIHandler())
-        elif provider == "anthropic":
-            client.set_provider(AnthropicHandler())
-        elif provider == "langchain":
-            logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
-        elif provider == "pydantic_ai":
-            client.set_provider(PydanticAIHandler())
+    # Set up providers
+    _setup_providers(client, providers)
     session_id = client.init_session(
         session_name=session_name,
         mass_sim_id=mass_sim_id,
@@ -142,16 +177,8 @@ def continue_session(
             agent_id=agent_id,
         )
     
-    # Set up provider
-    for provider in providers:
-        if provider == "openai":
-            client.set_provider(OpenAIHandler())
-        elif provider == "anthropic":
-            client.set_provider(AnthropicHandler())
-        elif provider == "langchain":
-            logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
-        elif provider == "pydantic_ai":
-            client.set_provider(PydanticAIHandler())
+    # Set up providers
+    _setup_providers(client, providers)
     session_id = client.continue_session(session_id=session_id)
     logger.info(f"Session {session_id} continuing...")
     return session_id  # For consistency
@@ -338,15 +365,22 @@ def end_step(
         eval_score: Evaluation score.
         eval_description: Evaluation description.
         screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
-        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
+        screenshot_path: Screenshot path.
     """
     client = Client()
     if not client.session:
         logger.warning("end_step called when session not initialized. Please call lai.init() first.")
         return
-    if not client.session.active_step:
+    
+    if not client.session.active_step and step_id is None:
         raise InvalidOperationError("No active step to end")
-    client.session.update_step(is_finished=True, **locals())
+    
+    # Filter out None values from locals
+    params = locals()
+    kwargs = {k: v for k, v in params.items() if v is not None and k not in ['client', 'params']}
+    kwargs['is_finished'] = True
+    
+    client.session.update_step(**kwargs)
 
 
 def create_event(
@@ -458,5 +492,19 @@ def get_prompt(
     if "{{" in prompt and "}}" in prompt and prompt.find("{{") < prompt.find("}}"):
         logger.warning("Unreplaced variable(s) left in prompt. Please check your prompt.")
     return prompt
+
+
+def get_session():
+    """Get the current session object
+    
+    Returns:
+        Session: The current session object, or None if no session exists
+    """
+    try:
+        client = Client()
+        return client.session
+    except (LucidicNotInitializedError, AttributeError) as e:
+        logger.debug(f"No active session: {str(e)}")
+        return None
 
 

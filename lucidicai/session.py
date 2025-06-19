@@ -21,7 +21,7 @@ class Session:
         self.agent_id = agent_id
         self.session_id = None
         self.step_history = dict()
-        self._active_step: Optional[str] = None  # Rename to latest_step
+        self._active_step: Optional[str] = None  # Step ID, not Step object
         self.event_history = dict()
         self.latest_event = None
         self.is_finished = False
@@ -58,7 +58,10 @@ class Session:
 
     @property   
     def active_step(self) -> Optional[Step]:
-        return self._active_step
+        """Get the active step object"""
+        if self._active_step and self._active_step in self.step_history:
+            return self.step_history[self._active_step]
+        return None
     
     def update_session(
         self, 
@@ -77,12 +80,12 @@ class Session:
         }
         Client().make_request('updatesession', 'PUT', request_data)
 
-    def create_step(self, **kwargs) -> Step:
+    def create_step(self, **kwargs) -> str:
         if not self.session_id:
             raise LucidicNotInitializedError()
         step = Step(session_id=self.session_id, **kwargs)
         self.step_history[step.step_id] = step
-        self._active_step = step
+        self._active_step = step.step_id
         return step.step_id
 
     def update_step(self, **kwargs) -> None:
@@ -93,13 +96,17 @@ class Session:
         else:
             if not self._active_step:
                 raise InvalidOperationError("No active step to update")
-            self._active_step.update_step(**kwargs)
+            self.step_history[self._active_step].update_step(**kwargs)
 
 
     def create_event(self, **kwargs):
-        step_id = self._active_step.step_id
+        # Get step_id from kwargs or active step
         if 'step_id' in kwargs and kwargs['step_id'] is not None:
             step_id = kwargs['step_id']
+        elif self._active_step:
+            step_id = self._active_step
+        else:
+            raise InvalidOperationError("No active step to create event in and no step_id provided")
         kwargs.pop('step_id', None)
         event = Event(
             session_id=self.session_id,

@@ -10,15 +10,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-if not GOOGLE_API_KEY:
-    raise ValueError("Missing GOOGLE_API_KEY")
+if not ANTHROPIC_API_KEY:
+    raise ValueError("Missing ANTHROPIC_API_KEY")
 
 # import Lucidic and PydanticAI
 import lucidicai as lai
 from pydantic_ai import Agent
-from pydantic_ai.models.gemini import GeminiModel
+from pydantic_ai.models.anthropic import AnthropicModel
+from anthropic import Anthropic
 
 
 class StreamResponse(BaseModel):
@@ -28,6 +29,11 @@ class StreamResponse(BaseModel):
     steps: List[str]
     output: str
     status_code: int
+
+
+def get_client():
+    """Get Anthropic client"""
+    return Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 orchestrator_system_prompt = """You are an expert project orchestrator. 
@@ -40,20 +46,20 @@ orchestrator_deps = None  # No dependencies for this simple test
 async def run_test():
     # init Lucidic with PydanticAI handler
     lai.init(
-        session_name="PydanticAI Gemini Handler Test",
-        provider="pydantic_ai",
+        session_name="PydanticAI Anthropic Handler Test",
+        providers=["pydantic_ai"],
     )
 
     # open a step so `active_step` exists for event logging
     lai.create_step(
-        state="PydanticAI Gemini handler smoke-test",
-        action="Call agent.run with GeminiModel",
+        state="PydanticAI Anthropic handler smoke-test",
+        action="Call agent.run with AnthropicModel",
         goal="Verify events & responses with PydanticAI"
     )
 
-    # Create the GeminiModel as specified by user
-    model = GeminiModel(
-        model_name="gemini-2.5-flash-preview-05-20"
+    # Create the AnthropicModel as specified by user
+    model = AnthropicModel(
+        model_name="claude-3-5-sonnet-20241022"
     )
 
     # Create the orchestrator agent (model tracking is handled by monkey-patching)
