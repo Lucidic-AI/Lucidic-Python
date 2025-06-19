@@ -48,7 +48,14 @@ def upload_image_to_s3(url, image, format):
         ValueError: If the format is not supported.
     """
     if format == "JPEG":
-        image_stream = io.BytesIO(base64.b64decode(image))
+        # Handle data URIs by extracting just the base64 part
+        if isinstance(image, str) and image.startswith('data:'):
+            # Extract base64 data from data URI
+            base64_data = image.split(',')[1] if ',' in image else image
+        else:
+            base64_data = image
+        
+        image_stream = io.BytesIO(base64.b64decode(base64_data))
         image_stream.seek(0)
         pil_image = Image.open(image_stream)
         if pil_image.mode in ("RGBA", "LA"):  # TODO: Natively support PNGs

@@ -17,6 +17,10 @@ def test_pattern_1_basic_agent():
     print("PATTERN 1: Basic Agent")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 1: Basic Agent",
         providers=["openai_agents"],
@@ -57,6 +61,10 @@ def test_pattern_2_agent_with_tools():
     print("PATTERN 2: Agent with Tools")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 2: Agent with Tools",
         providers=["openai_agents"],
@@ -108,6 +116,10 @@ def test_pattern_3_agent_handoff():
     print("PATTERN 3: Agent Handoff (FIXED)")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 3: Agent Handoff Fixed",
         providers=["openai_agents"],
@@ -167,6 +179,10 @@ def test_pattern_4_sequential_processing():
     print("PATTERN 4: Sequential Processing")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 4: Sequential Processing",
         providers=["openai_agents"],
@@ -225,6 +241,10 @@ def test_pattern_5_parallel_tools():
     print("PATTERN 5: Parallel Tools (FIXED)")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 5: Parallel Tools Fixed",
         providers=["openai_agents"],
@@ -281,6 +301,10 @@ def test_pattern_6_conditional_routing():
     print("PATTERN 6: Conditional Routing")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 6: Conditional Routing",
         providers=["openai_agents"],
@@ -336,6 +360,10 @@ def test_pattern_7_hierarchical_agents():
     print("PATTERN 7: Hierarchical Agents")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 7: Hierarchical Agents",
         providers=["openai_agents"],
@@ -393,6 +421,10 @@ def test_pattern_8_context_aware():
     print("PATTERN 8: Context-Aware Agents")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 8: Context-Aware",
         providers=["openai_agents"],
@@ -440,6 +472,10 @@ def test_pattern_9_complex_workflow():
     print("PATTERN 9: Complex Workflow")
     print("="*60)
     
+    try:
+        lai.reset_sdk()  # Clear any existing session
+    except:
+        pass  # Ignore if not initialized
     lai.init(
         session_name="Pattern 9: Complex Workflow",
         providers=["openai_agents"],

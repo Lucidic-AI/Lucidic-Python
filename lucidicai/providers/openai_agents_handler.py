@@ -54,6 +54,75 @@ class OpenAIAgentsHandler(BaseProvider):
             logger.error(f"Failed to instrument OpenAI Agents SDK: {e}")
             raise
     
+    # ========== Helper Methods ==========
+    
+    def _end_active_step(self, agent_name: str, step_id: str, state: str, action: str, goal: str):
+        """Helper to end an active step and mark it as ended"""
+        try:
+            lai.end_step(
+                step_id=step_id,
+                state=state,
+                action=action,
+                goal=goal
+            )
+            if agent_name in self._active_steps:
+                self._active_steps[agent_name]['ended'] = True
+            logger.debug(f"Ended step {step_id} for {agent_name}")
+        except Exception as e:
+            logger.error(f"Failed to end step {step_id}: {e}")
+    
+    def _create_step_with_metadata(self, agent_name: str, user_prompt: str, metadata: dict, is_handoff: bool = False, previous_agent: str = None) -> str:
+        """Create a step with appropriate metadata and defaults"""
+        # Generate default values
+        if is_handoff:
+            default_state = StepState.HANDOFF.format(agent_name=agent_name)
+            default_action = StepAction.TRANSFER.format(from_agent=previous_agent)
+            default_goal = user_prompt[:200] if user_prompt else StepGoal.CONTINUE_PROCESSING
+        else:
+            default_state = StepState.RUNNING.format(agent_name=agent_name)
+            default_action = StepAction.EXECUTE.format(agent_name=agent_name)
+            default_goal = user_prompt[:200] if user_prompt else StepGoal.PROCESS_REQUEST
+        
+        # Use user-provided values or defaults
+        step_kwargs = {
+            'state': metadata.get('state', default_state),
+            'action': metadata.get('action', default_action),
+            'goal': metadata.get('goal', default_goal)
+        }
+        
+        # Add any additional fields from metadata
+        for key in ['eval_score', 'eval_description', 'screenshot', 'screenshot_path']:
+            if key in metadata:
+                step_kwargs[key] = metadata[key]
+        
+        return lai.create_step(**step_kwargs)
+    
+    def _detect_and_handle_previous_handoff(self, current_agent_name: str) -> tuple[bool, Optional[str]]:
+        """Detect if this is a handoff and handle the previous step"""
+        is_handoff = False
+        previous_agent = None
+        
+        # If there are other active steps, this might be a handoff
+        if self._active_steps:
+            # Find the most recent active step
+            for agent_name, step_info in self._active_steps.items():
+                if agent_name != current_agent_name and not step_info.get('ended', False):
+                    is_handoff = True
+                    previous_agent = agent_name
+                    # End the previous step
+                    self._end_active_step(
+                        agent_name=agent_name,
+                        step_id=step_info['step_id'],
+                        state=f"Handoff from {agent_name} to {current_agent_name}",
+                        action="Initiated handoff",
+                        goal=f"Transfer control to {current_agent_name}"
+                    )
+                    break
+        
+        return is_handoff, previous_agent
+    
+    # ========== Main Wrapper Methods ==========
+    
     def _wrap_run_sync(self, original_func):
         """Wrap the sync run method to track execution"""
         def wrapper(agent, *args, **kwargs):
@@ -75,55 +144,13 @@ class OpenAIAgentsHandler(BaseProvider):
             self._session_id = session.session_id
             
             # Check if this is a handoff continuation
-            is_handoff = False
-            previous_agent = None
-            
-            # If there are other active steps, this might be a handoff
-            if self._active_steps:
-                # Find the most recent active step
-                for agent_name, step_info in self._active_steps.items():
-                    if agent_name != agent.name and not step_info.get('ended', False):
-                        is_handoff = True
-                        previous_agent = agent_name
-                        # End the previous step
-                        prev_step_id = step_info['step_id']
-                        try:
-                            lai.end_step(
-                                step_id=prev_step_id,
-                                state=f"Handoff from {agent_name} to {agent.name}",
-                                action="Initiated handoff",
-                                goal=f"Transfer control to {agent.name}"
-                            )
-                            self._active_steps[agent_name]['ended'] = True
-                        except Exception as e:
-                            logger.error(f"Failed to end previous step: {e}")
+            is_handoff, previous_agent = self._detect_and_handle_previous_handoff(agent.name)
             
             # Create a step for the agent execution
+            # NOTE: In the Agents SDK, each step represents an agent's execution.
+            # We create one synthetic event per step to track the agent's work.
             user_prompt = args[0] if args else ""
-            
-            # Generate default values
-            if is_handoff:
-                default_state = StepState.HANDOFF.format(agent_name=agent.name)
-                default_action = StepAction.TRANSFER.format(from_agent=previous_agent)
-                default_goal = user_prompt[:200] if user_prompt else StepGoal.CONTINUE_PROCESSING
-            else:
-                default_state = StepState.RUNNING.format(agent_name=agent.name)
-                default_action = StepAction.EXECUTE.format(agent_name=agent.name)
-                default_goal = user_prompt[:200] if user_prompt else StepGoal.PROCESS_REQUEST
-            
-            # Use user-provided values or defaults
-            step_kwargs = {
-                'state': metadata.get('state', default_state),
-                'action': metadata.get('action', default_action),
-                'goal': metadata.get('goal', default_goal)
-            }
-            
-            # Add any additional fields from metadata
-            for key in ['eval_score', 'eval_description', 'screenshot', 'screenshot_path']:
-                if key in metadata:
-                    step_kwargs[key] = metadata[key]
-            
-            step_id = lai.create_step(**step_kwargs)
+            step_id = self._create_step_with_metadata(agent.name, user_prompt, metadata, is_handoff, previous_agent)
             
             # Track this step
             self._active_steps[agent.name] = {
@@ -132,144 +159,89 @@ class OpenAIAgentsHandler(BaseProvider):
                 'metadata': metadata
             }
             
-            if step_id:
-                print(f"\n[LUCIDIC - OpenAI Agents] Created step: {step_id}")
-                if metadata and any(key in metadata for key in ['state', 'action', 'goal']):
-                    print(f"[LUCIDIC - OpenAI Agents] Using custom metadata")
-                else:
-                    print(f"[LUCIDIC - OpenAI Agents] Using automatic defaults")
+            if not step_id:
+                logger.warning("Failed to create step for agent execution")
             
             try:
                 # Execute the original function
-                print(f"\n[LUCIDIC - OpenAI Agents] Executing agent...")
                 result = original_func(agent, *args, **kwargs)
                 
-                # Note: Actual tool usage is tracked by the OpenAI handler when tools are called
-                # We don't need to create an event just for listing available tools
+                # Note: Handoff detection and step creation is now handled by the OpenAI handler
+                # when it detects different agents making API calls.
+                # We only need to log the handoff chain for debugging.
                 
                 # Check if handoffs occurred by analyzing the result
                 handoff_chain = self._extract_handoff_chain(result, agent)
                 
-                # If there were handoffs, create steps for each agent that executed
                 if len(handoff_chain) > 1:
-                    print(f"\n[LUCIDIC - OpenAI Agents] Handoff chain detected: {' → '.join([a['name'] for a in handoff_chain])}")
-                    
-                    # Create steps for each agent in the chain (skip first, we already have a step)
-                    for i in range(1, len(handoff_chain)):
-                        handoff_info = handoff_chain[i]
-                        prev_agent = handoff_chain[i-1]['name']
-                        curr_agent = handoff_info['name']
-                        
-                        # Create a step for this handoff
-                        handoff_step_id = lai.create_step(
-                            state=f"Handoff: {curr_agent}",
-                            action=f"Transfer from {prev_agent}",
-                            goal="Continue processing request"
-                        )
-                        
-                        if handoff_step_id:
-                            print(f"[LUCIDIC - OpenAI Agents] Created handoff step for {curr_agent}: {handoff_step_id}")
-                            
-                            # Track this step
-                            self._active_steps[curr_agent] = {
-                                'step_id': handoff_step_id,
-                                'ended': False
-                            }
-                            
-                            # Note: The actual API calls by this agent will be tracked by the OpenAI handler
-                            # We don't create a handoff event here as it's not an LLM call
-                            
-                            # End intermediate steps (not the last one)
-                            if i < len(handoff_chain) - 1:
-                                lai.end_step(
-                                    step_id=handoff_step_id,
-                                    state=f"Transferred to {handoff_chain[i+1]['name']}",
-                                    action=f"Handoff from {curr_agent}",
-                                    goal=f"Continue with {handoff_chain[i+1]['name']}"
-                                )
-                                self._active_steps[curr_agent]['ended'] = True
+                    logger.info(f"Handoff chain detected: {' → '.join([a['name'] for a in handoff_chain])}")
                 
                 # Log the final result
                 if hasattr(result, 'messages') and result.messages:
                     final_msg = result.messages[-1].content if hasattr(result.messages[-1], 'content') else str(result.messages[-1])
-                    print(f"\n[LUCIDIC - OpenAI Agents] Agent completed successfully")
-                    print(f"[LUCIDIC - OpenAI Agents] Final output: {final_msg[:100]}..." if len(final_msg) > 100 else f"[LUCIDIC - OpenAI Agents] Final output: {final_msg}")
+                    logger.info("Agent completed successfully")
+                    logger.debug(f"Final output: {final_msg[:100]}..." if len(final_msg) > 100 else f"Final output: {final_msg}")
                 else:
                     result_preview = str(result)[:200] + "..." if len(str(result)) > 200 else str(result)
-                    print(f"\n[LUCIDIC - OpenAI Agents] Agent completed: {result_preview}")
+                    logger.info(f"Agent completed: {result_preview}")
                 
-                # End the appropriate step
-                if step_id:
-                    # Find the final agent in the chain
-                    final_agent_name = handoff_chain[-1]['name'] if handoff_chain else agent.name
-                    
-                    # End the initial step if it handed off
-                    if len(handoff_chain) > 1 and not self._active_steps.get(agent.name, {}).get('ended', False):
-                        lai.end_step(
-                            step_id=step_id,
-                            state=f"Transferred to next agent",
-                            action=f"Handoff from {agent.name}",
-                            goal="Continue processing"
-                        )
-                        self._active_steps[agent.name]['ended'] = True
-                    
-                    # End the final agent's step
-                    final_step_id = self._active_steps.get(final_agent_name, {}).get('step_id', step_id)
-                    if final_step_id and not self._active_steps.get(final_agent_name, {}).get('ended', False):
+                # End all active steps that haven't been ended yet
+                # The OpenAI handler creates steps on-demand during API calls,
+                # so we just need to end any steps that are still active
+                for agent_name, step_info in list(self._active_steps.items()):
+                    if not step_info.get('ended', False):
+                        step_id = step_info['step_id']
                         try:
-                            # Use actual result metadata
+                            # Extract result information if available
                             final_output = ""
-                            tokens_used = 0
-                            
                             if hasattr(result, 'final_output'):
                                 final_output = result.final_output[:200] + "..." if len(result.final_output) > 200 else result.final_output
-                            
-                            # Extract token usage if available
-                            if hasattr(result, 'context_wrapper') and hasattr(result.context_wrapper, 'usage'):
-                                usage = result.context_wrapper.usage
-                                if hasattr(usage, 'total_tokens'):
-                                    tokens_used = usage.total_tokens
+                            elif hasattr(result, 'messages') and result.messages:
+                                final_msg = result.messages[-1]
+                                final_output = final_msg.content[:200] if hasattr(final_msg, 'content') else str(final_msg)[:200]
                             
                             # Get original metadata
-                            step_info = self._active_steps.get(final_agent_name, {})
                             original_metadata = step_info.get('metadata', {})
                             
-                            # Generate default completion values
-                            default_end_state = StepState.FINISHED.format(agent_name=final_agent_name)
-                            default_end_action = StepAction.DELIVERED.format(agent_name=final_agent_name)
-                            default_end_goal = final_output[:200] if final_output else StepGoal.PROCESSING_FINISHED
+                            # Generate appropriate completion values based on whether this is the final agent
+                            is_final_agent = (hasattr(result, 'last_agent') and result.last_agent.name == agent_name) or (agent_name == agent.name and len(handoff_chain) <= 1)
+                            
+                            if is_final_agent:
+                                # This is the final agent that produced the result
+                                default_end_state = StepState.FINISHED.format(agent_name=agent_name)
+                                default_end_action = StepAction.DELIVERED.format(agent_name=agent_name)
+                                default_end_goal = final_output[:200] if final_output else StepGoal.PROCESSING_FINISHED
+                            else:
+                                # This agent handed off to another
+                                default_end_state = "Transferred to next agent"
+                                default_end_action = f"Handoff from {agent_name}"
+                                default_end_goal = "Continue processing"
                             
                             # Use custom values if provided, otherwise use defaults
-                            lai.end_step(
-                                step_id=final_step_id,
+                            self._end_active_step(
+                                agent_name=agent_name,
+                                step_id=step_id,
                                 state=original_metadata.get('end_state', default_end_state),
                                 action=original_metadata.get('end_action', default_end_action),
                                 goal=original_metadata.get('end_goal', default_end_goal)
                             )
-                            if final_agent_name in self._active_steps:
-                                self._active_steps[final_agent_name]['ended'] = True
-                            print(f"[LUCIDIC - OpenAI Agents] Step ended: {final_step_id}")
+                            logger.debug(f"Step ended for {agent_name}: {step_id}")
                         except Exception as e:
-                            logger.error(f"Failed to end step {final_step_id}: {e}")
-                
-                # No guidance needed - handoffs work when using correct syntax
+                            logger.error(f"Failed to end step {step_id} for {agent_name}: {e}")
                 
                 return result
                 
             except Exception as e:
-                print(f"\n[LUCIDIC - OpenAI Agents] Agent execution failed: {str(e)}")
+                logger.error(f"Agent execution failed: {str(e)}")
                 # End step with error
                 if step_id:
-                    try:
-                        lai.end_step(
-                            step_id=step_id,
-                            state=f"Error in {agent.name}",
-                            action="Agent execution failed",
-                            goal=f"Error: {str(e)}"
-                        )
-                        self._active_steps[agent.name]['ended'] = True
-                    except Exception as end_error:
-                        logger.error(f"Failed to end step on error: {end_error}")
+                    self._end_active_step(
+                        agent_name=agent.name,
+                        step_id=step_id,
+                        state=f"Error in {agent.name}",
+                        action="Agent execution failed",
+                        goal=f"Error: {str(e)}"
+                    )
                 raise
         
         return wrapper
@@ -296,6 +268,8 @@ class OpenAIAgentsHandler(BaseProvider):
     def handle_response(self, response, kwargs, session: Optional = None):
         """Not used for this provider - we use method wrapping instead"""
         pass
+    
+    # ========== Tool Wrapping Methods ==========
     
     @staticmethod
     def wrap_tool_function(func: Callable) -> Callable:
@@ -336,18 +310,37 @@ class OpenAIAgentsHandler(BaseProvider):
                     # Create an event for the tool call
                     session = lai.get_session()
                     event_id = None
-                    if session and session.active_step:
-                        event_id = lai.create_event(
-                            description=f"Tool call: {self.name}",
-                            result=f"Args: {args}, Kwargs: {kwargs}",
-                            model="tool"
-                        )
+                    if session:
+                        # Find the appropriate step for this tool call
+                        # Check handler's active steps first
+                        handler = OpenAIAgentsHandler()
+                        step_id = None
+                        
+                        # Look for an active (non-ended) step
+                        for agent_name, step_info in handler._active_steps.items():
+                            if not step_info.get('ended', False):
+                                step_id = step_info['step_id']
+                                break
+                        
+                        # If no active step found, use the last created step
+                        if not step_id and handler._active_steps:
+                            # Get the most recently added step
+                            last_agent = list(handler._active_steps.keys())[-1]
+                            step_id = handler._active_steps[last_agent]['step_id']
+                        
+                        if step_id:
+                            event_id = lai.create_event(
+                                step_id=step_id,
+                                description=f"Tool call: {self.name}",
+                                result=f"Args: {args}, Kwargs: {kwargs}",
+                                model="tool"
+                            )
                     
                     # Execute the original function
                     result = self._func(*args, **kwargs)
                     
                     # Update event with result
-                    if session and session.active_step and event_id:
+                    if session and event_id:
                         lai.end_event(
                             event_id=event_id,
                             result=f"Result: {result}"
@@ -365,6 +358,8 @@ class OpenAIAgentsHandler(BaseProvider):
                 return self.name
         
         return ToolWrapper(func)
+    
+    # ========== Utility Methods ==========
     
     def _extract_handoff_chain(self, result, initial_agent):
         """Extract the complete handoff chain from the result
