@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="lucidicai",
-    version="1.2.10",
+    version="1.2.11",
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
@@ -15,7 +15,7 @@ setup(
         "openai>=1.3.0",
         "pillow",
         "anthropic",
-        "pydantic_ai",
+        # "pydantic_ai",
     ],
     author="Andy Liang",
     author_email="andy@lucidic.ai",
