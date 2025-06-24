@@ -54,7 +54,7 @@ class Step:
             "eval_score": kwargs['eval_score'] if 'eval_score' in kwargs else None,
             "eval_description": kwargs['eval_description'] if 'eval_description' in kwargs else None,
             "is_finished": kwargs['is_finished'] if 'is_finished' in kwargs else None,
-            "has_screenshot": True if screenshot else False
+            "has_screenshot": True if screenshot else None
         }
         return request_data
 
