@@ -135,6 +135,8 @@ class Client:
                 break
             except Exception:
                 pass
+        if response is None:
+            raise InvalidOperationError("Cannot reach backend. Check your internet connection.")
         if response.status_code == 401:
             raise APIKeyVerificationError("Invalid API key: 401 Unauthorized")
         if response.status_code == 402:
