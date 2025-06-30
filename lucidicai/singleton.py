@@ -4,13 +4,47 @@ lai_inst = {}
 
 def singleton(class_):
     def getinstance(*args, **kwargs):
-        if class_ not in lai_inst:
-            if class_.__name__ == 'Client' and ('lucidic_api_key' not in kwargs or 'agent_id' not in kwargs):
-                raise LucidicNotInitializedError()
-            lai_inst[class_] = class_(*args, **kwargs)
-        return lai_inst[class_]
 
+        inst = lai_inst.get(class_)
+
+        # on first access -> no instance yet
+        if inst is None:
+            # no args/kwargs -> return a NullClient for Client
+            if class_.__name__ == 'Client' and not args and not kwargs:
+                inst = NullClient()
+            else:
+                inst = class_(*args, **kwargs)
+            lai_inst[class_] = inst
+            return inst
+
+        # existing instance present
+        # if NullClient and now real init args are passed -> upgrade it
+        if isinstance(inst, NullClient) and (args or kwargs):
+            inst = class_(*args, **kwargs)
+            lai_inst[class_] = inst
+        return inst
+    
     return getinstance
 
 def clear_singletons():
     lai_inst.clear()
+
+
+class NullClient:
+    """
+    A no-op client returned when Lucidic has not been initialized.
+    All methods are inert and session is None.
+    """
+    def __init__(self):
+        self.initialized = False
+        self.session = None
+        self.providers = []
+
+    def set_provider(self, *args, **kwargs):
+        pass
+
+    def undo_overrides(self):
+        pass
+
+    def clear(self):
+        pass

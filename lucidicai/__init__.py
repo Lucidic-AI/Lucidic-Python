@@ -130,6 +130,7 @@ def init(
         agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
         if agent_id is None:
             raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
+        
     try:
         client = Client()
         if client.initialized:
@@ -139,6 +140,12 @@ def init(
             lucidic_api_key=lucidic_api_key,
             agent_id=agent_id,
         )
+
+    # get current client which will be NullClient if never lai is never initialized
+    client = Client()
+    # ff not yet initialized or still the NullClient -> creaet a real client when init is called
+    if not getattr(client, 'initialized', False):
+        client = Client(lucidic_api_key=lucidic_api_key, agent_id=agent_id)
     
     # Set up providers
     _setup_providers(client, providers)
