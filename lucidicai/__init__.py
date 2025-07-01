@@ -130,19 +130,6 @@ def init(
         agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
         if agent_id is None:
             raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-        
-    # try:
-
-    # try except not needed since the error will never be thrown with a dummy placeholder client
-    client = Client()
-    if client.initialized:
-        raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.reset() between sessions.")
-    
-    # except LucidicNotInitializedError:
-    #     client = Client(
-    #         lucidic_api_key=lucidic_api_key,
-    #         agent_id=agent_id,
-    #     )
 
     # get current client which will be NullClient if never lai is never initialized
     client = Client()
