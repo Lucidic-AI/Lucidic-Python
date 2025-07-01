@@ -130,15 +130,12 @@ def init(
         agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
         if agent_id is None:
             raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-    try:
-        client = Client()
-        if client.initialized:
-            raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.reset() between sessions.")
-    except LucidicNotInitializedError:
-        client = Client(
-            lucidic_api_key=lucidic_api_key,
-            agent_id=agent_id,
-        )
+
+    # get current client which will be NullClient if never lai is never initialized
+    client = Client()
+    # ff not yet initialized or still the NullClient -> creaet a real client when init is called
+    if not getattr(client, 'initialized', False):
+        client = Client(lucidic_api_key=lucidic_api_key, agent_id=agent_id)
     
     # Set up providers
     _setup_providers(client, providers)
@@ -201,9 +198,8 @@ def update_session(
         is_successful: Whether the session was successful.
         is_successful_reason: Session success reason.
     """
-    client = Client()  # TODO: Fail silently if client not initialized yet
+    client = Client()
     if not client.session:
-        logger.warning("update_session called when session not initialized. Please call lai.init() first.")
         return
     client.session.update_session(**locals())
 
@@ -225,7 +221,6 @@ def end_session(
     """
     client = Client()
     if not client.session:
-        logger.warning("end_session called when session not initialized. Please call lai.init() first.")
         return
     client.session.update_session(is_finished=True, **locals())
     client.clear()
@@ -237,7 +232,6 @@ def reset_sdk() -> None:
     """
     client = Client()
     if not client.initialized:
-        logger.warning("reset_sdk called when SDK not initialized. Please call lai.init() first.")
         return
     client.clear()
 
@@ -307,7 +301,6 @@ def create_step(
     """
     client = Client()
     if not client.session:
-        logger.warning("create_step called when session not initialized. Please call lai.init() first.")
         return
     return client.session.create_step(**locals())
 
@@ -337,7 +330,6 @@ def update_step(
     """
     client = Client()
     if not client.session:
-        logger.warning("update_step called when session not initialized. Please call lai.init() first.")
         return
     if not client.session.active_step:
         raise InvalidOperationError("No active step to update")
@@ -369,7 +361,6 @@ def end_step(
     """
     client = Client()
     if not client.session:
-        logger.warning("end_step called when session not initialized. Please call lai.init() first.")
         return
     
     if not client.session.active_step and step_id is None:
@@ -404,7 +395,6 @@ def create_event(
 
     client = Client()
     if not client.session:
-        logger.warning("create_event called when session not initialized. Please call lai.init() first.")
         return
     return client.session.create_event(**locals())
 
@@ -430,7 +420,6 @@ def update_event(
     """
     client = Client()
     if not client.session:
-        logger.warning("update_event called when session not initialized. Please call lai.init() first.")
         return
     client.session.update_event(**locals())
 
@@ -455,7 +444,6 @@ def end_event(
     """
     client = Client()
     if not client.session:
-        logger.warning("end_event called when session not initialized. Please call lai.init() first.")
         return
     client.session.update_event(is_finished=True, **locals())
 
@@ -480,7 +468,6 @@ def get_prompt(
     """
     client = Client()
     if not client.session:
-        logger.warning("get_prompt called when session not initialized, and will return an empty string. Please call lai.init() first.")
         return ""
     prompt = client.get_prompt(prompt_name, cache_ttl, label)
     if variables:
