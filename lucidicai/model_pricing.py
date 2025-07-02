@@ -141,6 +141,7 @@ MODEL_PRICING = {
     "deepseek-ai/deepseek-r1-distill-llama-70b": {"input": 0.75, "output": 0.99},
     "deepseek-coder": {"input": 0.14, "output": 0.28},
     "deepseek-chat": {"input": 0.14, "output": 0.28},
+    "deepseek/deepseek-v3-0324": {"input": 0.14, "output": 0.28},
     
     # Qwen Models
     "qwen-qwq-32b": {"input": 0.29, "output": 0.39},
@@ -148,6 +149,8 @@ MODEL_PRICING = {
     "qwen-turbo": {"input": 0.3, "output": 0.6},
     "qwen-plus": {"input": 0.5, "output": 2.0},
     "qwen-max": {"input": 2.0, "output": 6.0},
+    "qwen2.5-32b-instruct": {"input": 0.7, "output": "2.8"},
+    "qwen2.5-max": {"input": 1.6, "output": 6.4},
     
     # Google Gemma Models
     "gemma-2-9b": {"input": 0.20, "output": 0.20},
@@ -163,7 +166,14 @@ MODEL_PRICING = {
     "pplx-7b-chat": {"input": 0.07, "output": 0.28},
     "pplx-70b-chat": {"input": 0.7, "output": 2.8},
     "pplx-7b-online": {"input": 0.07, "output": 0.28},
-    "pplx-70b-online": {"input": 0.7, "output": 2.8}
+    "pplx-70b-online": {"input": 0.7, "output": 2.8},
+
+    # Grok Models
+    "grok-3-latest": {"input": 3, "output": 15},
+    "grok-3": {"input": 3, "output": 15},
+    "grok-3-fast": {"input": 5, "output": 25},
+    "grok-3-mini": {"input": 0.3, "output": 0.5},
+    "grok-3-mini-fast": {"input": 0.6, "output": 4},
 
 }
 
@@ -179,6 +189,7 @@ PROVIDER_AVERAGES = {
     "qwen": {"input": 0.5, "output": 1.0},          # Qwen average
     "together": {"input": 0.15, "output": 0.15},    # Together AI average
     "perplexity": {"input": 0.4, "output": 1.5},    # Perplexity average
+    "grok": {"input": 2.4, "output": 12},           # Grok average
 }
 
 def get_provider_from_model(model: str) -> str:
