@@ -216,6 +216,8 @@ def get_provider_from_model(model: str) -> str:
         return "together"
     elif any(pplx in model_lower for pplx in ["pplx", "perplexity"]):
         return "perplexity"
+    elif any(grok in model_lower for grok in ["grok", "xAI"]):
+        return "grok"
     else:
         return "unknown"
 
