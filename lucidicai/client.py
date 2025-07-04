@@ -73,7 +73,8 @@ class Client:
         mass_sim_id: Optional[str] = None,
         task: Optional[str] = None,
         rubrics: Optional[list] = None,
-        tags: Optional[list] = None
+        tags: Optional[list] = None,
+        production_monitoring: Optional[bool] = False
     ) -> None:
         self.session = Session(
             agent_id=self.agent_id,
@@ -81,7 +82,8 @@ class Client:
             mass_sim_id=mass_sim_id,
             task=task,
             rubrics=rubrics,
-            tags=tags
+            tags=tags,
+            production_monitoring=production_monitoring
         )
         self.initialized = True
         return self.session.session_id
