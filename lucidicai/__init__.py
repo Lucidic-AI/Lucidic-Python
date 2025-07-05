@@ -101,6 +101,7 @@ def init(
     agent_id: Optional[str] = None,
     task: Optional[str] = None,
     providers: Optional[List[ProviderType]] = [],
+    production_monitoring: Optional[bool] = False,
     mass_sim_id: Optional[str] = None,
     rubrics: Optional[list] = None,
     tags: Optional[list] = None,
@@ -137,6 +138,13 @@ def init(
     if not getattr(client, 'initialized', False):
         client = Client(lucidic_api_key=lucidic_api_key, agent_id=agent_id)
     
+    if not production_monitoring:
+        production_monitoring = os.getenv("LUCIDIC_PRODUCTION_MONITORING", False)
+        if production_monitoring == "True":
+            production_monitoring = True
+        else:
+            production_monitoring = False
+    
     # Set up providers
     _setup_providers(client, providers)
     session_id = client.init_session(
@@ -144,7 +152,8 @@ def init(
         mass_sim_id=mass_sim_id,
         task=task,
         rubrics=rubrics,
-        tags=tags
+        tags=tags,
+        production_monitoring=production_monitoring
     )
     logger.info("Session initialized successfully")
     return session_id
