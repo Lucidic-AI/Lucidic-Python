@@ -63,11 +63,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                 text.append(prompt)
             elif isinstance(prompt, dict) and 'image' in prompt:
                 images.append(prompt['image'])
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot create event - no active session or step")
-            return
             
         try:
             # Create a new event
@@ -112,12 +107,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                                 image_url = block.get("image_url", "")
                                 image_str = image_url.get('url', "")
                                 images_b64.append(image_str[image_str.find(',') + 1:])
-
-
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot create event - no active session or step")
-            return
             
         try:
             # Create a new event
@@ -157,11 +146,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
             message = response.generations[0][0].message
             usage = message.usage_metadata
             cost = calculate_cost(model, usage)
-        
-        # Make sure we have a valid session
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
             
         try:
             if run_str in self.run_to_event:
@@ -206,11 +190,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         logger.debug("Handling LLM error in Langchain Handler, ending event...")
         run_str = str(run_id)
         model = self.run_to_model.get(run_str, "unknown")
-        
-        # Make sure we have a valid session
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
             
         try:
             if run_str in self.run_to_event:
@@ -266,12 +245,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
                                 image_url = block.get("image_url", "")
                                 image_str = image_url.get('url', "")
                                 images_b64.append(image_str[image_str.find(',') + 1:])
-
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot create event - no active session or step")
-            return
             
         try:
             # Create a new event
@@ -284,11 +257,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """Handle end of chain execution"""
         logger.debug("Ending chain execution in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
-        
-        # Make sure we have a valid session
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
         
         # Extract result from outputs
         result = None
@@ -321,11 +289,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """Handle chain errors"""
         logger.debug("Handling chain error in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
-        
-        # Make sure we have a valid session
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
             
         try:
             if run_id in self.run_to_event:
@@ -352,11 +315,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         tool_name = serialized.get("name", "Unknown Tool")
         description = f"Tool Call ({tool_name}): {input_str[:100]}..."
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot create event - no active session or step")
-            return
             
         try:
             # Create event
@@ -371,11 +329,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """
         logger.debug("Ending tool execution in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
         
         # Get result from output
         result = None
@@ -404,11 +357,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """
         logger.debug("Handling tool error in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
             
         try:
             if run_id in self.run_to_event:
@@ -434,11 +382,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         retriever_type = serialized.get("name", "Unknown Retriever")
         description = f"Retriever ({retriever_type}): {query[:100]}..."
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot create event - no active session or step")
-            return
             
         try:
             # Create event
@@ -453,11 +396,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """ 
         logger.debug("Ending retriever execution in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
         
         # Extract result from documents
         result = None
@@ -493,11 +431,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """
         logger.debug("Handling retriever error in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
             
         try:
             if run_id in self.run_to_event:
@@ -523,11 +456,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id", "unknown"))
         tool = getattr(action, 'tool', 'unknown_tool')
         description = f"Agent Action: {tool}"
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot create event - no active session or step")
-            return
         
         # Extract useful information from the action
         result = None
@@ -571,12 +499,6 @@ class LucidicLangchainHandler(BaseCallbackHandler):
         """
         logger.debug("Handling agent finish in Langchain Handler, ending event...")
         run_id = str(kwargs.get("run_id", "unknown"))
-
-        
-        # Make sure we have a valid session and step
-        if not (Client().session and Client().session.active_step):
-            logger.warning("Cannot end event - no active session or step")
-            return
         
         # Extract result from finish
         result = None

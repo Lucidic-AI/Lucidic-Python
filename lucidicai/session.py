@@ -74,9 +74,9 @@ class Session:
             "is_finished": kwargs.get("is_finished", None),
             "task": kwargs.get("task", None),
             "is_successful": kwargs.get("is_successful", None),
-            "is_successful_reason": kwargs.get("is_successful_reason", None),
+            "is_successful_reason": Client().mask(kwargs.get("is_successful_reason", None)),
             "session_eval": kwargs.get("session_eval", None),
-            "session_eval_reason": kwargs.get("session_eval_reason", None),
+            "session_eval_reason": Client().mask(kwargs.get("session_eval_reason", None)),
             "tags": kwargs.get("tags", None)
         }
         Client().make_request('updatesession', 'PUT', request_data)
@@ -102,12 +102,14 @@ class Session:
 
     def create_event(self, **kwargs):
         # Get step_id from kwargs or active step
+        temp_step_created = False
         if 'step_id' in kwargs and kwargs['step_id'] is not None:
             step_id = kwargs['step_id']
         elif self._active_step:
             step_id = self._active_step
         else:
-            raise InvalidOperationError("No active step to create event in and no step_id provided")
+            step_id = self.create_step()
+            temp_step_created = True
         kwargs.pop('step_id', None)
         event = Event(
             session_id=self.session_id,
@@ -116,6 +118,9 @@ class Session:
         )
         self.event_history[event.event_id] = event
         self._active_event = event
+        if temp_step_created:
+            self.update_step(step_id=step_id, is_finished=True)
+            self._active_step = None
         return event.event_id
 
     def update_event(self, **kwargs):

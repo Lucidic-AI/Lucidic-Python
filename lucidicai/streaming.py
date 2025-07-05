@@ -14,7 +14,6 @@ class StreamingResponseWrapper:
     
     def __init__(self, response: Any, session: Any, kwargs: Dict[str, Any]):
         self.response = response
-        self.session = session
         self.kwargs = kwargs
         self.chunks = []
         self.start_time = time.time()
@@ -34,7 +33,7 @@ class StreamingResponseWrapper:
                 logger.info(f"[Streaming] Using existing event ID: {self.event_id}")
                 return
                 
-            if self.session and hasattr(self.session, 'active_step') and self.session.active_step:
+            if Client().session:
                 description, images = self._format_messages(self.kwargs.get('messages', ''))
                 
                 event_data = {
@@ -54,7 +53,7 @@ class StreamingResponseWrapper:
                 if images:
                     event_data['screenshots'] = images
                 
-                self.event_id = self.session.create_event(**event_data)
+                self.event_id = Client().session.create_event(**event_data)
                 logger.debug(f"[Streaming] Created new streaming event with ID: {self.event_id}")
         except Exception as e:
             logger.error(f"[Streaming] Error creating initial streaming event: {str(e)}")

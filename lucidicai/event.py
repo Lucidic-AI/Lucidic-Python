@@ -40,8 +40,8 @@ class Event:
             self.is_finished = kwargs['is_finished']
         request_data = {
             "event_id": self.event_id,
-            "description": kwargs.get("description", None),
-            "result": kwargs.get("result", None),
+            "description": Client().mask(kwargs.get("description", None)),
+            "result": Client().mask(kwargs.get("result", None)),
             "is_finished": self.is_finished, 
             "cost_added": kwargs.get("cost_added", None),
             "model": kwargs.get("model", None), 

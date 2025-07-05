@@ -48,11 +48,11 @@ class Step:
             upload_image_to_s3(presigned_url, screenshot, "JPEG")
         request_data = {
             "step_id": self.step_id,
-            "goal": kwargs['goal'] if 'goal' in kwargs else None,
-            "action": kwargs['action'] if 'action' in kwargs else None,
-            "state": kwargs['state'] if 'state' in kwargs else None,
+            "goal": Client().mask(kwargs['goal']) if 'goal' in kwargs else None,
+            "action": Client().mask(kwargs['action']) if 'action' in kwargs else None,
+            "state": Client().mask(kwargs['state']) if 'state' in kwargs else None,
             "eval_score": kwargs['eval_score'] if 'eval_score' in kwargs else None,
-            "eval_description": kwargs['eval_description'] if 'eval_description' in kwargs else None,
+            "eval_description": Client().mask(kwargs['eval_description']) if 'eval_description' in kwargs else None,
             "is_finished": kwargs['is_finished'] if 'is_finished' in kwargs else None,
             "has_screenshot": True if screenshot else None
         }

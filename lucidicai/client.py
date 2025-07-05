@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 import requests
+import logging
 from requests.adapters import HTTPAdapter, Retry
 from urllib3.util import Retry
 
@@ -30,6 +31,7 @@ class Client:
         self.providers = []
         self.api_key = lucidic_api_key
         self.agent_id = agent_id
+        self.masking_function = None
         self.request_session = requests.Session()
         retry_cfg = Retry(
             total=3,                     # 3 attempts in total
@@ -150,3 +152,15 @@ class Client:
         except requests.exceptions.HTTPError as e:
             raise InvalidOperationError(f"Request to Lucidic AI Backend failed: {e.response.text}")
         return response.json()
+
+    def mask(self, data):
+        if not self.masking_function:
+            return data
+        if not data:
+            return data
+        try:
+            return self.masking_function(data)
+        except Exception as e:
+            logger = logging.getLogger('Lucidic')
+            logger.error(f"Error in custom masking function: {repr(e)}")
+            return "<Error in custom masking function, this is a fully-masked placeholder>"

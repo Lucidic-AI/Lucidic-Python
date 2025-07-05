@@ -51,7 +51,6 @@ class AnthropicHandler(BaseProvider):
         return " ".join(descriptions), screenshots
 
     def handle_response(self, response, kwargs):
-        event = Client().session.active_step
 
         # for synchronous streaming responses
         if isinstance(response, Stream):
@@ -222,9 +221,6 @@ class AnthropicHandler(BaseProvider):
         self.original_create_async = AsyncMessages.create
         
         def patched_create(*args, **kwargs):            
-            step = Client().session.active_step
-            if not step:
-                return self.original_create(*args, **kwargs)
             description, images = self._format_messages(kwargs.get("messages", []))
             
             event_id = Client().session.create_event(
@@ -237,9 +233,6 @@ class AnthropicHandler(BaseProvider):
             return self.handle_response(result, kwargs)
         
         async def patched_create_async(*args, **kwargs):
-            step = Client().session.active_step
-            if not step:
-                return self.original_create_async(*args, **kwargs)
             description, images = self._format_messages(kwargs.get("messages", []))
             
             event_id = Client().session.create_event(

@@ -105,6 +105,7 @@ def init(
     mass_sim_id: Optional[str] = None,
     rubrics: Optional[list] = None,
     tags: Optional[list] = None,
+    masking_function = None,
 ) -> str:
     """
     Initialize the Lucidic client.
@@ -118,6 +119,7 @@ def init(
         mass_sim_id: Optional mass simulation ID, if session is to be part of a mass simulation.
         rubrics: Optional rubrics for evaluation, list of strings.
         tags: Optional tags for the session, list of strings.
+        masking_function: Optional function to mask sensitive data.
     
     Raises:
         InvalidOperationError: If the client is already initialized.
@@ -153,8 +155,10 @@ def init(
         task=task,
         rubrics=rubrics,
         tags=tags,
-        production_monitoring=production_monitoring
+        production_monitoring=production_monitoring,
     )
+    if masking_function:
+        client.masking_function = masking_function
     logger.info("Session initialized successfully")
     return session_id
 
@@ -163,7 +167,8 @@ def continue_session(
     session_id: str,
     lucidic_api_key: Optional[str] = None,
     agent_id: Optional[str] = None,
-    providers: Optional[List[ProviderType]] = []
+    providers: Optional[List[ProviderType]] = [],
+    masking_function = None,
 ):
     if lucidic_api_key is None:
         lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
@@ -186,6 +191,8 @@ def continue_session(
     # Set up providers
     _setup_providers(client, providers)
     session_id = client.continue_session(session_id=session_id)
+    if masking_function:
+        client.masking_function = masking_function
     logger.info(f"Session {session_id} continuing...")
     return session_id  # For consistency
 

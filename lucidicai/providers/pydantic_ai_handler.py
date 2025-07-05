@@ -381,11 +381,6 @@ class PydanticAIHandler(BaseProvider):
 
     def _wrap_request(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Wrap regular request method to track LLM calls"""
-        # Create event before API call
-        step = Client().session.active_step
-        if step is None:
-            return original_method(model_instance, messages, model_settings, model_request_parameters)
-        
         description = self._format_messages(messages)
         event_id = Client().session.create_event(
             description=description,
@@ -412,13 +407,6 @@ class PydanticAIHandler(BaseProvider):
     
     def _wrap_request_stream_context_manager(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Return an async context manager for streaming requests"""
-        # Create event before API call
-        event_id = None
-        step = Client().session.active_step
-        
-        if step is None:
-            return original_method(model_instance, messages, model_settings, model_request_parameters)
-        
         description = self._format_messages(messages)
         event_id = Client().session.create_event(
             description=description,
@@ -466,13 +454,8 @@ class PydanticAIHandler(BaseProvider):
 
     async def _wrap_request_stream(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Wrap streaming request method"""
-        # Create event before API call
-        step = Client().session.active_step
-        if step is None:
-            return original_method(model_instance, messages, model_settings, model_request_parameters)
-
         description = self._format_messages(messages)
-        event = step.create_event(
+        event = Client().session.create_event(
             description=description,
             result="Streaming response..."
         )
