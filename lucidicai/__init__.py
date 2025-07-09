@@ -7,13 +7,20 @@ from typing import List, Literal, Optional
 from .client import Client
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError, PromptError
 from .event import Event
-from .providers.anthropic_handler import AnthropicHandler
-from .providers.langchain import LucidicLangchainHandler
-from .providers.openai_handler import OpenAIHandler
-from .providers.openai_agents_handler import OpenAIAgentsHandler
-from .providers.pydantic_ai_handler import PydanticAIHandler
 from .session import Session
 from .step import Step
+
+# Import OpenTelemetry-based handlers
+from .telemetry.otel_handlers import (
+    OTelOpenAIHandler,
+    OTelAnthropicHandler,
+    OTelLangChainHandler,
+    OTelPydanticAIHandler,
+    OTelOpenAIAgentsHandler
+)
+
+# Import telemetry manager
+from .telemetry.otel_init import LucidicTelemetry
 
 ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai", "openai_agents"]
 
@@ -37,31 +44,33 @@ def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
     # Track which providers have been set up to avoid duplication
     setup_providers = set()
     
+    # Initialize telemetry if using OpenTelemetry
+    if providers:
+        telemetry = LucidicTelemetry()
+        if not telemetry.is_initialized():
+            telemetry.initialize(agent_id=client.agent_id)
+    
     for provider in providers:
         if provider in setup_providers:
             continue
             
         if provider == "openai":
-            client.set_provider(OpenAIHandler())
+            client.set_provider(OTelOpenAIHandler())
             setup_providers.add("openai")
         elif provider == "anthropic":
-            client.set_provider(AnthropicHandler())
+            client.set_provider(OTelAnthropicHandler())
             setup_providers.add("anthropic")
         elif provider == "langchain":
+            client.set_provider(OTelLangChainHandler())
             logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
             setup_providers.add("langchain")
         elif provider == "pydantic_ai":
-            client.set_provider(PydanticAIHandler())
+            client.set_provider(OTelPydanticAIHandler())
             setup_providers.add("pydantic_ai")
         elif provider == "openai_agents":
             try:
-                # For OpenAI Agents SDK, we want both handlers
-                client.set_provider(OpenAIAgentsHandler())
+                client.set_provider(OTelOpenAIAgentsHandler())
                 setup_providers.add("openai_agents")
-                # Also enable OpenAI handler if not already set up
-                if "openai" not in setup_providers:
-                    client.set_provider(OpenAIHandler())
-                    setup_providers.add("openai")
             except Exception as e:
                 logger.error(f"Failed to set up OpenAI Agents provider: {e}")
                 raise
@@ -87,11 +96,6 @@ __all__ = [
     'LucidicNotInitializedError',
     'PromptError',
     'InvalidOperationError',
-    'LucidicLangchainHandler',
-    'AnthropicHandler',
-    'OpenAIHandler',
-    'OpenAIAgentsHandler',
-    'PydanticAIHandler'
 ]
 
 
@@ -249,7 +253,28 @@ def reset_sdk() -> None:
     client = Client()
     if not client.initialized:
         return
+    
+    # Shutdown OpenTelemetry if it was initialized
+    telemetry = LucidicTelemetry()
+    if telemetry.is_initialized():
+        telemetry.uninstrument_all()
+    
     client.clear()
+
+
+def _cleanup_telemetry():
+    """Cleanup function for OpenTelemetry shutdown"""
+    try:
+        telemetry = LucidicTelemetry()
+        if telemetry.is_initialized():
+            telemetry.uninstrument_all()
+            logger.info("OpenTelemetry instrumentation cleaned up")
+    except Exception as e:
+        logger.error(f"Error during telemetry cleanup: {e}")
+
+
+# Register cleanup function
+atexit.register(_cleanup_telemetry)
 
 
 def create_mass_sim(

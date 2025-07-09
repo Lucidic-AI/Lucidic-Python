@@ -7,3 +7,15 @@ pillow
 boto3
 requests
 urllib3
+openai-agents
+
+# OpenTelemetry core dependencies
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation
+
+# OpenLLMetry instrumentations
+opentelemetry-instrumentation-openai
+opentelemetry-instrumentation-anthropic
+opentelemetry-instrumentation-langchain
+opentelemetry-semantic-conventions-ai

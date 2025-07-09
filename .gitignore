@@ -130,7 +130,7 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
+.env*
 .venv
 env/
 venv/
@@ -176,3 +176,5 @@ cython_debug/
 .pypirc
 
 CLAUDE.md
+
+otel_test/*

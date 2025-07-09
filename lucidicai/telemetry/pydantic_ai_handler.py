@@ -1,7 +1,7 @@
 """Pydantic AI provider handler for the Lucidic API"""
 from typing import Any, Dict, Optional
 
-from .base_providers import BaseProvider
+from .base_provider import BaseProvider
 from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
 from lucidicai.singleton import singleton

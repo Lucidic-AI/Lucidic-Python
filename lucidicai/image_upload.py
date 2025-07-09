@@ -86,3 +86,26 @@ def screenshot_path_to_jpeg(screenshot_path):
     img.save(buffered, format="JPEG")
     img_byte = buffered.getvalue()
     return base64.b64encode(img_byte).decode('utf-8')
+
+def extract_base64_images(data):
+    """Extract base64 image URLs from various data structures
+    
+    Args:
+        data: Can be a string, dict, list, or nested structure containing image data
+        
+    Returns:
+        List of base64 image data URLs (data:image/...)
+    """
+    images = []
+    
+    if isinstance(data, str):
+        if data.startswith('data:image'):
+            images.append(data)
+    elif isinstance(data, dict):
+        for value in data.values():
+            images.extend(extract_base64_images(value))
+    elif isinstance(data, list):
+        for item in data:
+            images.extend(extract_base64_images(item))
+            
+    return images

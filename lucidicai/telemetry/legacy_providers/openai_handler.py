@@ -40,12 +40,33 @@ class OpenAIHandler(BaseProvider):
             if not kwargs.get('stream', False):
                 initial_result = WAITING_STRUCTURED_RESPONSE if "parse" in method_name else WAITING_RESPONSE
             
-            return session.create_event(
-                description=description,
-                result=initial_result,
-                screenshots=images if images else None,
-                model=kwargs.get('model', 'unknown')
-            )
+            # Check if we're in OpenAI Agents SDK context and get the active step
+            step_id = None
+            try:
+                from lucidicai.providers.openai_agents_handler import OpenAIAgentsHandler
+                agents_handler = OpenAIAgentsHandler()
+                if hasattr(agents_handler, '_active_steps') and agents_handler._active_steps:
+                    # Find an active (non-ended) step
+                    for agent_name, step_info in agents_handler._active_steps.items():
+                        if not step_info.get('ended', False):
+                            step_id = step_info['step_id']
+                            # Set as active step to prevent new step creation
+                            session._active_step = step_id
+                            break
+            except:
+                pass
+            
+            event_kwargs = {
+                'description': description,
+                'result': initial_result,
+                'screenshots': images if images else None,
+                'model': kwargs.get('model', 'unknown')
+            }
+            
+            if step_id:
+                event_kwargs['step_id'] = step_id
+            
+            return session.create_event(**event_kwargs)
         except Exception as e:
             logger.error(f"Failed to create event: {e}")
             return None
@@ -188,7 +209,12 @@ class OpenAIHandler(BaseProvider):
                                 elif item.get('type') == 'image_url':
                                     image_url = item.get('image_url', {})
                                     if isinstance(image_url, dict) and 'url' in image_url:
-                                        images.append(image_url['url'])
+                                        url = image_url['url']
+                                        images.append(url)
+                                        # Also store in thread-local storage for SpanProcessor
+                                        if url.startswith('data:image'):
+                                            from .image_storage import store_image
+                                            store_image(url)
                         
                         if text_parts:
                             content_parts.append(f"{role}: {' '.join(text_parts)}")
@@ -370,17 +396,54 @@ class OpenAIHandler(BaseProvider):
             # Check for agent context
             agent_name = self._get_agent_name_from_input(kwargs.get('input', []))
             
+            # Check if we have a synthetic event from the agents handler
+            synthetic_event_id = None
+            try:
+                from lucidicai.providers.openai_agents_handler import OpenAIAgentsHandler
+                agents_handler = OpenAIAgentsHandler()
+                if (hasattr(agents_handler, '_active_steps') and 
+                    agent_name and 
+                    agent_name in agents_handler._active_steps and
+                    agents_handler._active_steps[agent_name].get('has_synthetic_event')):
+                    # We have a synthetic event, use it instead of creating a new one
+                    synthetic_event_id = agents_handler._active_steps[agent_name].get('event_id')
+                    logger.debug(f"[OpenAI Handler] Found synthetic event {synthetic_event_id} for agent {agent_name}")
+            except Exception as e:
+                logger.debug(f"[OpenAI Handler] Could not check for synthetic event: {e}")
+            
+            # If we have a synthetic event, update it; otherwise create a new event
+            if synthetic_event_id:
+                # Update the existing synthetic event
+                try:
+                    result = await original_method(*args, **kwargs)
+                    
+                    # Update synthetic event with API response
+                    response_text = self._extract_responses_text(result)
+                    session.update_event(
+                        event_id=synthetic_event_id,
+                        is_finished=False,  # Don't finish yet, let agents handler do it
+                        result=f"Input: {kwargs.get('input', [])}\nOutput: {response_text}",
+                        model=kwargs.get('model', 'unknown')
+                    )
+                    
+                    return result
+                except Exception as e:
+                    self._update_event_on_error(session, synthetic_event_id, e)
+                    raise
+            
+            # No synthetic event, proceed with normal event creation
             # Create event
             description, _ = self._format_responses_description(kwargs)
             if agent_name:
                 description = f"[{agent_name}] {description}"
             
-            # Check if we're in OpenAI Agents SDK mode
+            # Check if we're in OpenAI Agents SDK mode but don't create new steps
+            # The agents handler is responsible for all step management
             try:
                 from lucidicai.providers.openai_agents_handler import OpenAIAgentsHandler
                 agents_handler = OpenAIAgentsHandler()
                 
-                # Only do this if the agents handler is actually instrumented and has active steps
+                # Only log handoff detection, don't create steps
                 if (hasattr(agents_handler, '_is_instrumented') and agents_handler._is_instrumented and
                     hasattr(agents_handler, '_active_steps') and agents_handler._active_steps):
                     
@@ -389,32 +452,8 @@ class OpenAIHandler(BaseProvider):
                                            if not info.get('ended', False)]
                     
                     if agent_name and agent_name not in current_active_agents and current_active_agents:
-                        # This is a handoff! End the previous step and create a new one
-                        for prev_agent in current_active_agents:
-                            prev_step_info = agents_handler._active_steps[prev_agent]
-                            if not prev_step_info.get('ended', False):
-                                # End the previous step
-                                lai.end_step(
-                                    step_id=prev_step_info['step_id'],
-                                    state=f"Handoff from {prev_agent} to {agent_name}",
-                                    action="Initiated handoff",
-                                    goal=f"Transfer control to {agent_name}"
-                                )
-                                prev_step_info['ended'] = True
-                        
-                        # Create new step for this agent
-                        new_step_id = lai.create_step(
-                            state=f"Handoff: {agent_name}",
-                            action=f"Continuing from previous agent",
-                            goal="Process request"
-                        )
-                        
-                        if new_step_id:
-                            agents_handler._active_steps[agent_name] = {
-                                'step_id': new_step_id,
-                                'ended': False
-                            }
-                            logger.info(f"[OpenAI Handler] Created handoff step for {agent_name}: {new_step_id}")
+                        logger.debug(f"[OpenAI Handler] Detected handoff from {current_active_agents} to {agent_name}")
+                        # Don't create steps here - let the agents handler manage all steps
             except ImportError:
                 # OpenAI Agents SDK not available, skip this logic
                 pass
@@ -431,6 +470,8 @@ class OpenAIHandler(BaseProvider):
                 step_id = self._get_step_id_for_agent(agent_name)
                 if step_id:
                     event_kwargs['step_id'] = step_id
+                    # Set as active step to prevent new step creation
+                    session._active_step = step_id
             
             event_id = session.create_event(**event_kwargs)
             
@@ -462,17 +503,54 @@ class OpenAIHandler(BaseProvider):
             # Check for agent context
             agent_name = self._get_agent_name_from_input(kwargs.get('input', []))
             
+            # Check if we have a synthetic event from the agents handler
+            synthetic_event_id = None
+            try:
+                from lucidicai.providers.openai_agents_handler import OpenAIAgentsHandler
+                agents_handler = OpenAIAgentsHandler()
+                if (hasattr(agents_handler, '_active_steps') and 
+                    agent_name and 
+                    agent_name in agents_handler._active_steps and
+                    agents_handler._active_steps[agent_name].get('has_synthetic_event')):
+                    # We have a synthetic event, use it instead of creating a new one
+                    synthetic_event_id = agents_handler._active_steps[agent_name].get('event_id')
+                    logger.debug(f"[OpenAI Handler] Found synthetic event {synthetic_event_id} for agent {agent_name}")
+            except Exception as e:
+                logger.debug(f"[OpenAI Handler] Could not check for synthetic event: {e}")
+            
+            # If we have a synthetic event, update it; otherwise create a new event
+            if synthetic_event_id:
+                # Update the existing synthetic event
+                try:
+                    result = original_method(*args, **kwargs)
+                    
+                    # Update synthetic event with API response
+                    response_text = self._extract_responses_text(result)
+                    session.update_event(
+                        event_id=synthetic_event_id,
+                        is_finished=False,  # Don't finish yet, let agents handler do it
+                        result=f"Input: {kwargs.get('input', [])}\nOutput: {response_text}",
+                        model=kwargs.get('model', 'unknown')
+                    )
+                    
+                    return result
+                except Exception as e:
+                    self._update_event_on_error(session, synthetic_event_id, e)
+                    raise
+            
+            # No synthetic event, proceed with normal event creation
             # Create event
             description, _ = self._format_responses_description(kwargs)
             if agent_name:
                 description = f"[{agent_name}] {description}"
             
-            # Check if we're in OpenAI Agents SDK mode by looking for active agents handler
+            # Check if we're in OpenAI Agents SDK mode but don't create new steps
+            # The agents handler is responsible for all step management
             try:
                 from lucidicai.providers.openai_agents_handler import OpenAIAgentsHandler
                 agents_handler = OpenAIAgentsHandler()
                 
-                # Only do this if the agents handler is actually instrumented and has active steps
+                # Only log handoff detection, don't create steps
                 if (hasattr(agents_handler, '_is_instrumented') and agents_handler._is_instrumented and
                     hasattr(agents_handler, '_active_steps') and agents_handler._active_steps):
                     
@@ -481,32 +559,8 @@ class OpenAIHandler(BaseProvider):
                                            if not info.get('ended', False)]
                     
                     if agent_name and agent_name not in current_active_agents and current_active_agents:
-                        # This is a handoff! End the previous step and create a new one
-                        for prev_agent in current_active_agents:
-                            prev_step_info = agents_handler._active_steps[prev_agent]
-                            if not prev_step_info.get('ended', False):
-                                # End the previous step
-                                lai.end_step(
-                                    step_id=prev_step_info['step_id'],
-                                    state=f"Handoff from {prev_agent} to {agent_name}",
-                                    action="Initiated handoff",
-                                    goal=f"Transfer control to {agent_name}"
-                                )
-                                prev_step_info['ended'] = True
-                        
-                        # Create new step for this agent
-                        new_step_id = lai.create_step(
-                            state=f"Handoff: {agent_name}",
-                            action=f"Continuing from previous agent",
-                            goal="Process request"
-                        )
-                        
-                        if new_step_id:
-                            agents_handler._active_steps[agent_name] = {
-                                'step_id': new_step_id,
-                                'ended': False
-                            }
-                            logger.info(f"[OpenAI Handler] Created handoff step for {agent_name}: {new_step_id}")
+                        logger.debug(f"[OpenAI Handler] Detected handoff from {current_active_agents} to {agent_name}")
+                        # Don't create steps here - let the agents handler manage all steps
             except ImportError:
                 # OpenAI Agents SDK not available, skip this logic
                 pass
@@ -523,6 +577,8 @@ class OpenAIHandler(BaseProvider):
                 step_id = self._get_step_id_for_agent(agent_name)
                 if step_id:
                     event_kwargs['step_id'] = step_id
+                    # Set as active step to prevent new step creation
+                    session._active_step = step_id
             
             event_id = session.create_event(**event_kwargs)
             

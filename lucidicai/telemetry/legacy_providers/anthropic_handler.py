@@ -42,7 +42,13 @@ class AnthropicHandler(BaseProvider):
                             source = piece.get("source", {})
                             img = source.get("data")
                             if img:
-                                screenshots.append(img)
+                                # Convert to data URL format
+                                media_type = source.get("media_type", "image/jpeg")
+                                data_url = f"data:{media_type};base64,{img}"
+                                screenshots.append(data_url)
+                                # Also store in thread-local storage for SpanProcessor
+                                from .image_storage import store_image
+                                store_image(data_url)
                     else:  # Assume ContentBlock
                         descriptions.append(str(piece))
             elif isinstance(content, str):
