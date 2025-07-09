@@ -10,7 +10,7 @@ from urllib3.util import Retry
 
 
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError
-from .providers.base_providers import BaseProvider
+from .telemetry.base_provider import BaseProvider 
 from .session import Session
 from .singleton import singleton, clear_singletons
 
@@ -90,7 +90,7 @@ class Client:
         self.initialized = True
         return self.session.session_id
 
-    def continue_session(self, session_id: str) -> None:
+    def continue_session(self, session_id: str):
         self.session = Session(
             agent_id=self.agent_id,
             session_id=session_id

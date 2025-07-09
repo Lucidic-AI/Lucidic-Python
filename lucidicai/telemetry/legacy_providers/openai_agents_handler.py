@@ -109,6 +109,18 @@ class OpenAIAgentsHandler(BaseProvider):
                 if agent_name != current_agent_name and not step_info.get('ended', False):
                     is_handoff = True
                     previous_agent = agent_name
+                    
+                    # Update the synthetic event with handoff information
+                    if 'event_id' in step_info and step_info['event_id']:
+                        try:
+                            original_input = step_info.get('user_prompt', '')
+                            lai.end_event(
+                                event_id=step_info['event_id'],
+                                result=f"Output: Handed off to {current_agent_name}"
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to update event for handoff: {e}")
+                    
                     # End the previous step
                     self._end_active_step(
                         agent_name=agent_name,
@@ -156,11 +168,33 @@ class OpenAIAgentsHandler(BaseProvider):
             self._active_steps[agent.name] = {
                 'step_id': step_id,
                 'ended': False,
-                'metadata': metadata
+                'metadata': metadata,
+                'event_id': None,  # Track the synthetic event
+                'has_synthetic_event': False,  # Flag to indicate we're handling events
+                'user_prompt': user_prompt  # Store the original input
             }
             
             if not step_id:
                 logger.warning("Failed to create step for agent execution")
+            else:
+                # Create a synthetic event to track the agent's input
+                # This ensures we capture the agent-level input/output, not just API calls
+                try:
+                    # Set this step as active to prevent other events from creating new steps
+                    session._active_step = step_id
+                    
+                    event_id = lai.create_event(
+                        step_id=step_id,
+                        description=f"[{agent.name}] Agent execution started",
+                        result=f"Input: {user_prompt}" if user_prompt else "Input: (empty)",
+                        model=f"agent:{agent.name}"
+                    )
+                    if event_id:
+                        self._active_steps[agent.name]['event_id'] = event_id
+                        self._active_steps[agent.name]['has_synthetic_event'] = True
+                        logger.debug(f"Created synthetic event {event_id} for agent {agent.name}")
+                except Exception as e:
+                    logger.error(f"Failed to create synthetic event: {e}")
             
             try:
                 # Execute the original function
@@ -217,6 +251,29 @@ class OpenAIAgentsHandler(BaseProvider):
                                 default_end_action = f"Handoff from {agent_name}"
                                 default_end_goal = "Continue processing"
                             
+                            # Update the synthetic event with the final output
+                            if 'event_id' in step_info and step_info['event_id']:
+                                try:
+                                    # Get the original input from the step info
+                                    original_input = step_info.get('user_prompt', '')
+                                    
+                                    # Determine the output to show
+                                    if is_final_agent and final_output:
+                                        output_text = final_output
+                                    else:
+                                        output_text = f"Handed off to next agent"
+                                    
+                                    # Combine input and output
+                                    combined_result = f"{output_text}"
+                                    
+                                    lai.end_event(
+                                        event_id=step_info['event_id'],
+                                        result=combined_result
+                                    )
+                                    logger.debug(f"Updated synthetic event {step_info['event_id']} with output")
+                                except Exception as e:
+                                    logger.error(f"Failed to update synthetic event: {e}")
+                            
                             # Use custom values if provided, otherwise use defaults
                             self._end_active_step(
                                 agent_name=agent_name,
@@ -233,6 +290,18 @@ class OpenAIAgentsHandler(BaseProvider):
                 
             except Exception as e:
                 logger.error(f"Agent execution failed: {str(e)}")
+                
+                # Update synthetic event with error
+                if agent.name in self._active_steps and self._active_steps[agent.name].get('event_id'):
+                    try:
+                        original_input = self._active_steps[agent.name].get('user_prompt', '')
+                        lai.end_event(
+                            event_id=self._active_steps[agent.name]['event_id'],
+                            result=f"Output: Error: {str(e)}"
+                        )
+                    except Exception as update_error:
+                        logger.error(f"Failed to update synthetic event with error: {update_error}")
+                
                 # End step with error
                 if step_id:
                     self._end_active_step(
@@ -329,6 +398,10 @@ class OpenAIAgentsHandler(BaseProvider):
                             step_id = handler._active_steps[last_agent]['step_id']
                         
                         if step_id:
+                            # Important: Set this as the active step in the session
+                            # This prevents create_event from creating a new step
+                            session._active_step = step_id
+                            
                             event_id = lai.create_event(
                                 step_id=step_id,
                                 description=f"Tool call: {self.name}",

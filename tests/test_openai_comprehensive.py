@@ -61,7 +61,7 @@ class TestOpenAIComprehensive(unittest.TestCase):
         )
         
         cls.sync_client = OpenAI(api_key=OPENAI_API_KEY)
-        cls.async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        # Note: async_client is now created inside each async test method
     
     @classmethod
     def tearDownClass(cls):
@@ -106,7 +106,10 @@ class TestOpenAIComprehensive(unittest.TestCase):
     def test_chat_completion_async(self):
         """Test asynchronous chat completion tracks correct information"""
         async def run_async_test():
-            response = await self.async_client.chat.completions.create(
+            # Create AsyncOpenAI client inside the async function
+            async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            
+            response = await async_client.chat.completions.create(
                 model="gpt-4-turbo",  # Using GPT-4 Turbo
                 messages=[
                     {"role": "user", "content": "Say 'async test passed'"}
@@ -118,6 +121,9 @@ class TestOpenAIComprehensive(unittest.TestCase):
             self.assertIsNotNone(response)
             self.assertIsNotNone(response.choices[0].message.content)
             self.assertIsNotNone(response.usage)
+            
+            # Properly close the client
+            await async_client.close()
             
             return response
         
@@ -164,7 +170,10 @@ class TestOpenAIComprehensive(unittest.TestCase):
     def test_streaming_async(self):
         """Test asynchronous streaming tracks chunks correctly"""
         async def run_async_stream():
-            stream = await self.async_client.chat.completions.create(
+            # Create AsyncOpenAI client inside the async function
+            async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            
+            stream = await async_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": "List: A B C"}],
                 stream=True,
@@ -181,6 +190,9 @@ class TestOpenAIComprehensive(unittest.TestCase):
             
             self.assertGreater(chunk_count, 1)
             self.assertGreater(len(full_response), 0)
+            
+            # Properly close the client
+            await async_client.close()
             
             return full_response, chunk_count
         
@@ -276,9 +288,12 @@ class TestOpenAIComprehensive(unittest.TestCase):
     def test_concurrent_requests(self):
         """Test concurrent requests are tracked independently"""
         async def make_concurrent_requests():
+            # Create AsyncOpenAI client inside the async function
+            async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            
             tasks = []
             for i in range(3):
-                task = self.async_client.chat.completions.create(
+                task = async_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": f"Number: {i+1}"}],
                     max_tokens=10
@@ -286,6 +301,10 @@ class TestOpenAIComprehensive(unittest.TestCase):
                 tasks.append(task)
             
             responses = await asyncio.gather(*tasks)
+            
+            # Properly close the client
+            await async_client.close()
+            
             return responses
         
         # Run concurrent requests
