@@ -8,6 +8,7 @@ boto3
 requests
 urllib3
 openai-agents
+anthropic
 
 # OpenTelemetry core dependencies
 opentelemetry-api

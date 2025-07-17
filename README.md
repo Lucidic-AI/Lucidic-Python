@@ -10,6 +10,7 @@ The official Python SDK for [Lucidic AI](https://lucidic.ai), providing comprehe
 - **Data Privacy** - Built-in masking functions to protect sensitive information
 - **Screenshot Support** - Capture and analyze visual context in your AI workflows
 - **Production Ready** - OpenTelemetry-based instrumentation for enterprise-scale applications
+- **Decorators** - Pythonic decorators for effortless step and event tracking
 
 ## Installation
 
@@ -121,7 +122,7 @@ lai.update_step(
 lai.end_step(step_id=step_id)
 ```
 
-- NOTE: If a step is not created before an LLM call, but after Lucidic has been initialized, one will automatically created for the event associated with the LLM call. This step is confied to just having one single event corresponding to the LLM call.
+- NOTE: If no step exists when an LLM call is made (but Lucidic has already been initialized), Lucidic will automatically create a new step for that call. This step will contain exactly one event—the LLM call itself.
 
 ### Events
 Events are automatically tracked when using instrumented providers, but can also be created manually.
@@ -180,6 +181,121 @@ response = llm.invoke([HumanMessage(content="Hello!")])
 ```
 
 ## Advanced Features
+
+### Decorators
+Simplify your code with Python decorators for automatic tracking:
+
+#### Step Decorator
+Wrap functions to automatically create and manage steps:
+
+```python
+@lai.step(
+    # All parameters are optional and auto generated if not provided
+    state="Processing data",    
+    action="Transform input",
+    goal="Generate output",
+    eval_score=1,
+    eval_description="Data succesfully processed",
+    screenshot_path="/path/to/image"    # populates step image if provided. No image if not provided
+)
+def process_data(input_data: dict) -> dict:
+    # Your processing logic here
+    result = transform(input_data)
+    return result
+
+# The function automatically creates a step, executes, and ends the step
+output = process_data({"key": "value"})
+```
+
+#### Event Decorator
+Track function calls as events with automatic input/output capture:
+
+```python
+@lai.event(
+    # All parameters are optional
+    description="Calculate statistics",  # function inputs if not provided
+    result="Stats calculated"           # function output if not provided
+    model="stats-engine",               # Not shown if not provided
+    cost_added=0.001                   # 0 if not provided
+)
+def calculate_stats(data: list) -> dict:
+    return {
+        'mean': sum(data) / len(data),
+        'max': max(data),
+        'min': min(data)
+    }
+
+# Creates an event with function inputs and outputs
+stats = calculate_stats([1, 2, 3, 4, 5])
+```
+
+#### Accessing Created Steps and Events
+Within decorated functions, you can access and update the created step:
+
+```python
+from lucidicai.decorators import get_decorator_step
+
+@lai.step(state="Initial state", action="Process")
+def process_with_updates(data: dict) -> dict:
+    # Access the current step ID
+    step_id = get_decorator_step()
+    
+    # Manually update the step - this overrides decorator parameters
+    lai.update_step(
+        step_id=step_id,
+        state="Processing in progress",
+        eval_score=0.5,
+        eval_description="Halfway complete"
+    )
+    
+    # Do some processing...
+    result = transform(data)
+    
+    # Update again before completion
+    lai.update_step(
+        step_id=step_id,
+        eval_score=1.0,
+        eval_description="Successfully completed transformation"
+    )
+    
+    return result
+
+# Any updates made within the decorated function overwrite the parameters passed into the decorator.
+
+#### Nested Usage
+Decorators can be nested for complex workflows:
+
+```python
+@lai.step(state="Main workflow", action="Process batch")
+def process_batch(items: list) -> list:
+    results = []
+    
+    @lai.event(description="Process single item")
+    def process_item(item):
+        # LLM calls here create their own events automatically
+        return transform(item)
+    
+    for item in items:
+        results.append(process_item(item))
+    
+    return results
+```
+
+#### Async Support
+Both decorators fully support async functions:
+
+```python
+@lai.step(state="Async operation", action="Fetch data")
+async def fetch_data(url: str) -> dict:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return await response.json()
+
+@lai.event(description="Async processing")
+async def process_async(data: dict) -> dict:
+    await asyncio.sleep(1)
+    return transform(data)
+```
 
 ### Data Masking
 Protect sensitive information with custom masking functions:
