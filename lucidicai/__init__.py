@@ -22,6 +22,9 @@ from .telemetry.otel_handlers import (
 # Import telemetry manager
 from .telemetry.otel_init import LucidicTelemetry
 
+# Import decorators
+from .decorators import step, event
+
 ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai", "openai_agents"]
 
 # Configure logging
@@ -96,6 +99,8 @@ __all__ = [
     'LucidicNotInitializedError',
     'PromptError',
     'InvalidOperationError',
+    'step',
+    'event',
 ]
 
 

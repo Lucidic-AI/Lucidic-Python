@@ -155,7 +155,7 @@ class LucidicSpanExporter(SpanExporter):
                  attributes.get('gen_ai.prompt')
         
         if DEBUG:
-            logger.info(f"[SpaneExporter -- DEBUG] Extracting Description attributes: {attributes}, prompts: {prompts}")
+            # logger.info(f"[SpaneExporter -- DEBUG] Extracting Description attributes: {attributes}, prompts: {prompts}")
 
         if prompts:
             if isinstance(prompts, list) and prompts:

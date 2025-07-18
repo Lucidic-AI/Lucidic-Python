@@ -55,8 +55,8 @@ class UniversalImageInterceptor:
                     if text_parts and has_images:
                         combined_text = ' '.join(text_parts)
                         store_text(combined_text, msg_idx)
-                        if DEBUG:
-                            logger.info(f"[Universal Interceptor] Stored text for multimodal message {msg_idx}: {combined_text[:50]}...")
+                        # if DEBUG:
+                            # logger.info(f"[Universal Interceptor] Stored text for multimodal message {msg_idx}: {combined_text[:50]}...")
                 
                 processed_messages.append(message)
         return processed_messages
