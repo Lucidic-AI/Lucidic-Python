@@ -79,6 +79,13 @@ class Session:
             "session_eval_reason": Client().mask(kwargs.get("session_eval_reason", None)),
             "tags": kwargs.get("tags", None)
         }
+
+        # auto end any unfinished steps
+        if kwargs.get("is_finished", None) is True:
+            for step_id, step in self.step_history.items():
+                if not step.is_finished:
+                    self.update_step(step_id=step_id, is_finished=True)
+
         Client().make_request('updatesession', 'PUT', request_data)
 
     def create_step(self, **kwargs) -> str:

@@ -7,7 +7,7 @@ from .text_storage import store_text, clear_stored_texts
 
 logger = logging.getLogger("Lucidic")
 DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
-
+VERBOSE = os.getenv("LUCIDIC_VERBOSE", "False") == "True"
 
 class UniversalImageInterceptor:
     """Universal image interceptor that can handle different provider formats"""
@@ -55,8 +55,8 @@ class UniversalImageInterceptor:
                     if text_parts and has_images:
                         combined_text = ' '.join(text_parts)
                         store_text(combined_text, msg_idx)
-                        # if DEBUG:
-                            # logger.info(f"[Universal Interceptor] Stored text for multimodal message {msg_idx}: {combined_text[:50]}...")
+                        if VERBOSE:
+                            logger.info(f"[Universal Interceptor] Stored text for multimodal message {msg_idx}: {combined_text[:50]}...")
                 
                 processed_messages.append(message)
         return processed_messages

@@ -15,6 +15,7 @@ from .utils.text_storage import get_stored_text, clear_stored_texts
 
 logger = logging.getLogger("Lucidic")
 DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
+VERBOSE = os.getenv("LUCIDIC_VERBOSE", "False") == "True"
 
 
 class LucidicSpanProcessor(SpanProcessor):
@@ -72,12 +73,13 @@ class LucidicSpanProcessor(SpanProcessor):
                 logger.info(f"[SpanProcessor] on_end called for span: {span.name}")
                 # logger.info(f"[SpanProcessor] Span attributes at end: {dict(span.attributes or {})}")
                 # logger.info(f"[SpanProcessor] Tracked span contexts: {list(self.span_contexts.keys())}")
-                
+                """
                 # Log any attributes that might contain message data
                 attrs = dict(span.attributes or {})
                 for key, value in attrs.items():
                     if 'message' in key.lower() or 'prompt' in key.lower() or 'content' in key.lower():
                         logger.info(f"[SpanProcessor] Found potential message attr: {key} = {value[:200] if isinstance(value, str) else value}")
+                """
             
             # Check if we have context for this span
             if span_id not in self.span_contexts:
@@ -201,19 +203,19 @@ class LucidicSpanProcessor(SpanProcessor):
                 logger.info(f"[SpanProcessor] Creating event from span end with {len(attributes)} attributes")
             
             # Extract all information
-            if False and DEBUG:
+            if VERBOSE:
                 logger.info(f"[SpanProcessor -- DEBUG] Extracting Description attributes: {attributes}")
             description = self._extract_description(span, attributes)
 
-            if False and DEBUG:
+            if VERBOSE:
                 logger.info(f"[SpanProcessor -- DEBUG] Extracting Result attributes: {attributes}")
             raw_result = self._extract_result(span, attributes)
 
-            if False and DEBUG:
+            if VERBOSE:
                 logger.info(f"[SpanProcessor -- DEBUG] Extracting Images: span: attributes: {attributes}")
             images = self._extract_images(attributes)
 
-            if False and DEBUG:
+            if VERBOSE:
                 logger.info(f"[SpanProcessor -- DEBUG] Extracting Model: span: {span} attributes: {attributes}")
             model = (
                 attributes.get(SpanAttributes.LLM_RESPONSE_MODEL) or
@@ -227,7 +229,7 @@ class LucidicSpanProcessor(SpanProcessor):
             # The description contains the input (prompts), raw_result contains the output (completions)
             formatted_result = f"{raw_result}"
 
-            if False and DEBUG:
+            if VERBOSE:
                 logger.info(f"[SpanProcessor -- DEBUG] description: {description}, result: {formatted_result}, model: {model}, images: {images}")
             
             # Apply masking
@@ -315,13 +317,13 @@ class LucidicSpanProcessor(SpanProcessor):
     
     def _extract_description(self, span: Span, attributes: Dict[str, Any]) -> str:
         """Extract description from span"""
-        # if DEBUG:
-            # logger.info(f"[SpanProcessor] Extracting description from attributes: {list(attributes.keys())}")
+        if VERBOSE:
+            logger.info(f"[SpanProcessor] Extracting description from attributes: {list(attributes.keys())}")
         
         # Try to reconstruct messages from indexed attributes (OpenLLMetry format)
         messages = self._extract_indexed_messages(attributes)
         if messages:
-            if DEBUG:
+            if VERBOSE:
                 logger.info(f"[SpanProcessor] Reconstructed {len(messages)} messages from indexed attributes")
             return self._format_messages(messages)
         
@@ -447,13 +449,13 @@ class LucidicSpanProcessor(SpanProcessor):
     
     def _extract_result(self, span: Span, attributes: Dict[str, Any]) -> str:
         """Extract result from span"""
-        # if DEBUG:
-            # logger.info(f"[SpanProcessor -- _extract_result -- DEBUG] Extracting result from attributes: {attributes}")
+        if VERBOSE:
+            logger.info(f"[SpanProcessor -- _extract_result -- DEBUG] Extracting result from attributes: {attributes}")
 
         # Try indexed completions first (OpenLLMetry format)
         completions = self._extract_indexed_completions(attributes)
         if completions:
-            if DEBUG:
+            if VERBOSE:
                 logger.info(f"[SpanProcessor] Found {len(completions)} indexed completions")
             # Format completions
             results = []
@@ -497,8 +499,8 @@ class LucidicSpanProcessor(SpanProcessor):
         """Extract images from multimodal prompts"""
         images = []
 
-        # if DEBUG:
-            # logger.info(f"[SpanProcessor -- _extract_images -- DEBUG] Extracting images from attributes: {attributes}")
+        if VERBOSE:
+            logger.info(f"[SpanProcessor -- _extract_images -- DEBUG] Extracting images from attributes: {attributes}")
         
         # First check indexed messages (OpenLLMetry format)
         messages = self._extract_indexed_messages(attributes)
@@ -545,8 +547,8 @@ class LucidicSpanProcessor(SpanProcessor):
         images = []
         content = message.get('content', '')
 
-        # if DEBUG:
-            # logger.info(f"[SpanProcessor -- _extract_images_from_message -- DEBUG] Extracting images from message: {message}, content: {content}")
+        if VERBOSE:
+            logger.info(f"[SpanProcessor -- _extract_images_from_message -- DEBUG] Extracting images from message: {message}, content: {content}")
 
         # Handle case where content might be a JSON string
         if isinstance(content, str) and content.strip().startswith('['):

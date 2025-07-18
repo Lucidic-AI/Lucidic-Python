@@ -79,7 +79,7 @@ class TestOpenAIBasic(unittest.TestCase):
         print("\n🖼️ Proceeding with airport runway image analysis...")
         
         # Load test image
-        image_path = os.path.join(os.path.dirname(__file__), "ord_runways.jpg")
+        image_path = os.path.join(os.path.dirname(__file__), "../ord_runways.jpg")
         if not os.path.exists(image_path):
             self.skipTest("Test image ord_runways.jpg not found")
         

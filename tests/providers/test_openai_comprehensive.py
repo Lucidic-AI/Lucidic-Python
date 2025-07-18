@@ -66,8 +66,8 @@ class TestOpenAIComprehensive(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         """Tear down test class"""
-        lai.end_step()
-        lai.end_session()
+        # lai.end_step()
+        # lai.end_session()
     
     def test_chat_completion_sync(self):
         """Test synchronous chat completion tracks correct information"""
@@ -235,7 +235,7 @@ class TestOpenAIComprehensive(unittest.TestCase):
     def test_vision(self):
         """Test vision/image analysis tracks image data"""
         # Load test image
-        image_path = os.path.join(os.path.dirname(__file__), "ord_runways.jpg")
+        image_path = os.path.join(os.path.dirname(__file__), "../ord_runways.jpg")
         if not os.path.exists(image_path):
             self.skipTest("Test image not found")
         
@@ -375,7 +375,7 @@ class TestOpenAIComprehensive(unittest.TestCase):
     def test_beta_parse_with_image(self):
         """Test beta.chat.completions.parse with image analysis"""
         # Load test image
-        image_path = os.path.join(os.path.dirname(__file__), "ord_runways.jpg")
+        image_path = os.path.join(os.path.dirname(__file__), "../ord_runways.jpg")
         if not os.path.exists(image_path):
             self.skipTest("Test image not found")
         

@@ -70,6 +70,7 @@ lai.init(
     providers=["openai", "anthropic"],     # Optional: LLM providers to track
     task="Process customer request",       # Optional: High-level task description
     production_monitoring=False,           # Optional: Production mode flag
+    auto_end=True,                         # Optional: Auto-end session on exit (default: True)
     masking_function=my_mask_func,         # Optional: Custom PII masking
     tags=["customer-support", "v1.2"],     # Optional: Session tags
     rubrics=[...]                          # Optional: Evaluation criteria
@@ -98,6 +99,24 @@ lai.update_session(
 # End session
 lai.end_session(is_successful=True, session_eval=0.9)
 ```
+
+### Automatic Session Management (auto_end)
+
+By default, Lucidic automatically ends your session when your process exits, ensuring no data is lost. This feature is enabled by default but can be controlled:
+
+```python
+# Default behavior - session auto-ends on exit
+lai.init(session_name="My Session")  # auto_end=True by default
+
+# Disable auto-end if you want manual control
+lai.init(session_name="My Session", auto_end=False)
+```
+
+The auto_end feature:
+- Automatically calls `end_session()` when your Python process exits
+- Works with normal exits, crashes, and interrupts (Ctrl+C)
+- Prevents data loss from forgotten `end_session()` calls
+- Can be disabled for cases where you need explicit control
 
 ### Steps
 Steps break down complex workflows into discrete, trackable units.
@@ -324,9 +343,10 @@ lai.create_step(
 )
 
 # With events
+
 lai.create_event(
     description="UI validation",
-    screenshots=["screen1.png", "screen2.png"]
+    screenshots=[base64_encoded_image1, base64_encoded_image2]
 )
 ```
 
@@ -384,7 +404,7 @@ except LucidicNotInitializedError:
 1. **Initialize Once**: Call `lai.init()` at the start of your application or workflow
 2. **Use Steps**: Break complex workflows into logical steps for better tracking
 3. **Handle Errors**: Wrap SDK calls in try-except blocks for production applications
-4. **Clean Up**: Always call `lai.end_session()` to ensure data is properly saved
+4. **Session Cleanup**: With `auto_end` enabled (default), sessions automatically end on exit. For manual control, set `auto_end=False` and call `lai.end_session()`
 5. **Mask Sensitive Data**: Use masking functions to protect PII and confidential information
 
 ## Examples

@@ -115,6 +115,7 @@ def init(
     rubrics: Optional[list] = None,
     tags: Optional[list] = None,
     masking_function = None,
+    auto_end: Optional[bool] = True,
 ) -> str:
     """
     Initialize the Lucidic client.
@@ -129,6 +130,7 @@ def init(
         rubrics: Optional rubrics for evaluation, list of strings.
         tags: Optional tags for the session, list of strings.
         masking_function: Optional function to mask sensitive data.
+        auto_end: If True, automatically end the session on process exit. Defaults to True.
     
     Raises:
         InvalidOperationError: If the client is already initialized.
@@ -156,6 +158,10 @@ def init(
         else:
             production_monitoring = False
     
+    # Handle auto_end with environment variable support
+    if auto_end is None:
+        auto_end = os.getenv("LUCIDIC_AUTO_END", "True").lower() == "true"
+    
     # Set up providers
     _setup_providers(client, providers)
     session_id = client.init_session(
@@ -168,6 +174,10 @@ def init(
     )
     if masking_function:
         client.masking_function = masking_function
+    
+    # Set the auto_end flag on the client
+    client.auto_end = auto_end
+    
     logger.info("Session initialized successfully")
     return session_id
 
@@ -178,6 +188,7 @@ def continue_session(
     agent_id: Optional[str] = None,
     providers: Optional[List[ProviderType]] = [],
     masking_function = None,
+    auto_end: Optional[bool] = True,
 ):
     if lucidic_api_key is None:
         lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
@@ -197,11 +208,19 @@ def continue_session(
             agent_id=agent_id,
         )
     
+    # Handle auto_end with environment variable support
+    if auto_end is None:
+        auto_end = os.getenv("LUCIDIC_AUTO_END", "True").lower() == "true"
+    
     # Set up providers
     _setup_providers(client, providers)
     session_id = client.continue_session(session_id=session_id)
     if masking_function:
         client.masking_function = masking_function
+    
+    # Set the auto_end flag on the client
+    client.auto_end = auto_end
+    
     logger.info(f"Session {session_id} continuing...")
     return session_id  # For consistency
 
@@ -278,8 +297,33 @@ def _cleanup_telemetry():
         logger.error(f"Error during telemetry cleanup: {e}")
 
 
-# Register cleanup function
+def _auto_end_session():
+    """Automatically end session on exit if auto_end is enabled"""
+    try:
+        client = Client()
+        if hasattr(client, 'auto_end') and client.auto_end and client.session and not client.session.is_finished:
+            logger.info("Auto-ending active session on exit")
+            end_session()
+    except Exception as e:
+        logger.debug(f"Error during auto-end session: {e}")
+
+
+def _signal_handler(signum, frame):
+    """Handle interruption signals"""
+    _auto_end_session()
+    _cleanup_telemetry()
+    # Re-raise the signal for default handling
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+# Register cleanup functions (auto-end runs first due to LIFO order)
 atexit.register(_cleanup_telemetry)
+atexit.register(_auto_end_session)
+
+# Register signal handlers for graceful shutdown
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
 
 
 def create_mass_sim(

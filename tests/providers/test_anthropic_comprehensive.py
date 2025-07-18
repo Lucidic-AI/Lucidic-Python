@@ -191,7 +191,7 @@ class TestAnthropicComprehensive(unittest.TestCase):
     def test_vision(self):
         """Test vision/image analysis tracks image data"""
         # Load test image
-        image_path = os.path.join(os.path.dirname(__file__), "ord_runways.jpg")
+        image_path = os.path.join(os.path.dirname(__file__), "../ord_runways.jpg")
         if not os.path.exists(image_path):
             self.skipTest("Test image not found")
         
@@ -359,7 +359,7 @@ class TestAnthropicComprehensive(unittest.TestCase):
     
     def test_multiple_images(self):
         """Test multiple image content blocks"""
-        image_path = os.path.join(os.path.dirname(__file__), "ord_runways.jpg")
+        image_path = os.path.join(os.path.dirname(__file__), "../ord_runways.jpg")
         if not os.path.exists(image_path):
             self.skipTest("Test image not found")
         
@@ -409,7 +409,7 @@ class TestAnthropicComprehensive(unittest.TestCase):
     
     def test_mixed_content_blocks(self):
         """Test mixed text and image content blocks"""
-        image_path = os.path.join(os.path.dirname(__file__), "ord_runways.jpg")
+        image_path = os.path.join(os.path.dirname(__file__), "../ord_runways.jpg")
         if not os.path.exists(image_path):
             self.skipTest("Test image not found")
         

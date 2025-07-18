@@ -32,6 +32,7 @@ class Client:
         self.api_key = lucidic_api_key
         self.agent_id = agent_id
         self.masking_function = None
+        self.auto_end = False  # Default to False until explicitly set during init
         self.request_session = requests.Session()
         retry_cfg = Retry(
             total=3,                     # 3 attempts in total
