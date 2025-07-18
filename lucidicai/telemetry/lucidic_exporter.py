@@ -15,7 +15,7 @@ logger = logging.getLogger("Lucidic")
 import os
 
 DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
-
+VERBOSE = os.getenv("LUCIDIC_VERBOSE", "False") == "True"
 
 
 class LucidicSpanExporter(SpanExporter):
@@ -154,8 +154,8 @@ class LucidicSpanExporter(SpanExporter):
         prompts = attributes.get(SpanAttributes.LLM_PROMPTS) or \
                  attributes.get('gen_ai.prompt')
         
-        if DEBUG:
-            # logger.info(f"[SpaneExporter -- DEBUG] Extracting Description attributes: {attributes}, prompts: {prompts}")
+        if VERBOSE:
+            logger.info(f"[SpaneExporter -- DEBUG] Extracting Description attributes: {attributes}, prompts: {prompts}")
 
         if prompts:
             if isinstance(prompts, list) and prompts:
