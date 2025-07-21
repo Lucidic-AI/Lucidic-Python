@@ -77,7 +77,8 @@ class Client:
         task: Optional[str] = None,
         rubrics: Optional[list] = None,
         tags: Optional[list] = None,
-        production_monitoring: Optional[bool] = False
+        production_monitoring: Optional[bool] = False,
+        custom_session_id: Optional[str] = None,
     ) -> None:
         self.session = Session(
             agent_id=self.agent_id,
@@ -86,7 +87,8 @@ class Client:
             task=task,
             rubrics=rubrics,
             tags=tags,
-            production_monitoring=production_monitoring
+            production_monitoring=production_monitoring,
+            custom_session_id=custom_session_id
         )
         self.initialized = True
         return self.session.session_id
@@ -96,6 +98,9 @@ class Client:
             agent_id=self.agent_id,
             session_id=session_id
         )
+        if self.session.session_id != session_id:
+            # Custom session ID provided
+            self.session.custom_session_id = session_id
         self.initialized = True
         return self.session.session_id
 
