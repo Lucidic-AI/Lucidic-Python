@@ -105,7 +105,8 @@ __all__ = [
 
 
 def init(
-    session_name: str,
+    session_name: Optional[str] = None,
+    session_id: Optional[str] = None,
     lucidic_api_key: Optional[str] = None,
     agent_id: Optional[str] = None,
     task: Optional[str] = None,
@@ -121,7 +122,8 @@ def init(
     Initialize the Lucidic client.
     
     Args:
-        session_name: The name of the session.
+        session_name: The display name of the session.
+        session_id: Custom ID of the session. If not provided, a random ID will be generated.
         lucidic_api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
         agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
         task: Task description.
@@ -171,6 +173,7 @@ def init(
         rubrics=rubrics,
         tags=tags,
         production_monitoring=production_monitoring,
+        custom_session_id=session_id,
     )
     if masking_function:
         client.masking_function = masking_function
@@ -198,15 +201,13 @@ def continue_session(
         agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
         if agent_id is None:
             raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-    try:
-        client = Client()
-        if client.session:
-            raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.end_session() first.")
-    except LucidicNotInitializedError:
-        client = Client(
-            lucidic_api_key=lucidic_api_key,
-            agent_id=agent_id,
-        )
+    
+    client = Client()
+    if client.session:
+        raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.end_session() or lai.reset_sdk() first.")
+    # if not yet initialized or still the NullClient -> create a real client when init is called
+    if not getattr(client, 'initialized', False):
+        client = Client(lucidic_api_key=lucidic_api_key, agent_id=agent_id)
     
     # Handle auto_end with environment variable support
     if auto_end is None:

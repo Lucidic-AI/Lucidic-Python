@@ -44,7 +44,8 @@ class Session:
             "mass_sim_id": kwargs.get("mass_sim_id", None),
             "rubrics": kwargs.get("rubrics", None),
             "tags": kwargs.get("tags", None),
-            "production_monitoring": kwargs.get("production_monitoring", False)
+            "production_monitoring": kwargs.get("production_monitoring", False),
+            "custom_session_id": kwargs.get("custom_session_id", None)
         }
         data = Client().make_request('initsession', 'POST', request_data)
         self.session_id = data["session_id"]
