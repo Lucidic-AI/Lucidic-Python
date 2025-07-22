@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="lucidicai",
-    version="1.2.18",
+    version="1.2.19",
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
@@ -15,6 +15,13 @@ setup(
         "openai>=1.3.0",
         "pillow",
         "anthropic",
+        "opentelemetry-api",
+        "opentelemetry-sdk",
+        "opentelemetry-instrumentation",
+        "opentelemetry-instrumentation-openai",
+        "opentelemetry-instrumentation-anthropic",
+        "opentelemetry-instrumentation-langchain",
+        "opentelemetry-semantic-conventions-ai",
         # "pydantic_ai",
     ],
     author="Andy Liang",
