@@ -16,7 +16,8 @@ from .telemetry.otel_handlers import (
     OTelAnthropicHandler,
     OTelLangChainHandler,
     OTelPydanticAIHandler,
-    OTelOpenAIAgentsHandler
+    OTelOpenAIAgentsHandler,
+    OTelLiteLLMHandler
 )
 
 # Import telemetry manager
@@ -25,7 +26,7 @@ from .telemetry.otel_init import LucidicTelemetry
 # Import decorators
 from .decorators import step, event
 
-ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai", "openai_agents"]
+ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai", "openai_agents", "litellm"]
 
 # Configure logging
 logger = logging.getLogger("Lucidic")
@@ -77,6 +78,9 @@ def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
             except Exception as e:
                 logger.error(f"Failed to set up OpenAI Agents provider: {e}")
                 raise
+        elif provider == "litellm":
+            client.set_provider(OTelLiteLLMHandler())
+            setup_providers.add("litellm")
 
 __all__ = [
     'Client',

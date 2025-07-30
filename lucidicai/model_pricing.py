@@ -29,9 +29,9 @@ MODEL_PRICING = {
     # OpenAI o-Series (Reasoning Models) - Verified 2025
     "o1": {"input": 15.0, "output": 60.0},
     "o1-preview": {"input": 15.0, "output": 60.0},
-    "o1-mini": {"input": 3.0, "output": 15.0},  # Corrected: was 12.0
-    "o3": {"input": 15.0, "output": 60.0},  # Estimated based on o1
-    "o3-mini": {"input": 1.1, "output": 4.4},  # Verified
+    "o1-mini": {"input": 3.0, "output": 15.0}, 
+    "o3": {"input": 15.0, "output": 60.0}, 
+    "o3-mini": {"input": 1.1, "output": 4.4}, 
     "o4-mini": {"input": 4.00, "output": 16.0},
     
     # OpenAI Legacy Models
@@ -48,7 +48,7 @@ MODEL_PRICING = {
     # Claude 3.5 Models - Verified 2025
     "claude-3-5-sonnet": {"input": 3.0, "output": 15.0},
     "claude-3-5-sonnet-latest": {"input": 3.0, "output": 15.0},
-    "claude-3-5-haiku": {"input": 1.0, "output": 5.0},  # Corrected: was 0.8/4.0
+    "claude-3-5-haiku": {"input": 1.0, "output": 5.0}, 
     "claude-3-5-haiku-latest": {"input": 1.0, "output": 5.0},
     "claude-3-7-sonnet": {"input": 3.0, "output": 15.0},  # Same as 3.5 sonnet
     "claude-3-7-sonnet-latest": {"input": 3.0, "output": 15.0},
@@ -106,17 +106,17 @@ MODEL_PRICING = {
     "meta-llama/llama-guard-4-12b-128k": {"input": 0.20, "output": 0.20},
     
     # Meta Llama 3.x Series - Verified 2025 (Together AI pricing)
-    "llama-3.3-70b": {"input": 0.54, "output": 0.88},  # Corrected
-    "llama-3.1-405b": {"input": 6.0, "output": 12.0},   # Corrected (Cerebras pricing)
-    "llama-3.1-70b": {"input": 0.54, "output": 0.88},   # Corrected
-    "llama-3.1-8b": {"input": 0.10, "output": 0.18},    # Corrected
-    "llama-3-70b": {"input": 0.54, "output": 0.88},     # Using consistent pricing
-    "llama-3-8b": {"input": 0.10, "output": 0.18},      # Using consistent pricing
+    "llama-3.3-70b": {"input": 0.54, "output": 0.88}, 
+    "llama-3.1-405b": {"input": 6.0, "output": 12.0},  
+    "llama-3.1-70b": {"input": 0.54, "output": 0.88},  
+    "llama-3.1-8b": {"input": 0.10, "output": 0.18},   
+    "llama-3-70b": {"input": 0.54, "output": 0.88},    
+    "llama-3-8b": {"input": 0.10, "output": 0.18},     
     "llama-guard-3-8b": {"input": 0.20, "output": 0.20},
-    "meta-llama/llama-3.3-70b-versatile-128k": {"input": 0.54, "output": 0.88},  # Updated
-    "meta-llama/llama-3.1-8b-instant-128k": {"input": 0.10, "output": 0.18},     # Updated
-    "meta-llama/llama-3-70b-8k": {"input": 0.54, "output": 0.88},                # Updated
-    "meta-llama/llama-3-8b-8k": {"input": 0.10, "output": 0.18},                 # Updated
+    "meta-llama/llama-3.3-70b-versatile-128k": {"input": 0.54, "output": 0.88}, 
+    "meta-llama/llama-3.1-8b-instant-128k": {"input": 0.10, "output": 0.18},     
+    "meta-llama/llama-3-70b-8k": {"input": 0.54, "output": 0.88},                
+    "meta-llama/llama-3-8b-8k": {"input": 0.10, "output": 0.18},                 
     "meta-llama/llama-guard-3-8b-8k": {"input": 0.20, "output": 0.20},
     
     # Mistral Models
@@ -149,7 +149,7 @@ MODEL_PRICING = {
     "qwen-turbo": {"input": 0.3, "output": 0.6},
     "qwen-plus": {"input": 0.5, "output": 2.0},
     "qwen-max": {"input": 2.0, "output": 6.0},
-    "qwen2.5-32b-instruct": {"input": 0.7, "output": "2.8"},
+    "qwen2.5-32b-instruct": {"input": 0.7, "output": 2.8},
     "qwen2.5-max": {"input": 1.6, "output": 6.4},
     
     # Google Gemma Models
