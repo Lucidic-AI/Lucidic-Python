@@ -352,7 +352,21 @@ class LucidicSpanProcessor(SpanProcessor):
         if tool_name:
             if DEBUG:
                 logger.info(f"[SpanProcessor] Found openai agents tool call: {tool_name}")
-            return f"Agent Tool Call: {tool_name}"
+            
+            # Extract and format tool parameters
+            tool_params_str = attributes.get('gen_ai.tool.parameters')
+            if tool_params_str:
+                try:
+                    # Parse the JSON string
+                    tool_params = json.loads(tool_params_str)
+                    # Format the parameters nicely
+                    formatted_params = json.dumps(tool_params, indent=2)
+                    return f"Agent Tool Call: {tool_name}\nParameters:{formatted_params}"
+                except json.JSONDecodeError:
+                    # If parsing fails, just include the raw string
+                    return f"Agent Tool Call: {tool_name}\nParameters: {tool_params_str}"
+            else:
+                return f"Agent Tool Call: {tool_name}"
             
         # Fallback
         if DEBUG:
