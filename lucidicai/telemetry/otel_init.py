@@ -81,6 +81,9 @@ class LucidicTelemetry:
                 elif provider == "openai_agents":
                     # OpenAI Agents uses the same OpenAI instrumentation
                     self._instrument_openai_agents()
+                elif provider == "litellm":
+                    # LiteLLM uses callbacks, not OpenTelemetry instrumentation
+                    logger.info(f"[LucidicTelemetry] LiteLLM will use callback-based instrumentation")
             except Exception as e:
                 logger.error(f"Failed to instrument {provider}: {e}")
     

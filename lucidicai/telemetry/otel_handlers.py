@@ -264,3 +264,96 @@ class OTelOpenAIAgentsHandler(BaseProvider):
         """Disable instrumentation"""
         self._is_instrumented = False
         logger.info("[OTel OpenAI Agents Handler] Instrumentation will be disabled on shutdown")
+
+
+class OTelLiteLLMHandler(BaseProvider):
+    """LiteLLM handler using CustomLogger callback system"""
+    
+    def __init__(self):
+        super().__init__()
+        self._provider_name = "LiteLLM"
+        self.telemetry = LucidicTelemetry()
+        self._callback = None
+        self._original_callbacks = None
+        
+    def handle_response(self, response, kwargs, session: Optional = None):
+        """Not needed with callback approach"""
+        return response
+        
+    def override(self):
+        """Enable LiteLLM instrumentation via callbacks"""
+        try:
+            import litellm
+            from lucidicai.client import Client
+            from .litellm_bridge import LucidicLiteLLMCallback
+            
+            client = Client()
+            
+            # Initialize telemetry if needed
+            if not self.telemetry.is_initialized():
+                self.telemetry.initialize(agent_id=client.agent_id)
+            
+            # Create our callback instance
+            self._callback = LucidicLiteLLMCallback()
+            
+            # Store original callbacks
+            self._original_callbacks = litellm.callbacks if hasattr(litellm, 'callbacks') else None
+            
+            # Add our callback to LiteLLM
+            if litellm.callbacks is None:
+                litellm.callbacks = []
+            
+            # Add our callback if not already present
+            if self._callback not in litellm.callbacks:
+                litellm.callbacks.append(self._callback)
+            
+            # Also set success/failure callbacks
+            if not hasattr(litellm, 'success_callback') or litellm.success_callback is None:
+                litellm.success_callback = []
+            if not hasattr(litellm, 'failure_callback') or litellm.failure_callback is None:
+                litellm.failure_callback = []
+            
+            # Add to callback lists if not present
+            if self._callback not in litellm.success_callback:
+                litellm.success_callback.append(self._callback)
+            if self._callback not in litellm.failure_callback:
+                litellm.failure_callback.append(self._callback)
+            
+            logger.info("[OTel LiteLLM Handler] Callback instrumentation enabled")
+            
+        except ImportError:
+            logger.error("LiteLLM not installed. Please install with: pip install litellm")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to enable LiteLLM instrumentation: {e}")
+            raise
+            
+    def undo_override(self):
+        """Disable LiteLLM instrumentation"""
+        try:
+            import litellm
+            
+            # Wait for pending callbacks to complete before cleanup
+            if self._callback and hasattr(self._callback, 'wait_for_pending_callbacks'):
+                logger.info("[OTel LiteLLM Handler] Waiting for pending callbacks to complete...")
+                self._callback.wait_for_pending_callbacks(timeout=5.0)
+            
+            # Remove our callback from all callback lists
+            if self._callback:
+                if hasattr(litellm, 'callbacks') and litellm.callbacks and self._callback in litellm.callbacks:
+                    litellm.callbacks.remove(self._callback)
+                    
+                if hasattr(litellm, 'success_callback') and litellm.success_callback and self._callback in litellm.success_callback:
+                    litellm.success_callback.remove(self._callback)
+                    
+                if hasattr(litellm, 'failure_callback') and litellm.failure_callback and self._callback in litellm.failure_callback:
+                    litellm.failure_callback.remove(self._callback)
+            
+            # Restore original callbacks if we stored them
+            if self._original_callbacks is not None:
+                litellm.callbacks = self._original_callbacks
+            
+            logger.info("[OTel LiteLLM Handler] Instrumentation disabled")
+            
+        except Exception as e:
+            logger.error(f"Error disabling LiteLLM instrumentation: {e}")
