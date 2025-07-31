@@ -333,6 +333,11 @@ class OTelLiteLLMHandler(BaseProvider):
         try:
             import litellm
             
+            # Wait for pending callbacks to complete before cleanup
+            if self._callback and hasattr(self._callback, 'wait_for_pending_callbacks'):
+                logger.info("[OTel LiteLLM Handler] Waiting for pending callbacks to complete...")
+                self._callback.wait_for_pending_callbacks(timeout=5.0)
+            
             # Remove our callback from all callback lists
             if self._callback:
                 if hasattr(litellm, 'callbacks') and litellm.callbacks and self._callback in litellm.callbacks:

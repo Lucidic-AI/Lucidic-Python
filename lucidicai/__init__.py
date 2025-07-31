@@ -271,6 +271,13 @@ def end_session(
     client = Client()
     if not client.session:
         return
+    
+    # Wait for any pending LiteLLM callbacks before ending session
+    for provider in client.providers:
+        if hasattr(provider, '_callback') and hasattr(provider._callback, 'wait_for_pending_callbacks'):
+            logger.info("Waiting for LiteLLM callbacks to complete before ending session...")
+            provider._callback.wait_for_pending_callbacks(timeout=5.0)
+    
     client.session.update_session(is_finished=True, **locals())
     client.clear()
 

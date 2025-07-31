@@ -2,6 +2,7 @@
 import logging
 import os
 import time
+import threading
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
@@ -31,6 +32,45 @@ class LucidicLiteLLMCallback(CustomLogger):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._active_events = {}  # Track active events for streaming
+        self._pending_callbacks = set()  # Track pending callback executions
+        self._callback_lock = threading.Lock()  # Thread-safe callback tracking
+        
+    def _register_callback(self, callback_id: str):
+        """Register a callback as pending"""
+        with self._callback_lock:
+            self._pending_callbacks.add(callback_id)
+            if DEBUG:
+                logger.info(f"LiteLLM Bridge: Registered callback {callback_id}, pending: {len(self._pending_callbacks)}")
+    
+    def _complete_callback(self, callback_id: str):
+        """Mark a callback as completed"""
+        with self._callback_lock:
+            self._pending_callbacks.discard(callback_id)
+            if DEBUG:
+                logger.info(f"LiteLLM Bridge: Completed callback {callback_id}, pending: {len(self._pending_callbacks)}")
+    
+    def wait_for_pending_callbacks(self, timeout: float = 5.0):
+        """Wait for all pending callbacks to complete"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            with self._callback_lock:
+                if not self._pending_callbacks:
+                    if DEBUG:
+                        logger.info("LiteLLM Bridge: All callbacks completed")
+                    return True
+            
+            time.sleep(0.1)  # Check every 100ms
+        
+        # Timeout reached
+        with self._callback_lock:
+            pending_count = len(self._pending_callbacks)
+            if pending_count > 0:
+                logger.warning(f"LiteLLM Bridge: Timeout waiting for {pending_count} callbacks")
+                # Clear pending callbacks to avoid memory leak
+                self._pending_callbacks.clear()
+        
+        return False
         
     def log_pre_api_call(self, model, messages, kwargs):
         """Called before the LLM API call"""
@@ -43,11 +83,11 @@ class LucidicLiteLLMCallback(CustomLogger):
             description = self._format_messages(messages)
             
             # Apply masking if configured
-            if client.masking_function:
+            if hasattr(client, 'mask') and callable(client.mask):
                 description = client.mask(description)
                 
             # Store pre-call info for later use
-            call_id = kwargs.get("litellm_call_id", str(time.time()))
+            call_id = kwargs.get("litellm_call_id", str(time.time())) if kwargs else str(time.time())
             self._active_events[call_id] = {
                 "model": model,
                 "messages": messages,
@@ -63,9 +103,14 @@ class LucidicLiteLLMCallback(CustomLogger):
     
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         """Called on successful LLM completion"""
+        # Generate unique callback ID
+        callback_id = f"success_{id(kwargs)}_{start_time}"
+        self._register_callback(callback_id)
+        
         try:
             client = Client()
             if not client.session:
+                self._complete_callback(callback_id)
                 return
                 
             # Get call info
@@ -84,7 +129,7 @@ class LucidicLiteLLMCallback(CustomLogger):
             result = self._extract_response_content(response_obj)
             
             # Apply masking to result if configured
-            if client.masking_function:
+            if hasattr(client, 'mask') and callable(client.mask):
                 result = client.mask(result)
             
             # Calculate cost if usage info is available
@@ -132,12 +177,19 @@ class LucidicLiteLLMCallback(CustomLogger):
             if DEBUG:
                 import traceback
                 traceback.print_exc()
+        finally:
+            self._complete_callback(callback_id)
     
     def log_failure_event(self, kwargs, response_obj, start_time, end_time):
         """Called on failed LLM completion"""
+        # Generate unique callback ID
+        callback_id = f"failure_{id(kwargs)}_{start_time}"
+        self._register_callback(callback_id)
+        
         try:
             client = Client()
             if not client.session:
+                self._complete_callback(callback_id)
                 return
                 
             # Get call info
@@ -179,6 +231,8 @@ class LucidicLiteLLMCallback(CustomLogger):
             if DEBUG:
                 import traceback
                 traceback.print_exc()
+        finally:
+            self._complete_callback(callback_id)
     
     def log_stream_event(self, kwargs, response_obj, start_time, end_time):
         """Called for streaming responses"""
@@ -285,8 +339,11 @@ class LucidicLiteLLMCallback(CustomLogger):
             # LiteLLM model names might need normalization for pricing lookup
             normalized_model = model
             if "/" in model:
-                # Keep the full model name for accurate pricing
-                normalized_model = model
+                # Extract the model name after the provider prefix
+                # e.g., "openai/gpt-4o" -> "gpt-4o"
+                parts = model.split("/", 1)
+                if len(parts) == 2:
+                    normalized_model = parts[1]
             
             return calculate_cost(normalized_model, usage)
         except Exception as e:

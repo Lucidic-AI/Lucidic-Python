@@ -470,15 +470,20 @@ class TestLiteLLMComprehensive(unittest.TestCase):
         
         with open(image_path, "rb") as f:
             img_bytes = f.read()
-        data_uri = f"data:image/jpeg;base64,{base64.standard_b64encode(img_bytes).decode()}"
+        data_uri_1 = f"data:image/jpeg;base64,{base64.standard_b64encode(img_bytes).decode()}"
+        
+        image_path_2 = os.path.join(os.path.dirname(__file__), "./red_pixel.png")
+        with open(image_path_2, "rb") as f:
+            img_bytes_2 = f.read()
+        data_uri_2 = f"data:image/jpeg;base64,{base64.standard_b64encode(img_bytes_2).decode()}"
         
         # Message with multiple images (same image twice for testing)
         messages = [{
             "role": "user",
             "content": [
-                {"type": "text", "text": "How many images do you see?"},
-                {"type": "image_url", "image_url": {"url": data_uri}},
-                {"type": "image_url", "image_url": {"url": data_uri}}
+                {"type": "text", "text": "How many images do you see, and what do they show?"},
+                {"type": "image_url", "image_url": {"url": data_uri_1}},
+                {"type": "image_url", "image_url": {"url": data_uri_2}}
             ]
         }]
         
@@ -486,7 +491,7 @@ class TestLiteLLMComprehensive(unittest.TestCase):
             response = completion(
                 model="openai/gpt-4o",
                 messages=messages,
-                max_tokens=20
+                max_tokens=50
             )
             
             # Validate response
