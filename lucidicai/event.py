@@ -33,7 +33,7 @@ class Event:
         from .client import Client
         if 'screenshots' in kwargs and kwargs['screenshots'] is not None:
             for i in range(len(kwargs['screenshots'])):
-                presigned_url, bucket_name, object_key = get_presigned_url(Client().agent_id, session_id=self.session_id, event_id=self.event_id, nthscreenshot=i + len(self.screenshots))
+                presigned_url, bucket_name, object_key = get_presigned_url(Client().agent_id, session_id=self.session_id, event_id=self.event_id, nthscreenshot=len(self.screenshots))
                 upload_image_to_s3(presigned_url, kwargs['screenshots'][i], "JPEG")
                 self.screenshots.append(kwargs['screenshots'][i])
         if 'is_finished' in kwargs:

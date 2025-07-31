@@ -483,6 +483,7 @@ class TestLiteLLMComprehensive(unittest.TestCase):
             "content": [
                 {"type": "text", "text": "How many images do you see, and what do they show?"},
                 {"type": "image_url", "image_url": {"url": data_uri_1}},
+                {"type": "image_url", "image_url": {"url": data_uri_1}},
                 {"type": "image_url", "image_url": {"url": data_uri_2}}
             ]
         }]
