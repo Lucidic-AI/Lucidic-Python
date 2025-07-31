@@ -505,6 +505,30 @@ class LucidicSpanProcessor(SpanProcessor):
             if DEBUG:
                 logger.info(f"[SpanProcessor -- Agent Tool Call Response Received]") # span attributes: {attributes}")
 
+            # Check the operation type to determine what kind of response this is
+            operation_name = attributes.get('gen_ai.operation.name')
+            tool_result = attributes.get('gen_ai.tool.result')
+            agent_name = attributes.get('gen_ai.agent.name')
+            
+            # For function/tool spans, just show the tool result
+            if operation_name == 'function' and tool_result:
+                return f"Tool Result: {tool_result}"
+            
+            # For agent spans or response spans without tool results, this might be a handoff
+            # We can check if there's actual completion content
+            completion_content = None
+            for i in range(10):  # Check up to 10 completions
+                content = attributes.get(f'gen_ai.completion.{i}.content')
+                if content:
+                    completion_content = content
+                    break
+            
+            # If we have completion content, return it (this is the actual agent response)
+            if completion_content:
+                return completion_content
+            
+            # Otherwise, this is likely a handoff scenario
+            # Since we can't determine the next agent, just indicate a handoff occurred
             return "Agent Handoff"
 
         return "Response received"
