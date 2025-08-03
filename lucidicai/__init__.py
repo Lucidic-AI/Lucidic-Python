@@ -45,42 +45,43 @@ def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
         client: The Lucidic client instance
         providers: List of provider types to set up
     """
-    # Track which providers have been set up to avoid duplication
-    setup_providers = set()
+    if not providers:
+        return
+        
+    # Initialize telemetry once if using OpenTelemetry
+    telemetry = LucidicTelemetry()
+    if not telemetry.is_initialized():
+        telemetry.initialize(agent_id=client.agent_id)
     
-    # Initialize telemetry if using OpenTelemetry
-    if providers:
-        telemetry = LucidicTelemetry()
-        if not telemetry.is_initialized():
-            telemetry.initialize(agent_id=client.agent_id)
+    # Check which providers are already set up
+    existing_provider_types = set()
+    for p in client.providers:
+        if hasattr(p, '_provider_name'):
+            existing_provider_types.add(p._provider_name.lower().replace(' ', '_'))
     
     for provider in providers:
-        if provider in setup_providers:
+        # Skip if already set up
+        if provider in existing_provider_types:
+            logger.debug(f"Provider {provider} already set up, skipping")
             continue
             
         if provider == "openai":
             client.set_provider(OTelOpenAIHandler())
-            setup_providers.add("openai")
         elif provider == "anthropic":
             client.set_provider(OTelAnthropicHandler())
-            setup_providers.add("anthropic")
         elif provider == "langchain":
             client.set_provider(OTelLangChainHandler())
             logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
-            setup_providers.add("langchain")
         elif provider == "pydantic_ai":
             client.set_provider(OTelPydanticAIHandler())
-            setup_providers.add("pydantic_ai")
         elif provider == "openai_agents":
             try:
                 client.set_provider(OTelOpenAIAgentsHandler())
-                setup_providers.add("openai_agents")
             except Exception as e:
                 logger.error(f"Failed to set up OpenAI Agents provider: {e}")
                 raise
         elif provider == "litellm":
             client.set_provider(OTelLiteLLMHandler())
-            setup_providers.add("litellm")
 
 __all__ = [
     'Client',
@@ -156,6 +157,13 @@ def init(
     # ff not yet initialized or still the NullClient -> creaet a real client when init is called
     if not getattr(client, 'initialized', False):
         client = Client(lucidic_api_key=lucidic_api_key, agent_id=agent_id)
+    else:
+        # If client already exists and has a session, we should error
+        if client.session:
+            raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.end_session() or lai.reset_sdk() first.")
+        # Clear existing providers to prevent accumulation
+        client.undo_overrides()
+        client.providers = []
     
     if not production_monitoring:
         production_monitoring = os.getenv("LUCIDIC_PRODUCTION_MONITORING", False)
@@ -168,25 +176,36 @@ def init(
     if auto_end is None:
         auto_end = os.getenv("LUCIDIC_AUTO_END", "True").lower() == "true"
     
-    # Set up providers
-    _setup_providers(client, providers)
-    session_id = client.init_session(
-        session_name=session_name,
-        mass_sim_id=mass_sim_id,
-        task=task,
-        rubrics=rubrics,
-        tags=tags,
-        production_monitoring=production_monitoring,
-        custom_session_id=session_id,
-    )
-    if masking_function:
-        client.masking_function = masking_function
-    
-    # Set the auto_end flag on the client
-    client.auto_end = auto_end
-    
-    logger.info("Session initialized successfully")
-    return session_id
+    try:
+        # Set up providers
+        _setup_providers(client, providers)
+        session_id = client.init_session(
+            session_name=session_name,
+            mass_sim_id=mass_sim_id,
+            task=task,
+            rubrics=rubrics,
+            tags=tags,
+            production_monitoring=production_monitoring,
+            custom_session_id=session_id,
+        )
+        if masking_function:
+            client.masking_function = masking_function
+        
+        # Set the auto_end flag on the client
+        client.auto_end = auto_end
+        
+        logger.info("Session initialized successfully")
+        return session_id
+    except Exception as e:
+        # Clean up on failure
+        try:
+            client.undo_overrides()
+            client.providers = []
+            client.session = None
+            client.initialized = False
+        except:
+            pass
+        raise e
 
 
 def continue_session(

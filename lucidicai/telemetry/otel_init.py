@@ -75,15 +75,20 @@ class LucidicTelemetry:
                     self._instrument_anthropic()
                 elif provider == "langchain" and provider not in self.instrumentors:
                     self._instrument_langchain()
-                elif provider == "pydantic_ai":
+                elif provider == "pydantic_ai" and provider not in self.instrumentors:
                     # Custom instrumentation needed
                     logger.info(f"[LucidicTelemetry] Pydantic AI will use manual instrumentation")
-                elif provider == "openai_agents":
-                    # OpenAI Agents uses the same OpenAI instrumentation
+                    # Mark as instrumented to prevent duplicates
+                    self.instrumentors[provider] = None
+                elif provider == "openai_agents" and provider not in self.instrumentors:
                     self._instrument_openai_agents()
-                elif provider == "litellm":
+                elif provider == "litellm" and provider not in self.instrumentors:
                     # LiteLLM uses callbacks, not OpenTelemetry instrumentation
                     logger.info(f"[LucidicTelemetry] LiteLLM will use callback-based instrumentation")
+                    # Mark as instrumented to prevent duplicates
+                    self.instrumentors[provider] = None
+                elif provider in self.instrumentors:
+                    logger.debug(f"[LucidicTelemetry] {provider} already instrumented, skipping")
             except Exception as e:
                 logger.error(f"Failed to instrument {provider}: {e}")
     

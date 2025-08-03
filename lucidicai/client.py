@@ -63,6 +63,16 @@ class Client:
 
     def set_provider(self, provider: BaseProvider) -> None:
         """Set the LLM provider to track"""
+        # Check if we already have a provider of the same type
+        provider_type = provider._provider_name if hasattr(provider, '_provider_name') else type(provider).__name__
+        
+        # Remove any existing provider of the same type
+        self.providers = [p for p in self.providers if not (
+            (hasattr(p, '_provider_name') and p._provider_name == provider_type) or
+            (type(p).__name__ == type(provider).__name__)
+        )]
+        
+        # Add the new provider
         self.providers.append(provider)
         provider.override()
 

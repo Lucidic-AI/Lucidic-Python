@@ -1,11 +1,13 @@
 """OpenTelemetry-based handlers that maintain backward compatibility"""
 import logging
 from typing import Optional
+import os
 
 from .base_provider import BaseProvider
 from .otel_init import LucidicTelemetry
 
 logger = logging.getLogger("Lucidic")
+DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
 
 
 class OTelOpenAIHandler(BaseProvider):
@@ -15,6 +17,7 @@ class OTelOpenAIHandler(BaseProvider):
         super().__init__()
         self._provider_name = "OpenAI"
         self.telemetry = LucidicTelemetry()
+        self._is_instrumented = False
         
     def handle_response(self, response, kwargs, session: Optional = None):
         """Not needed with OpenTelemetry approach"""
@@ -22,6 +25,10 @@ class OTelOpenAIHandler(BaseProvider):
         
     def override(self):
         """Enable OpenAI instrumentation"""
+        if DEBUG and self._is_instrumented:
+            logger.debug("[OTel OpenAI Handler] Already instrumented, skipping")
+            return
+            
         try:
             from lucidicai.client import Client
             client = Client()
@@ -32,6 +39,7 @@ class OTelOpenAIHandler(BaseProvider):
                 
             # Instrument OpenAI
             self.telemetry.instrument_providers(["openai"])
+            self._is_instrumented = True
             
             # Also patch OpenAI client to intercept images
             try:
@@ -88,6 +96,7 @@ class OTelAnthropicHandler(BaseProvider):
         super().__init__()
         self._provider_name = "Anthropic"
         self.telemetry = LucidicTelemetry()
+        self._is_instrumented = False
         
     def handle_response(self, response, kwargs, session: Optional = None):
         """Not needed with OpenTelemetry approach"""
@@ -95,6 +104,10 @@ class OTelAnthropicHandler(BaseProvider):
         
     def override(self):
         """Enable Anthropic instrumentation"""
+        if DEBUG and self._is_instrumented:
+            logger.debug("[OTel Anthropic Handler] Already instrumented, skipping")
+            return
+            
         try:
             from lucidicai.client import Client
             client = Client()
@@ -105,6 +118,7 @@ class OTelAnthropicHandler(BaseProvider):
                 
             # Instrument Anthropic
             self.telemetry.instrument_providers(["anthropic"])
+            self._is_instrumented = True
             
             # Also patch Anthropic client to intercept images
             try:
@@ -155,6 +169,7 @@ class OTelLangChainHandler(BaseProvider):
         super().__init__()
         self._provider_name = "LangChain"
         self.telemetry = LucidicTelemetry()
+        self._is_instrumented = False
         
     def handle_response(self, response, kwargs, session: Optional = None):
         """Not needed with OpenTelemetry approach"""
@@ -162,6 +177,10 @@ class OTelLangChainHandler(BaseProvider):
         
     def override(self):
         """Enable LangChain instrumentation"""
+        if DEBUG and self._is_instrumented:
+            logger.debug("[OTel LangChain Handler] Already instrumented, skipping")
+            return
+            
         try:
             from lucidicai.client import Client
             client = Client()
@@ -172,6 +191,7 @@ class OTelLangChainHandler(BaseProvider):
                 
             # Instrument LangChain
             self.telemetry.instrument_providers(["langchain"])
+            self._is_instrumented = True
             
             logger.info("[OTel LangChain Handler] Instrumentation enabled")
             
@@ -192,6 +212,7 @@ class OTelPydanticAIHandler(BaseProvider):
         self._provider_name = "PydanticAI"
         self.telemetry = LucidicTelemetry()
         self._original_methods = {}
+        self._is_instrumented = False
         
     def handle_response(self, response, kwargs, session: Optional = None):
         """Handle Pydantic AI responses"""
@@ -199,6 +220,10 @@ class OTelPydanticAIHandler(BaseProvider):
         
     def override(self):
         """Enable Pydantic AI instrumentation"""
+        if DEBUG and self._is_instrumented:
+            logger.debug("[OTel PydanticAI Handler] Already instrumented, skipping")
+            return
+            
         try:
             from lucidicai.client import Client
             client = Client()
@@ -212,6 +237,7 @@ class OTelPydanticAIHandler(BaseProvider):
             from .pydantic_ai_handler import PydanticAIHandler
             self._fallback_handler = PydanticAIHandler()
             self._fallback_handler.override()
+            self._is_instrumented = True
             
             logger.info("[OTel PydanticAI Handler] Using fallback handler until OpenLLMetry support is available")
             
@@ -282,6 +308,11 @@ class OTelLiteLLMHandler(BaseProvider):
         
     def override(self):
         """Enable LiteLLM instrumentation via callbacks"""
+        # Check if already instrumented
+        if DEBUG and self._callback is not None:
+            logger.debug("[OTel LiteLLM Handler] Already instrumented, skipping")
+            return
+            
         try:
             import litellm
             from lucidicai.client import Client
