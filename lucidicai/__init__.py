@@ -142,27 +142,29 @@ def init(
         InvalidOperationError: If the client is already initialized.
         APIKeyVerificationError: If the API key is invalid.
     """
-    if lucidic_api_key is None:
-        lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if lucidic_api_key is None:
-            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
-    if agent_id is None:
-        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-        if agent_id is None:
-            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-
+    
     # get current client which will be NullClient if never lai is never initialized
     client = Client()
-    # ff not yet initialized or still the NullClient -> creaet a real client when init is called
+    # if not yet initialized or still the NullClient -> creaet a real client when init is called
     if not getattr(client, 'initialized', False):
+        if lucidic_api_key is None:
+            lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
+            if lucidic_api_key is None:
+                raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
+        if agent_id is None:
+            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
+            if agent_id is None:
+                raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
         client = Client(lucidic_api_key=lucidic_api_key, agent_id=agent_id)
-    
-    if not production_monitoring:
-        production_monitoring = os.getenv("LUCIDIC_PRODUCTION_MONITORING", False)
-        if production_monitoring == "True":
-            production_monitoring = True
-        else:
-            production_monitoring = False
+    else:
+        # Already initialized, this is a re-init
+        lucidic_api_key = lucidic_api_key or os.getenv("LUCIDIC_API_KEY", None)
+        agent_id = agent_id or os.getenv("LUCIDIC_AGENT_ID", None)
+        client.agent_id = agent_id
+        if lucidic_api_key is not None and agent_id is not None and (lucidic_api_key != client.api_key or agent_id != client.agent_id):
+            client.set_api_key(lucidic_api_key)
+            client.agent_id = agent_id
+        
     
     # Handle auto_end with environment variable support
     if auto_end is None:
@@ -170,14 +172,14 @@ def init(
     
     # Set up providers
     _setup_providers(client, providers)
-    session_id = client.init_session(
+    real_session_id = client.init_session(
         session_name=session_name,
         mass_sim_id=mass_sim_id,
         task=task,
         rubrics=rubrics,
         tags=tags,
         production_monitoring=production_monitoring,
-        custom_session_id=session_id,
+        session_id=session_id,
     )
     if masking_function:
         client.masking_function = masking_function
@@ -186,7 +188,7 @@ def init(
     client.auto_end = auto_end
     
     logger.info("Session initialized successfully")
-    return session_id
+    return real_session_id
 
 
 def continue_session(
@@ -284,8 +286,10 @@ def end_session(
 
 def reset_sdk() -> None:
     """
-    Reset the SDK.
+    DEPRECATED: Reset the SDK.
     """
+    return
+    
     client = Client()
     if not client.initialized:
         return

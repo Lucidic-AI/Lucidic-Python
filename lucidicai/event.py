@@ -16,7 +16,6 @@ class Event:
         self.is_finished = False
         self.init_event(**kwargs)
 
-    # TODO: this is really bad, clean this up later
     def init_event(self, **kwargs) -> None:
         from .client import Client
         request_data = self._build_request_data(**kwargs)
@@ -41,7 +40,7 @@ class Event:
 
     def _build_request_data(self, **kwargs) -> dict:
         from .client import Client
-        num_new_screenshots = len(kwargs.get("screenshots", []))
+        num_new_screenshots = len(kwargs.get("screenshots", []) or [])
         return {
             "description": Client().mask(kwargs.get("description", None)),
             "result": Client().mask(kwargs.get("result", None)),

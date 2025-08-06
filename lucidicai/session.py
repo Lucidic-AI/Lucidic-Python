@@ -15,11 +15,12 @@ logger = logging.getLogger("Lucidic")
 class Session:
     def __init__(
         self, 
-        agent_id: str, 
+        agent_id: str,
+        session_id = None,
         **kwargs
     ):
         self.agent_id = agent_id
-        self.session_id = None
+        self.session_id = session_id
         self.step_history = dict()
         self._active_step: Optional[str] = None  # Step ID, not Step object
         self.event_history = dict()
@@ -30,33 +31,6 @@ class Session:
         self.session_eval = None
         self.session_eval_reason = None
         self.has_gif = None
-        if kwargs.get("session_id", None) is None:  # The kwarg, not the attribute
-            self.init_session(**kwargs)
-        else:
-            self.continue_session(kwargs["session_id"])
-
-    def init_session(self, **kwargs) -> None:
-        from .client import Client
-        request_data = {
-            "agent_id": self.agent_id,
-            "session_name": kwargs.get("session_name", None),
-            "task": kwargs.get("task", None),
-            "mass_sim_id": kwargs.get("mass_sim_id", None),
-            "rubrics": kwargs.get("rubrics", None),
-            "tags": kwargs.get("tags", None),
-            "production_monitoring": kwargs.get("production_monitoring", False),
-            "custom_session_id": kwargs.get("custom_session_id", None)
-        }
-        data = Client().make_request('initsession', 'POST', request_data)
-        self.session_id = data["session_id"]
-    
-    def continue_session(self, session_id: str) -> None:
-        from .client import Client
-        self.session_id = session_id
-        data = Client().make_request('continuesession', 'POST', {"session_id": session_id})
-        self.session_id = data["session_id"]
-        logger.info(f"Session {data['session_name']} continuing...")
-        return self.session_id
 
     @property   
     def active_step(self) -> Optional[Step]:
