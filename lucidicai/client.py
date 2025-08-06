@@ -176,7 +176,6 @@ class Client:
         return prompt
 
     def make_request(self, endpoint, method, data):
-        print(f"Making request to {self.base_url}/{endpoint} with method {method} and data {data}")
         http_methods = {
             "GET": lambda data: self.request_session.get(f"{self.base_url}/{endpoint}", params=data),
             "POST": lambda data: self.request_session.post(f"{self.base_url}/{endpoint}", json=data),
