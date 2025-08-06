@@ -239,6 +239,12 @@ class LucidicSpanProcessor(SpanProcessor):
             # Calculate cost
             cost = self._calculate_cost(attributes)
             
+            # Calculate duration in seconds
+            duration_seconds = None
+            if span.start_time and span.end_time:
+                duration_ns = span.end_time - span.start_time
+                duration_seconds = duration_ns / 1_000_000_000
+            
             # Check success
             is_successful = span.status.status_code != StatusCode.ERROR
             
@@ -247,7 +253,8 @@ class LucidicSpanProcessor(SpanProcessor):
                 'description': description,
                 'result': formatted_result,
                 'model': model,
-                'is_finished': True
+                'is_finished': True,
+                'duration': duration_seconds
             }
             
             if images:
@@ -288,6 +295,12 @@ class LucidicSpanProcessor(SpanProcessor):
             # Calculate cost
             cost = self._calculate_cost(attributes)
             
+            # Calculate duration in seconds
+            duration_seconds = None
+            if span.start_time and span.end_time:
+                duration_ns = span.end_time - span.start_time
+                duration_seconds = duration_ns / 1_000_000_000
+            
             # Check success
             is_successful = span.status.status_code != StatusCode.ERROR
             
@@ -295,7 +308,8 @@ class LucidicSpanProcessor(SpanProcessor):
             update_kwargs = {
                 'event_id': event_id,
                 'result': result,
-                'is_finished': True
+                'is_finished': True,
+                'duration': duration_seconds
             }
             
             if cost is not None:
