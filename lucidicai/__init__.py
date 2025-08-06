@@ -315,6 +315,7 @@ def _auto_end_session():
         client = Client()
         if hasattr(client, 'auto_end') and client.auto_end and client.session and not client.session.is_finished:
             logger.info("Auto-ending active session on exit")
+            client.auto_end = False  # To avoid repeating auto-end on exit
             end_session()
     except Exception as e:
         logger.debug(f"Error during auto-end session: {e}")

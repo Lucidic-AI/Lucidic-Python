@@ -110,14 +110,12 @@ class Session:
 
     def create_event(self, **kwargs):
         # Get step_id from kwargs or active step
-        temp_step_created = False
         if 'step_id' in kwargs and kwargs['step_id'] is not None:
             step_id = kwargs['step_id']
         elif self._active_step:
             step_id = self._active_step
         else:
-            step_id = self.create_step()
-            temp_step_created = True
+            step_id = None
         kwargs.pop('step_id', None)
         event = Event(
             session_id=self.session_id,
@@ -126,9 +124,6 @@ class Session:
         )
         self.event_history[event.event_id] = event
         self._active_event = event
-        if temp_step_created:
-            self.update_step(step_id=step_id, is_finished=True)
-            self._active_step = None
         return event.event_id
 
     def update_event(self, **kwargs):
