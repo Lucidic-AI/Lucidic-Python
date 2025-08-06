@@ -22,7 +22,7 @@ NETWORK_RETRIES = 3
 class Client:
     def __init__(
         self,
-        lucidic_api_key: str,
+        api_key: str,
         agent_id: str,
     ):
         self.base_url = "https://analytics.lucidic.ai/api" if not (os.getenv("LUCIDIC_DEBUG", 'False') == 'True') else "http://localhost:8000/api"
@@ -31,7 +31,7 @@ class Client:
         self.previous_sessions = LRUCache(500)  # For LRU cache of previously initialized sessions
         self.custom_session_id_translations = LRUCache(500) # For translations of custom session IDs to real session IDs
         self.providers = []
-        self.api_key = lucidic_api_key
+        self.api_key = api_key
         self.agent_id = agent_id
         self.masking_function = None
         self.auto_end = False  # Default to False until explicitly set during init
@@ -44,14 +44,14 @@ class Client:
         )
         adapter = HTTPAdapter(max_retries=retry_cfg, pool_connections=20, pool_maxsize=100)
         self.request_session.mount("https://", adapter)
-        self.set_api_key(lucidic_api_key)
+        self.set_api_key(api_key)
         self.prompts = dict()
 
-    def set_api_key(self, lucidic_api_key: str):
-        self.api_key = lucidic_api_key
+    def set_api_key(self, api_key: str):
+        self.api_key = api_key
         self.request_session.headers.update({"Authorization": f"Api-Key {self.api_key}", "User-Agent": "lucidic-sdk/1.1"})
         try:
-            self.verify_api_key(self.base_url, lucidic_api_key)
+            self.verify_api_key(self.base_url, api_key)
         except APIKeyVerificationError:
             raise APIKeyVerificationError("Invalid API Key")
 
