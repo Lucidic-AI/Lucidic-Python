@@ -65,7 +65,7 @@ LUCIDIC_AGENT_ID=your_agent_id     # Required: Your agent identifier
 ```python
 lai.init(
     session_name="My Session",              # Required: Name for this session
-    lucidic_api_key="...",                 # Optional: Override env var
+    api_key="...",                 # Optional: Override env var
     agent_id="...",                        # Optional: Override env var
     providers=["openai", "anthropic"],     # Optional: LLM providers to track
     task="Process customer request",       # Optional: High-level task description

@@ -111,7 +111,7 @@ __all__ = [
 def init(
     session_name: Optional[str] = None,
     session_id: Optional[str] = None,
-    lucidic_api_key: Optional[str] = None,
+    api_key: Optional[str] = None,
     agent_id: Optional[str] = None,
     task: Optional[str] = None,
     providers: Optional[List[ProviderType]] = [],
@@ -128,7 +128,7 @@ def init(
     Args:
         session_name: The display name of the session.
         session_id: Custom ID of the session. If not provided, a random ID will be generated.
-        lucidic_api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
+        api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
         agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
         task: Task description.
         providers: List of provider types ("openai", "anthropic", "langchain", "pydantic_ai").
@@ -142,27 +142,29 @@ def init(
         InvalidOperationError: If the client is already initialized.
         APIKeyVerificationError: If the API key is invalid.
     """
-    if lucidic_api_key is None:
-        lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if lucidic_api_key is None:
-            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
-    if agent_id is None:
-        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-        if agent_id is None:
-            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-
+    
     # get current client which will be NullClient if never lai is never initialized
     client = Client()
-    # ff not yet initialized or still the NullClient -> creaet a real client when init is called
+    # if not yet initialized or still the NullClient -> creaet a real client when init is called
     if not getattr(client, 'initialized', False):
-        client = Client(lucidic_api_key=lucidic_api_key, agent_id=agent_id)
-    
-    if not production_monitoring:
-        production_monitoring = os.getenv("LUCIDIC_PRODUCTION_MONITORING", False)
-        if production_monitoring == "True":
-            production_monitoring = True
-        else:
-            production_monitoring = False
+        if api_key is None:
+            api_key = os.getenv("LUCIDIC_API_KEY", None)
+            if api_key is None:
+                raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
+        if agent_id is None:
+            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
+            if agent_id is None:
+                raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
+        client = Client(api_key=api_key, agent_id=agent_id)
+    else:
+        # Already initialized, this is a re-init
+        api_key = api_key or os.getenv("LUCIDIC_API_KEY", None)
+        agent_id = agent_id or os.getenv("LUCIDIC_AGENT_ID", None)
+        client.agent_id = agent_id
+        if api_key is not None and agent_id is not None and (api_key != client.api_key or agent_id != client.agent_id):
+            client.set_api_key(api_key)
+            client.agent_id = agent_id
+        
     
     # Handle auto_end with environment variable support
     if auto_end is None:
@@ -170,14 +172,14 @@ def init(
     
     # Set up providers
     _setup_providers(client, providers)
-    session_id = client.init_session(
+    real_session_id = client.init_session(
         session_name=session_name,
         mass_sim_id=mass_sim_id,
         task=task,
         rubrics=rubrics,
         tags=tags,
         production_monitoring=production_monitoring,
-        custom_session_id=session_id,
+        session_id=session_id,
     )
     if masking_function:
         client.masking_function = masking_function
@@ -186,20 +188,20 @@ def init(
     client.auto_end = auto_end
     
     logger.info("Session initialized successfully")
-    return session_id
+    return real_session_id
 
 
 def continue_session(
     session_id: str,
-    lucidic_api_key: Optional[str] = None,
+    api_key: Optional[str] = None,
     agent_id: Optional[str] = None,
     providers: Optional[List[ProviderType]] = [],
     masking_function = None,
     auto_end: Optional[bool] = True,
 ):
-    if lucidic_api_key is None:
-        lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if lucidic_api_key is None:
+    if api_key is None:
+        api_key = os.getenv("LUCIDIC_API_KEY", None)
+        if api_key is None:
             raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
     if agent_id is None:
         agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
@@ -211,7 +213,7 @@ def continue_session(
         raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.end_session() or lai.reset_sdk() first.")
     # if not yet initialized or still the NullClient -> create a real client when init is called
     if not getattr(client, 'initialized', False):
-        client = Client(lucidic_api_key=lucidic_api_key, agent_id=agent_id)
+        client = Client(api_key=api_key, agent_id=agent_id)
     
     # Handle auto_end with environment variable support
     if auto_end is None:
@@ -284,8 +286,10 @@ def end_session(
 
 def reset_sdk() -> None:
     """
-    Reset the SDK.
+    DEPRECATED: Reset the SDK.
     """
+    return
+
     client = Client()
     if not client.initialized:
         return
@@ -342,7 +346,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 def create_mass_sim(
     mass_sim_name: str,
     total_num_sessions: int,
-    lucidic_api_key: Optional[str] = None,
+    api_key: Optional[str] = None,
     agent_id: Optional[str] = None,
     task: Optional[str] = None,
     tags: Optional[list] = None
@@ -353,7 +357,7 @@ def create_mass_sim(
     Args:
         mass_sim_name: Name of the mass simulation.
         total_num_sessions: Total intended number of sessions. More sessions can be added later.
-        lucidic_api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
+        api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
         agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
         task: Task description.
         tags: Tags for the mass simulation.
@@ -361,9 +365,9 @@ def create_mass_sim(
     Returns:
         mass_sim_id: ID of the created mass simulation. Pass this to lai.init() to create a new session in the mass sim.
     """
-    if lucidic_api_key is None:
-        lucidic_api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if lucidic_api_key is None:
+    if api_key is None:
+        api_key = os.getenv("LUCIDIC_API_KEY", None)
+        if api_key is None:
             raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
     if agent_id is None:
         agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
@@ -373,7 +377,7 @@ def create_mass_sim(
         client = Client()
     except LucidicNotInitializedError:
         client = Client( # TODO: fail hard if incorrect API key or agent ID provided and wrong, fail silently if not provided
-            lucidic_api_key=lucidic_api_key,
+            api_key=api_key,
             agent_id=agent_id,
         )
     mass_sim_id = client.init_mass_sim(mass_sim_name=mass_sim_name, total_num_sims=total_num_sessions, task=task, tags=tags)  # TODO: change total_num_sims to total_num_sessions everywhere
