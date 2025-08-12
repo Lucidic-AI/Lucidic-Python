@@ -85,7 +85,6 @@ class Client:
         tags: Optional[list] = None,
         production_monitoring: Optional[bool] = False,
         session_id: Optional[str] = None,
-        experiment_id: Optional[str] = None,
     ) -> None:
         if session_id:
             # Check if it's a known session ID, maybe custom and maybe real
@@ -108,7 +107,6 @@ class Client:
             "session_name": session_name,
             "task": task,
             "mass_sim_id": mass_sim_id,
-            "experiment_id": experiment_id,
             "rubrics": rubrics,
             "tags": tags,
             "session_id": session_id
@@ -126,7 +124,6 @@ class Client:
             session_id=real_session_id,
             session_name=session_name,
             mass_sim_id=mass_sim_id,
-            experiment_id=experiment_id,
             task=task,
             rubrics=rubrics,
             tags=tags,

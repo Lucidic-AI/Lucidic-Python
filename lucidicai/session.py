@@ -31,7 +31,7 @@ class Session:
         self.session_eval = None
         self.session_eval_reason = None
         self.has_gif = None
-        
+
     @property   
     def active_step(self) -> Optional[Step]:
         """Get the active step object"""

@@ -117,7 +117,6 @@ def init(
     providers: Optional[List[ProviderType]] = [],
     production_monitoring: Optional[bool] = False,
     mass_sim_id: Optional[str] = None,
-    experiment_id: Optional[str] = None,
     rubrics: Optional[list] = None,
     tags: Optional[list] = None,
     masking_function = None,
@@ -134,7 +133,6 @@ def init(
         task: Task description.
         providers: List of provider types ("openai", "anthropic", "langchain", "pydantic_ai").
         mass_sim_id: Optional mass simulation ID, if session is to be part of a mass simulation.
-        experiment_id: Optional experiment ID, if session is to be part of an experiment.
         rubrics: Optional rubrics for evaluation, list of strings.
         tags: Optional tags for the session, list of strings.
         masking_function: Optional function to mask sensitive data.
@@ -182,7 +180,6 @@ def init(
         tags=tags,
         production_monitoring=production_monitoring,
         session_id=session_id,
-        experiment_id=experiment_id,
     )
     if masking_function:
         client.masking_function = masking_function
