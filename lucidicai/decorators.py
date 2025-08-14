@@ -230,6 +230,12 @@ def event(
             def serialize(value):
                 if isinstance(value, str):
                     return value
+                if isinstance(value, int):
+                    return value
+                if isinstance(value, float):
+                    return value
+                if isinstance(value, bool):
+                    return value
                 if isinstance(value, dict):
                     return {k: serialize(v) for k, v in value.items()}
                 if isinstance(value, Iterable):
