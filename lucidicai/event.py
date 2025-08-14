@@ -48,7 +48,9 @@ class Event:
             "cost_added": kwargs.get("cost_added", None),
             "model": kwargs.get("model", None), 
             "nscreenshots": len(self.screenshots) + num_new_screenshots,
-            "duration": kwargs.get("duration", None)
+            "duration": kwargs.get("duration", None),
+            "function_name": kwargs.get("function_name", None),
+            "arguments": kwargs.get("arguments", None),
         }
     
     def _upload_screenshots(self, **kwargs) -> None:

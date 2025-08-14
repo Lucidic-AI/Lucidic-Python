@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 from typing import Any, Callable, Optional, TypeVar, Union
+from collections.abc import Iterable
 
 from .client import Client
 from .errors import LucidicNotInitializedError
@@ -219,27 +220,44 @@ def event(
             
             # Build event description from inputs if not provided
             event_desc = description
+            function_name = func.__name__
+            
+            # Get function signature
+            sig = inspect.signature(func)
+            bound_args = sig.bind(*args, **kwargs)
+            bound_args.apply_defaults()
+
+            def serialize(value):
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, int):
+                    return value
+                if isinstance(value, float):
+                    return value
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, dict):
+                    return {k: serialize(v) for k, v in value.items()}
+                if isinstance(value, Iterable):
+                    return [serialize(v) for v in value]
+                return str(value)
+
+            # Construct JSONable object of args
+            args_dict = {
+                param_name: serialize(param_value)  # Recursive - maybe change later
+                for param_name, param_value in bound_args.arguments.items()
+            }
+            
             if not event_desc:
-                # Get function signature
-                sig = inspect.signature(func)
-                bound_args = sig.bind(*args, **kwargs)
-                bound_args.apply_defaults()
-                
-                # Create string representation of inputs
-                input_parts = []
-                for param_name, param_value in bound_args.arguments.items():
-                    try:
-                        input_parts.append(f"{param_name}={repr(param_value)}")
-                    except Exception:
-                        input_parts.append(f"{param_name}=<{type(param_value).__name__}>")
-                
-                event_desc = f"{func.__name__}({', '.join(input_parts)})"
+                event_desc = f"Function {function_name}({json.dumps(args_dict)})"
             
             # Create the event
             event_id = create_event(
                 description=event_desc,
                 model=model,
-                cost_added=cost_added
+                cost_added=cost_added,
+                function_name=function_name,
+                arguments=args_dict, 
             )
             tok = _current_event.set(event_id)
             try:
