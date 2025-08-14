@@ -490,7 +490,9 @@ def create_event(
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
     model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None
+    screenshots: Optional[List[str]] = None,
+    function_name: Optional[str] = None,
+    arguments: Optional[dict] = None,
 ) -> str:
     """
     Create a new event in the current step. Current step must not be finished.
@@ -501,6 +503,8 @@ def create_event(
         cost_added: Cost added by the event.
         model: Model used for the event.
         screenshots: List of screenshots encoded in base64.
+        function_name: Name of the function that created the event.
+        arguments: Arguments of the function that created the event.
     """
 
     client = Client()
@@ -515,7 +519,9 @@ def update_event(
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
     model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None
+    screenshots: Optional[List[str]] = None,
+    function_name: Optional[str] = None,
+    arguments: Optional[dict] = None,
 ) -> None:
     """
     Update the event with the given ID in the current step.
@@ -527,6 +533,8 @@ def update_event(
         cost_added: Cost added by the event.
         model: Model used for the event.
         screenshots: List of screenshots encoded in base64.
+        function_name: Name of the function that created the event.
+        arguments: Arguments of the function that created the event.
     """
     client = Client()
     if not client.session:
@@ -540,7 +548,9 @@ def end_event(
     result: Optional[str] = None,
     cost_added: Optional[float] = None, 
     model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None
+    screenshots: Optional[List[str]] = None,
+    function_name: Optional[str] = None,
+    arguments: Optional[dict] = None,
 ) -> None:
     """
     End the latest event in the current step.
@@ -551,6 +561,9 @@ def end_event(
         result: Result of the event.
         cost_added: Cost added by the event.
         model: Model used for the event.
+        screenshots: List of screenshots encoded in base64.
+        function_name: Name of the function that created the event.
+        arguments: Arguments of the function that created the event.
     """
     client = Client()
     if not client.session:
