@@ -1,4 +1,8 @@
-"""OpenTelemetry initialization and configuration for Lucidic"""
+"""OpenTelemetry initialization and configuration for Lucidic
+
+Adds thread-safety and idempotence to avoid duplicate tracer provider
+registration and repeated instrumentation under concurrency.
+"""
 import logging
 from typing import List, Optional
 
@@ -15,6 +19,10 @@ from lucidicai.client import Client
 
 logger = logging.getLogger("Lucidic")
 
+import threading
+
+
+_init_lock = threading.Lock()
 
 class LucidicTelemetry:
     """Manages OpenTelemetry initialization for Lucidic"""
@@ -37,55 +45,50 @@ class LucidicTelemetry:
     
     def initialize(self, agent_id: str, service_name: str = "lucidic-ai") -> None:
         """Initialize OpenTelemetry with Lucidic configuration"""
-        if self.tracer_provider:
-            logger.debug("OpenTelemetry already initialized")
-            return
-            
-        try:
-            # Create resource
-            resource = Resource.create({
-                "service.name": service_name,
-                "service.version": "1.0.0",
-                "lucidic.agent_id": agent_id,
-            })
-            
-            # Create tracer provider
-            self.tracer_provider = TracerProvider(resource=resource)
-            
-            # Add our custom span processor for real-time event handling
-            self.span_processor = LucidicSpanProcessor()
-            self.tracer_provider.add_span_processor(self.span_processor)
-            
-            # Set as global provider
-            trace.set_tracer_provider(self.tracer_provider)
-            
-            logger.info("[LucidicTelemetry] OpenTelemetry initialized")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize OpenTelemetry: {e}")
-            raise
+        with _init_lock:
+            if self.tracer_provider:
+                logger.debug("OpenTelemetry already initialized")
+                return
+            try:
+                resource = Resource.create({
+                    "service.name": service_name,
+                    "service.version": "1.0.0",
+                    "lucidic.agent_id": agent_id,
+                })
+                provider = TracerProvider(resource=resource)
+                processor = LucidicSpanProcessor()
+                provider.add_span_processor(processor)
+                try:
+                    trace.set_tracer_provider(provider)
+                except Exception as e:
+                    # Another provider may already be registered; proceed with ours as a local provider
+                    logger.debug(f"Global tracer provider already set: {e}")
+                self.tracer_provider = provider
+                self.span_processor = processor
+                logger.info("[LucidicTelemetry] OpenTelemetry initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenTelemetry: {e}")
+                raise
     
     def instrument_providers(self, providers: List[str]) -> None:
         """Instrument specified providers"""
-        for provider in providers:
-            try:
-                if provider == "openai" and provider not in self.instrumentors:
-                    self._instrument_openai()
-                elif provider == "anthropic" and provider not in self.instrumentors:
-                    self._instrument_anthropic()
-                elif provider == "langchain" and provider not in self.instrumentors:
-                    self._instrument_langchain()
-                elif provider == "pydantic_ai":
-                    # Custom instrumentation needed
-                    logger.info(f"[LucidicTelemetry] Pydantic AI will use manual instrumentation")
-                elif provider == "openai_agents":
-                    # OpenAI Agents uses the same OpenAI instrumentation
-                    self._instrument_openai_agents()
-                elif provider == "litellm":
-                    # LiteLLM uses callbacks, not OpenTelemetry instrumentation
-                    logger.info(f"[LucidicTelemetry] LiteLLM will use callback-based instrumentation")
-            except Exception as e:
-                logger.error(f"Failed to instrument {provider}: {e}")
+        with _init_lock:
+            for provider in providers:
+                try:
+                    if provider == "openai" and provider not in self.instrumentors:
+                        self._instrument_openai()
+                    elif provider == "anthropic" and provider not in self.instrumentors:
+                        self._instrument_anthropic()
+                    elif provider == "langchain" and provider not in self.instrumentors:
+                        self._instrument_langchain()
+                    elif provider == "pydantic_ai":
+                        logger.info(f"[LucidicTelemetry] Pydantic AI will use manual instrumentation")
+                    elif provider == "openai_agents":
+                        self._instrument_openai_agents()
+                    elif provider == "litellm":
+                        logger.info(f"[LucidicTelemetry] LiteLLM will use callback-based instrumentation")
+                except Exception as e:
+                    logger.error(f"Failed to instrument {provider}: {e}")
     
     def _instrument_openai(self) -> None:
         """Instrument OpenAI"""

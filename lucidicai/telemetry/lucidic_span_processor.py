@@ -1,4 +1,9 @@
-"""Custom span processor for real-time Lucidic event handling"""
+"""Custom span processor for real-time Lucidic event handling
+
+Updated to stamp spans with the correct session id from async-safe
+context, and to create events for that session without mutating the
+global client session.
+"""
 import os
 import logging
 import json
@@ -10,6 +15,7 @@ from opentelemetry.semconv_ai import SpanAttributes
 
 from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
+from lucidicai.context import current_session_id
 from .utils.image_storage import get_stored_images, clear_stored_images
 from .utils.text_storage import get_stored_text, clear_stored_texts
 
@@ -35,11 +41,15 @@ class LucidicSpanProcessor(SpanProcessor):
                 logger.info(f"[SpanProcessor] on_start called for span: {span.name}")
                 # logger.info(f"[SpanProcessor] Span attributes at start: {dict(span.attributes or {})}")
                 
+            # Stamp session id from contextvars if available
+            try:
+                sid = current_session_id.get(None)
+                if sid:
+                    span.set_attribute('lucidic.session_id', sid)
+            except Exception:
+                pass
+
             client = Client()
-            if not client.session:
-                logger.debug("No active session, skipping span tracking")
-                return
-                
             # Only process LLM spans
             if not self._is_llm_span(span):
                 if DEBUG:
@@ -88,9 +98,6 @@ class LucidicSpanProcessor(SpanProcessor):
                 return
                 
             client = Client()
-            if not client.session:
-                return
-            
             span_context = self.span_contexts.pop(span_id, {})
             
             # Create event with all the attributes now available
@@ -248,6 +255,22 @@ class LucidicSpanProcessor(SpanProcessor):
             # Check success
             is_successful = span.status.status_code != StatusCode.ERROR
             
+            # Resolve target session id for this span
+            target_session_id = attributes.get('lucidic.session_id')
+            if not target_session_id:
+                try:
+                    target_session_id = current_session_id.get(None)
+                except Exception:
+                    target_session_id = None
+            if not target_session_id:
+                # Fallback to global client session if set
+                if getattr(client, 'session', None) and getattr(client.session, 'session_id', None):
+                    target_session_id = client.session.session_id
+            if not target_session_id:
+                if DEBUG:
+                    logger.info("[SpanProcessor] No session id found for span; skipping event creation")
+                return None
+
             # Create event with all data
             event_kwargs = {
                 'description': description,
@@ -268,8 +291,8 @@ class LucidicSpanProcessor(SpanProcessor):
             if step_id:
                 event_kwargs['step_id'] = step_id
                 
-            # Create the event (already completed)
-            event_id = client.session.create_event(**event_kwargs)
+            # Create the event (already completed) for the resolved session id
+            event_id = client.create_event_for_session(target_session_id, **event_kwargs)
                 
             return event_id
             

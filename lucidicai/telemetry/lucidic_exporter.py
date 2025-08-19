@@ -8,6 +8,7 @@ from opentelemetry.trace import StatusCode
 from opentelemetry.semconv_ai import SpanAttributes
 
 from lucidicai.client import Client
+from lucidicai.context import current_session_id
 from lucidicai.model_pricing import calculate_cost
 from lucidicai.image_upload import extract_base64_images
 
@@ -28,9 +29,6 @@ class LucidicSpanExporter(SpanExporter):
         """Export spans by converting them to Lucidic events"""
         try:
             client = Client()
-            if not client.session:
-                logger.debug("No active session, skipping span export")
-                return SpanExportResult.SUCCESS
                 
             for span in spans:
                 self._process_span(span, client)
@@ -100,6 +98,19 @@ class LucidicSpanExporter(SpanExporter):
                    attributes.get(SpanAttributes.LLM_REQUEST_MODEL) or \
                    attributes.get('gen_ai.request.model') or 'unknown'
             
+            # Resolve target session id for this span
+            target_session_id = attributes.get('lucidic.session_id')
+            if not target_session_id:
+                try:
+                    target_session_id = current_session_id.get(None)
+                except Exception:
+                    target_session_id = None
+            if not target_session_id:
+                if getattr(client, 'session', None) and getattr(client.session, 'session_id', None):
+                    target_session_id = client.session.session_id
+            if not target_session_id:
+                return None
+
             # Create event
             event_kwargs = {
                 'description': description,
@@ -115,7 +126,7 @@ class LucidicSpanExporter(SpanExporter):
             if step_id:
                 event_kwargs['step_id'] = step_id
                 
-            return client.session.create_event(**event_kwargs)
+            return client.create_event_for_session(target_session_id, **event_kwargs)
             
         except Exception as e:
             logger.error(f"Failed to create event from span: {e}")
@@ -143,6 +154,7 @@ class LucidicSpanExporter(SpanExporter):
             if cost is not None:
                 update_kwargs['cost_added'] = cost
                 
+            # Route update to the same session; event_id is globally unique so server resolves it
             client.session.update_event(**update_kwargs)
             
         except Exception as e:

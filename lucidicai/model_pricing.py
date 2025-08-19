@@ -3,6 +3,12 @@ import logging
 logger = logging.getLogger("Lucidic")
 
 MODEL_PRICING = {
+
+    # OpenAI GPT-5 Series (Verified 2025)
+    "gpt-5": {"input": 10.0, "output": 10.0},
+    "gpt-5-mini": {"input": 0.250, "output": 2.0},
+    "gpt-5-nano": {"input": 0.05, "output": 0.4},
+
     # OpenAI GPT-4o Series (Verified 2025)
     "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6},

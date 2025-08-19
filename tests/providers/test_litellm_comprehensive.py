@@ -20,9 +20,6 @@ from litellm import completion, acompletion
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-os.environ['LUCIDIC_DEBUG'] = 'False'
-print(f"DEBUG IS {os.getenv('LUCIDIC_DEBUG')}")
-
 
 # Define structured output models
 class MathStep(BaseModel):
