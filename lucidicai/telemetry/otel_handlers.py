@@ -348,3 +348,161 @@ class OTelLiteLLMHandler(BaseProvider):
             
         except Exception as e:
             logger.error(f"Error disabling LiteLLM instrumentation: {e}")
+
+
+class OTelBedrockHandler(BaseProvider):
+    """AWS Bedrock handler using OpenTelemetry instrumentation"""
+    
+    def __init__(self):
+        super().__init__()
+        self._provider_name = "Bedrock"
+        self.telemetry = LucidicTelemetry()
+    
+    def handle_response(self, response, kwargs, session: Optional = None):
+        return response
+    
+    def override(self):
+        try:
+            from lucidicai.client import Client
+            client = Client()
+            if not self.telemetry.is_initialized():
+                self.telemetry.initialize(agent_id=client.agent_id)
+            self.telemetry.instrument_providers(["bedrock"])
+            logger.info("[OTel Bedrock Handler] Instrumentation enabled")
+        except Exception as e:
+            logger.error(f"Failed to enable Bedrock instrumentation: {e}")
+            raise
+    
+    def undo_override(self):
+        logger.info("[OTel Bedrock Handler] Instrumentation will be disabled on shutdown")
+
+
+class OTelGoogleGenerativeAIHandler(BaseProvider):
+    """Google Generative AI handler using OpenTelemetry instrumentation"""
+    
+    def __init__(self):
+        super().__init__()
+        self._provider_name = "Google Generative AI"
+        self.telemetry = LucidicTelemetry()
+    
+    def handle_response(self, response, kwargs, session: Optional = None):
+        return response
+    
+    def override(self):
+        try:
+            from lucidicai.client import Client
+            client = Client()
+            if not self.telemetry.is_initialized():
+                self.telemetry.initialize(agent_id=client.agent_id)
+            self.telemetry.instrument_providers(["google"])
+            # Best-effort image interception for Google clients where applicable
+            try:
+                from .utils.universal_image_interceptor import patch_google_client
+                # We cannot access user model instances here; interception occurs when clients are created
+                # via UniversalImageInterceptor wrapper calls.
+                _ = patch_google_client  # avoid linter unused import
+            except Exception as e:
+                logger.debug(f"[OTel Google Handler] Image interception not applied: {e}")
+            logger.info("[OTel Google Handler] Instrumentation enabled")
+        except Exception as e:
+            logger.error(f"Failed to enable Google Generative AI instrumentation: {e}")
+            raise
+    
+    def undo_override(self):
+        logger.info("[OTel Google Handler] Instrumentation will be disabled on shutdown")
+
+
+class OTelVertexAIHandler(BaseProvider):
+    """Vertex AI handler using OpenTelemetry instrumentation"""
+    
+    def __init__(self):
+        super().__init__()
+        self._provider_name = "Vertex AI"
+        self.telemetry = LucidicTelemetry()
+    
+    def handle_response(self, response, kwargs, session: Optional = None):
+        return response
+    
+    def override(self):
+        try:
+            from lucidicai.client import Client
+            client = Client()
+            if not self.telemetry.is_initialized():
+                self.telemetry.initialize(agent_id=client.agent_id)
+            self.telemetry.instrument_providers(["vertexai"])
+            # Best-effort image interception for Vertex AI clients where applicable
+            try:
+                from .utils.universal_image_interceptor import patch_vertexai_client
+                _ = patch_vertexai_client
+            except Exception as e:
+                logger.debug(f"[OTel Vertex Handler] Image interception not applied: {e}")
+            logger.info("[OTel Vertex Handler] Instrumentation enabled")
+        except Exception as e:
+            logger.error(f"Failed to enable Vertex AI instrumentation: {e}")
+            raise
+    
+    def undo_override(self):
+        logger.info("[OTel Vertex Handler] Instrumentation will be disabled on shutdown")
+
+
+class OTelCohereHandler(BaseProvider):
+    """Cohere handler using OpenTelemetry instrumentation"""
+    
+    def __init__(self):
+        super().__init__()
+        self._provider_name = "Cohere"
+        self.telemetry = LucidicTelemetry()
+    
+    def handle_response(self, response, kwargs, session: Optional = None):
+        return response
+    
+    def override(self):
+        try:
+            from lucidicai.client import Client
+            client = Client()
+            if not self.telemetry.is_initialized():
+                self.telemetry.initialize(agent_id=client.agent_id)
+            self.telemetry.instrument_providers(["cohere"])
+            logger.info("[OTel Cohere Handler] Instrumentation enabled")
+        except Exception as e:
+            logger.error(f"Failed to enable Cohere instrumentation: {e}")
+            raise
+    
+    def undo_override(self):
+        logger.info("[OTel Cohere Handler] Instrumentation will be disabled on shutdown")
+
+
+class OTelGroqHandler(BaseProvider):
+    """Groq handler using OpenTelemetry instrumentation"""
+    
+    def __init__(self):
+        super().__init__()
+        self._provider_name = "Groq"
+        self.telemetry = LucidicTelemetry()
+    
+    def handle_response(self, response, kwargs, session: Optional = None):
+        return response
+    
+    def override(self):
+        try:
+            from lucidicai.client import Client
+            client = Client()
+            if not self.telemetry.is_initialized():
+                self.telemetry.initialize(agent_id=client.agent_id)
+            self.telemetry.instrument_providers(["groq"])
+            # Best-effort image interception for Groq (OpenAI-compatible)
+            try:
+                import groq  # noqa: F401
+                from .utils.universal_image_interceptor import UniversalImageInterceptor
+                # We cannot reliably patch class constructors here without instance; users calling Groq client
+                # will still have images captured via OpenLLMetry attributes; optional future improvement.
+                _ = UniversalImageInterceptor
+            except Exception as e:
+                logger.debug(f"[OTel Groq Handler] Image interception not applied: {e}")
+            logger.info("[OTel Groq Handler] Instrumentation enabled")
+        except Exception as e:
+            logger.error(f"Failed to enable Groq instrumentation: {e}")
+            raise
+    
+    def undo_override(self):
+        logger.info("[OTel Groq Handler] Instrumentation will be disabled on shutdown")

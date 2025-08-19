@@ -134,7 +134,7 @@ class LucidicSpanProcessor(SpanProcessor):
         
         # Check span name
         span_name_lower = span.name.lower()
-        llm_patterns = ['openai', 'anthropic', 'chat', 'completion', 'embedding', 'gemini', 'claude']
+        llm_patterns = ['openai', 'anthropic', 'chat', 'completion', 'embedding', 'gemini', 'claude', 'bedrock', 'vertex', 'cohere', 'groq']
         
         if any(pattern in span_name_lower for pattern in llm_patterns):
             return True

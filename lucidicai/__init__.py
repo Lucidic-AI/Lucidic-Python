@@ -37,7 +37,23 @@ from .context import (
     run_in_session,
 )
 
-ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai", "openai_agents", "litellm"]
+ProviderType = Literal[
+    "openai",
+    "anthropic",
+    "langchain",
+    "pydantic_ai",
+    "openai_agents",
+    "litellm",
+    "bedrock",
+    "aws_bedrock",
+    "amazon_bedrock",
+    "google",
+    "google_generativeai",
+    "vertexai",
+    "vertex_ai",
+    "cohere",
+    "groq",
+]
 
 # Configure logging
 logger = logging.getLogger("Lucidic")
@@ -92,6 +108,26 @@ def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
         elif provider == "litellm":
             client.set_provider(OTelLiteLLMHandler())
             setup_providers.add("litellm")
+        elif provider in ("bedrock", "aws_bedrock", "amazon_bedrock"):
+            from .telemetry.otel_handlers import OTelBedrockHandler
+            client.set_provider(OTelBedrockHandler())
+            setup_providers.add("bedrock")
+        elif provider in ("google", "google_generativeai"):
+            from .telemetry.otel_handlers import OTelGoogleGenerativeAIHandler
+            client.set_provider(OTelGoogleGenerativeAIHandler())
+            setup_providers.add("google")
+        elif provider in ("vertexai", "vertex_ai"):
+            from .telemetry.otel_handlers import OTelVertexAIHandler
+            client.set_provider(OTelVertexAIHandler())
+            setup_providers.add("vertexai")
+        elif provider == "cohere":
+            from .telemetry.otel_handlers import OTelCohereHandler
+            client.set_provider(OTelCohereHandler())
+            setup_providers.add("cohere")
+        elif provider == "groq":
+            from .telemetry.otel_handlers import OTelGroqHandler
+            client.set_provider(OTelGroqHandler())
+            setup_providers.add("groq")
 
 __all__ = [
     'Client',

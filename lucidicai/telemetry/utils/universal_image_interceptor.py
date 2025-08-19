@@ -274,3 +274,17 @@ def patch_google_client(client):
         if DEBUG:
             logger.info("[Universal Interceptor] Patched Google client for image interception")
     return client
+
+
+def patch_vertexai_client(client):
+    """Patch a Vertex AI client/model instance to intercept images (Google format)"""
+    interceptor = UniversalImageInterceptor.create_interceptor("google")
+    
+    # Vertex AI GenerativeModel has generate_content / generate_content_async
+    if hasattr(client, 'generate_content'):
+        original_generate = client.generate_content
+        client.generate_content = interceptor(original_generate)
+    if hasattr(client, 'generate_content_async'):
+        original_generate_async = getattr(client, 'generate_content_async')
+        client.generate_content_async = UniversalImageInterceptor.create_async_interceptor("google")(original_generate_async)
+    return client

@@ -196,6 +196,7 @@ PROVIDER_AVERAGES = {
     "together": {"input": 0.15, "output": 0.15},    # Together AI average
     "perplexity": {"input": 0.4, "output": 1.5},    # Perplexity average
     "grok": {"input": 2.4, "output": 12},           # Grok average
+    "groq": {"input": 0.3, "output": 0.6},          # Groq average (placeholder)
 }
 
 def get_provider_from_model(model: str) -> str:
@@ -224,6 +225,8 @@ def get_provider_from_model(model: str) -> str:
         return "perplexity"
     elif any(grok in model_lower for grok in ["grok", "xAI"]):
         return "grok"
+    elif "groq" in model_lower:
+        return "groq"
     else:
         return "unknown"
 
@@ -234,6 +237,8 @@ def normalize_model_name(model: str) -> str:
     model_lower = model.lower()
     # Remove provider prefixes (generalizable pattern: any_provider/)
     model_lower = re.sub(r'^[^/]+/', '', model_lower)
+    # Strip Google/Vertex prefixes
+    model_lower = model_lower.replace('publishers/google/models/', '').replace('models/', '')
     
     # Strip date suffixes (20240229, 20241022, etc.) but preserve model versions like o1-mini, o3-mini
     # Pattern: remove -YYYYMMDD or -YYYY-MM-DD at the end
