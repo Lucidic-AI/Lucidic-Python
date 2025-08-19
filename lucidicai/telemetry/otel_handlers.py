@@ -1,4 +1,7 @@
-"""OpenTelemetry-based handlers that maintain backward compatibility"""
+"""OpenTelemetry-based handlers that maintain backward compatibility
+
+Adds guards to avoid repeated monkey-patching under concurrent init.
+"""
 import logging
 from typing import Optional
 
@@ -7,6 +10,11 @@ from .otel_init import LucidicTelemetry
 
 logger = logging.getLogger("Lucidic")
 
+import threading
+
+_patch_lock = threading.Lock()
+_openai_patched = False
+_anthropic_patched = False
 
 class OTelOpenAIHandler(BaseProvider):
     """OpenAI handler using OpenTelemetry instrumentation"""
@@ -35,37 +43,27 @@ class OTelOpenAIHandler(BaseProvider):
             
             # Also patch OpenAI client to intercept images
             try:
-                import openai
-                from .utils.universal_image_interceptor import UniversalImageInterceptor, patch_openai_client
-                
-                # Create interceptor for OpenAI
-                interceptor = UniversalImageInterceptor.create_interceptor("openai")
-                
-                # Patch the module-level create method
-                if hasattr(openai, 'ChatCompletion'):
-                    # Old API
-                    original = openai.ChatCompletion.create
-                    openai.ChatCompletion.create = interceptor(original)
-                    
-                # Also patch any client instances that might be created
-                original_client_init = openai.OpenAI.__init__
-                def patched_init(self, *args, **kwargs):
-                    original_client_init(self, *args, **kwargs)
-                    # Patch this instance
-                    patch_openai_client(self)
-                
-                openai.OpenAI.__init__ = patched_init
-                
-                # Also patch AsyncOpenAI
-                if hasattr(openai, 'AsyncOpenAI'):
-                    original_async_init = openai.AsyncOpenAI.__init__
-                    def patched_async_init(self, *args, **kwargs):
-                        original_async_init(self, *args, **kwargs)
-                        # Patch this instance
-                        patch_openai_client(self)
-                    
-                    openai.AsyncOpenAI.__init__ = patched_async_init
-                
+                with _patch_lock:
+                    global _openai_patched
+                    if not _openai_patched:
+                        import openai
+                        from .utils.universal_image_interceptor import UniversalImageInterceptor, patch_openai_client
+                        interceptor = UniversalImageInterceptor.create_interceptor("openai")
+                        if hasattr(openai, 'ChatCompletion'):
+                            original = openai.ChatCompletion.create
+                            openai.ChatCompletion.create = interceptor(original)
+                        original_client_init = openai.OpenAI.__init__
+                        def patched_init(self, *args, **kwargs):
+                            original_client_init(self, *args, **kwargs)
+                            patch_openai_client(self)
+                        openai.OpenAI.__init__ = patched_init
+                        if hasattr(openai, 'AsyncOpenAI'):
+                            original_async_init = openai.AsyncOpenAI.__init__
+                            def patched_async_init(self, *args, **kwargs):
+                                original_async_init(self, *args, **kwargs)
+                                patch_openai_client(self)
+                            openai.AsyncOpenAI.__init__ = patched_async_init
+                        _openai_patched = True
             except Exception as e:
                 logger.warning(f"Could not patch OpenAI for image interception: {e}")
             
@@ -108,32 +106,25 @@ class OTelAnthropicHandler(BaseProvider):
             
             # Also patch Anthropic client to intercept images
             try:
-                import anthropic
-                from .utils.universal_image_interceptor import UniversalImageInterceptor, patch_anthropic_client
-                
-                # Create interceptors for Anthropic
-                interceptor = UniversalImageInterceptor.create_interceptor("anthropic")
-                async_interceptor = UniversalImageInterceptor.create_async_interceptor("anthropic")
-                
-                # Patch any client instances that might be created
-                original_client_init = anthropic.Anthropic.__init__
-                def patched_init(self, *args, **kwargs):
-                    original_client_init(self, *args, **kwargs)
-                    # Patch this instance
-                    patch_anthropic_client(self)
-                
-                anthropic.Anthropic.__init__ = patched_init
-                
-                # Also patch async client
-                if hasattr(anthropic, 'AsyncAnthropic'):
-                    original_async_init = anthropic.AsyncAnthropic.__init__
-                    def patched_async_init(self, *args, **kwargs):
-                        original_async_init(self, *args, **kwargs)
-                        # Patch this instance
-                        patch_anthropic_client(self)
-                    
-                    anthropic.AsyncAnthropic.__init__ = patched_async_init
-                
+                with _patch_lock:
+                    global _anthropic_patched
+                    if not _anthropic_patched:
+                        import anthropic
+                        from .utils.universal_image_interceptor import UniversalImageInterceptor, patch_anthropic_client
+                        interceptor = UniversalImageInterceptor.create_interceptor("anthropic")
+                        async_interceptor = UniversalImageInterceptor.create_async_interceptor("anthropic")
+                        original_client_init = anthropic.Anthropic.__init__
+                        def patched_init(self, *args, **kwargs):
+                            original_client_init(self, *args, **kwargs)
+                            patch_anthropic_client(self)
+                        anthropic.Anthropic.__init__ = patched_init
+                        if hasattr(anthropic, 'AsyncAnthropic'):
+                            original_async_init = anthropic.AsyncAnthropic.__init__
+                            def patched_async_init(self, *args, **kwargs):
+                                original_async_init(self, *args, **kwargs)
+                                patch_anthropic_client(self)
+                            anthropic.AsyncAnthropic.__init__ = patched_async_init
+                        _anthropic_patched = True
             except Exception as e:
                 logger.warning(f"Could not patch Anthropic for image interception: {e}")
             

@@ -14,6 +14,7 @@ from opentelemetry.instrumentation.langchain import LangchainInstrumentor
 from opentelemetry.semconv_ai import SpanAttributes
 
 from .lucidic_exporter import LucidicSpanExporter
+from .lucidic_span_processor import LucidicSpanProcessor
 from .base_provider import BaseProvider
 from lucidicai.client import Client
 
@@ -47,9 +48,17 @@ class OpenTelemetryProvider(BaseProvider):
         lucidic_exporter = LucidicSpanExporter()
         span_processor = BatchSpanProcessor(lucidic_exporter)
         self.tracer_provider.add_span_processor(span_processor)
+        # Also add session-stamping processor to ensure correct attribution
+        try:
+            self.tracer_provider.add_span_processor(LucidicSpanProcessor())
+        except Exception:
+            pass
         
-        # Set as global provider
-        trace.set_tracer_provider(self.tracer_provider)
+        # Set as global provider (ignore if already set)
+        try:
+            trace.set_tracer_provider(self.tracer_provider)
+        except Exception:
+            pass
         
         # Get tracer
         self.tracer = trace.get_tracer(__name__)

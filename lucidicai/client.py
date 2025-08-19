@@ -69,6 +69,10 @@ class Client:
 
     def set_provider(self, provider: BaseProvider) -> None:
         """Set the LLM provider to track"""
+        # Avoid duplicate provider registration of the same class
+        for existing in self.providers:
+            if type(existing) is type(provider):
+                return
         self.providers.append(provider)
         provider.override()
 
@@ -134,6 +138,16 @@ class Client:
         self.initialized = True
         return self.session.session_id
 
+    def create_event_for_session(self, session_id: str, **kwargs) -> str:
+        """Create an event for a specific session id without mutating global session.
+
+        This avoids cross-thread races by not switching the active session on
+        the singleton client. It constructs an ephemeral Session facade to send
+        requests under the provided session id.
+        """
+        temp_session = Session(agent_id=self.agent_id, session_id=session_id)
+        return temp_session.create_event(**kwargs)
+
     def continue_session(self, session_id: str):
         if session_id in self.custom_session_id_translations:
             session_id = self.custom_session_id_translations[session_id]
@@ -149,7 +163,8 @@ class Client:
             agent_id=self.agent_id,
             session_id=real_session_id
         )
-        logger.info(f"Session {data.get('session_name', '')} continuing...")
+        import logging as _logging
+        _logging.getLogger('Lucidic').info(f"Session {data.get('session_name', '')} continuing...")
         return self.session.session_id
 
     def init_mass_sim(self, **kwargs) -> str:

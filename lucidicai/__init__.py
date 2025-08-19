@@ -25,6 +25,17 @@ from .telemetry.otel_init import LucidicTelemetry
 
 # Import decorators
 from .decorators import step, event
+from .context import (
+    set_active_session,
+    bind_session,
+    bind_session_async,
+    clear_active_session,
+    current_session_id,
+    session,
+    session_async,
+    run_session,
+    run_in_session,
+)
 
 ProviderType = Literal["openai", "anthropic", "langchain", "pydantic_ai", "openai_agents", "litellm"]
 
@@ -105,6 +116,14 @@ __all__ = [
     'InvalidOperationError',
     'step',
     'event',
+    'set_active_session',
+    'bind_session',
+    'bind_session_async',
+    'clear_active_session',
+    'session',
+    'session_async',
+    'run_session',
+    'run_in_session',
 ]
 
 
@@ -189,6 +208,11 @@ def init(
     
     # Set the auto_end flag on the client
     client.auto_end = auto_end
+    # Bind this session id to the current execution context for async-safety
+    try:
+        set_active_session(real_session_id)
+    except Exception:
+        pass
     
     logger.info("Session initialized successfully")
     return real_session_id
@@ -232,6 +256,11 @@ def continue_session(
     client.auto_end = auto_end
     
     logger.info(f"Session {session_id} continuing...")
+    # Bind this session id to the current execution context for async-safety
+    try:
+        set_active_session(session_id)
+    except Exception:
+        pass
     return session_id  # For consistency
 
 
@@ -252,10 +281,20 @@ def update_session(
         is_successful: Whether the session was successful.
         is_successful_reason: Session success reason.
     """
+    # Prefer context-bound session over global active session
     client = Client()
-    if not client.session:
+    target_sid = None
+    try:
+        target_sid = current_session_id.get(None)
+    except Exception:
+        target_sid = None
+    if not target_sid and client.session:
+        target_sid = client.session.session_id
+    if not target_sid:
         return
-    client.session.update_session(**locals())
+    # Use ephemeral session facade to avoid mutating global state
+    session = client.session if (client.session and client.session.session_id == target_sid) else Session(agent_id=client.agent_id, session_id=target_sid)
+    session.update_session(**locals())
 
 
 def end_session(
@@ -274,17 +313,31 @@ def end_session(
         is_successful_reason: Session success reason.
     """
     client = Client()
-    if not client.session:
+    # Prefer context-bound session id
+    target_sid = None
+    try:
+        target_sid = current_session_id.get(None)
+    except Exception:
+        target_sid = None
+    if not target_sid and client.session:
+        target_sid = client.session.session_id
+    if not target_sid:
         return
-    
-    # Wait for any pending LiteLLM callbacks before ending session
-    for provider in client.providers:
-        if hasattr(provider, '_callback') and hasattr(provider._callback, 'wait_for_pending_callbacks'):
-            logger.info("Waiting for LiteLLM callbacks to complete before ending session...")
-            provider._callback.wait_for_pending_callbacks(timeout=5.0)
-    
-    client.session.update_session(is_finished=True, **locals())
-    client.clear()
+
+    # If ending the globally active session, keep existing cleanup behavior
+    if client.session and client.session.session_id == target_sid:
+        # Wait for any pending LiteLLM callbacks before ending session
+        for provider in client.providers:
+            if hasattr(provider, '_callback') and hasattr(provider._callback, 'wait_for_pending_callbacks'):
+                logger.info("Waiting for LiteLLM callbacks to complete before ending session...")
+                provider._callback.wait_for_pending_callbacks(timeout=5.0)
+        client.session.update_session(is_finished=True, **locals())
+        client.clear()
+        return
+
+    # Otherwise, end the specified session id without clearing global state
+    temp = Session(agent_id=client.agent_id, session_id=target_sid)
+    temp.update_session(is_finished=True, **locals())
 
 
 def reset_sdk() -> None:
