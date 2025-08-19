@@ -49,6 +49,21 @@ lai.end_step()
 lai.end_session(is_successful=True)
 ```
 
+### Quick Start (context manager)
+
+```python
+import lucidicai as lai
+from openai import OpenAI
+
+# All-in-one lifecycle: init → bind → run → auto-end at context exit
+with lai.session(session_name="My AI Assistant", providers=["openai"]):
+    client = OpenAI()
+    response = client.chat.completions.create(
+        model="gpt-5",
+        messages=[{"role": "user", "content": "Hello, how are you?"}]
+    )
+```
+
 ## Configuration
 
 ### Environment Variables
@@ -100,6 +115,109 @@ lai.update_session(
 lai.end_session(is_successful=True, session_eval=0.9)
 ```
 
+### Session Context (async-safe)
+
+Lucidic uses Python contextvars to bind a session to the current execution context (threads/async tasks). This guarantees spans from concurrent requests are attributed to the correct session.
+
+There are three recommended patterns:
+
+1) Full lifecycle (auto-end on exit)
+
+```python
+import lucidicai as lai
+from openai import OpenAI
+
+with lai.session(session_name="order-flow", providers=["openai"]):
+    OpenAI().chat.completions.create(
+        model="gpt-5",
+        messages=[{"role":"user","content":"Place order"}]
+    )
+# Session automatically ends at context exit.
+# Note: any auto_end argument is ignored inside session(...).
+```
+
+Async variant:
+
+```python
+import lucidicai as lai
+from openai import AsyncOpenAI
+import asyncio
+
+async def main():
+    async with lai.session_async(session_name="async-flow", providers=["openai"]):
+        await AsyncOpenAI().chat.completions.create(
+            model="gpt-5",
+            messages=[{"role":"user","content":"Hello"}]
+        )
+
+asyncio.run(main())
+```
+
+2) Bind-only (does NOT end the session)
+
+```python
+import lucidicai as lai
+from openai import OpenAI
+
+sid = lai.init(session_name="request-123", providers=["openai"], auto_end=False)
+with lai.bind_session(sid):
+    OpenAI().chat.completions.create(
+        model="gpt-5",
+        messages=[{"role":"user","content":"..."}]
+    )
+# Session remains open. End explicitly when ready:
+lai.end_session()
+```
+
+Async variant:
+
+```python
+sid = lai.init(session_name="request-async", providers=["openai"], auto_end=False)
+
+async def run():
+    async with lai.bind_session_async(sid):
+        await AsyncOpenAI().chat.completions.create(
+            model="gpt-5",
+            messages=[{"role":"user","content":"..."}]
+        )
+
+asyncio.run(run())
+# End later
+lai.end_session()
+```
+
+3) Fully manual
+
+```python
+sid = lai.init(session_name="manual", providers=["openai"], auto_end=True)
+lai.set_active_session(sid)
+# ... your workflow ...
+lai.clear_active_session()
+# End now, or rely on auto_end at process exit
+lai.end_session()
+```
+
+Function wrappers are also provided:
+
+```python
+def do_work():
+    from openai import OpenAI
+    return OpenAI().chat.completions.create(model="gpt-5", messages=[{"role":"user","content":"wrapped"}])
+
+# Full lifecycle in one call
+result = lai.run_session(do_work, init_params={"session_name":"wrapped","providers":["openai"]})
+
+# Bind-only wrapper
+sid = lai.init(session_name="bound-only", providers=["openai"], auto_end=False)
+result = lai.run_in_session(sid, do_work)
+lai.end_session()
+```
+
+Notes:
+- The context managers are safe for threads and asyncio tasks.
+- `session(...)` always ends the session at context exit (ignores any provided auto_end).
+- Existing single-threaded usage (plain `init` + provider calls) remains supported.
+
 ### Automatic Session Management (auto_end)
 
 By default, Lucidic automatically ends your session when your process exits, ensuring no data is lost. This feature is enabled by default but can be controlled:
@@ -117,6 +235,8 @@ The auto_end feature:
 - Works with normal exits, crashes, and interrupts (Ctrl+C)
 - Prevents data loss from forgotten `end_session()` calls
 - Can be disabled for cases where you need explicit control
+
+When using `session(...)` or `session_async(...)`, the session will end at context exit regardless of the `auto_end` setting. A debug warning is logged if `auto_end` is provided in that context.
 
 ### Steps
 Steps break down complex workflows into discrete, trackable units.
