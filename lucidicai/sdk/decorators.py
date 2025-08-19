@@ -7,10 +7,9 @@ import logging
 from typing import Any, Callable, Optional, TypeVar, Union
 from collections.abc import Iterable
 
-from .client import Client
-from .errors import LucidicNotInitializedError
-
-logger = logging.getLogger("Lucidic")
+from lucidicai.sdk.state import SDKState
+from lucidicai.util.errors import LucidicNotInitializedError
+from lucidicai.util.logger import logger
 
 F = TypeVar('F', bound=Callable[..., Any])
 
@@ -60,15 +59,9 @@ def step(
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
             # Check if SDK is initialized
-            try:
-                client = Client()
-                if not client.session:
-                    # No active session, run function normally
-                    logger.warning("No active session, running function normally")
-                    return func(*args, **kwargs)
-            except LucidicNotInitializedError:
-                # SDK not initialized, run function normally
-                logger.warning("Lucidic not initialized, running function normally")
+            state = SDKState()
+            if not state.is_initialized():
+                logger.debug("SDK not initialized, running function normally")
                 return func(*args, **kwargs)
             
             # Create the step
@@ -84,7 +77,7 @@ def step(
             step_params = {k: v for k, v in step_params.items() if v is not None}
             
             # Import here to avoid circular imports
-            from . import create_step, end_step
+            from lucidicai.sdk.step import create_step, end_step
             step_id = create_step(**step_params)
             tok = _current_step.set(step_id)
             
@@ -112,15 +105,9 @@ def step(
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             # Check if SDK is initialized
-            try:
-                client = Client()
-                if not client.session:
-                    # No active session, run function normally
-                    logger.warning("No active session, running function normally")
-                    return await func(*args, **kwargs)
-            except LucidicNotInitializedError:
-                # SDK not initialized, run function normally
-                logger.warning("Lucidic not initialized, running function normally")
+            state = SDKState()
+            if not state.is_initialized():
+                logger.debug("SDK not initialized, running function normally")
                 return await func(*args, **kwargs)
             
             # Create the step
@@ -136,7 +123,7 @@ def step(
             step_params = {k: v for k, v in step_params.items() if v is not None}
             
             # Import here to avoid circular imports
-            from . import create_step, end_step
+            from lucidicai.sdk.step import create_step, end_step
             
             step_id = create_step(**step_params)
             tok = _current_step.set(step_id)
@@ -204,19 +191,13 @@ def event(
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
             # Check if SDK is initialized
-            try:
-                client = Client()
-                if not client.session:
-                    # No active session, run function normally
-                    logger.warning("No active session, running function normally")
-                    return func(*args, **kwargs)
-            except (LucidicNotInitializedError, AttributeError):
-                # SDK not initialized or no session, run function normally
-                logger.warning("Lucidic not initialized, running function normally")
+            state = SDKState()
+            if not state.is_initialized():
+                logger.debug("SDK not initialized, running function normally")
                 return func(*args, **kwargs)
             
             # Import here to avoid circular imports
-            from . import create_event, end_event
+            from lucidicai.sdk.event import create_event, end_event
             
             # Build event description from inputs if not provided
             event_desc = description
@@ -295,19 +276,13 @@ def event(
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             # Check if SDK is initialized
-            try:
-                client = Client()
-                if not client.session:
-                    # No active session, run function normally
-                    logger.warning("No active session, running function normally")
-                    return await func(*args, **kwargs)
-            except (LucidicNotInitializedError, AttributeError):
-                # SDK not initialized or no session, run function normally
-                logger.warning("Lucidic not initialized, running function normally")
+            state = SDKState()
+            if not state.is_initialized():
+                logger.debug("SDK not initialized, running function normally")
                 return await func(*args, **kwargs)
             
             # Import here to avoid circular imports
-            from . import create_event, end_event
+            from lucidicai.sdk.event import create_event, end_event
             
             # Build event description from inputs if not provided
             event_desc = description
