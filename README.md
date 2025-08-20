@@ -5,7 +5,7 @@ The official Python SDK for [Lucidic AI](https://lucidic.ai), providing comprehe
 ## Features
 
 - **Session & Step Tracking** - Track complex AI agent workflows with hierarchical session management
-- **Multi-Provider Support** - Automatic instrumentation for OpenAI, Anthropic, LangChain, and more
+- **Multi-Provider Support** - Automatic instrumentation for OpenAI, Anthropic, LangChain, Google Generative AI (Gemini), Vertex AI, AWS Bedrock, Cohere, Groq, and more
 - **Real-time Analytics** - Monitor costs, performance, and behavior of your AI applications
 - **Data Privacy** - Built-in masking functions to protect sensitive information
 - **Screenshot Support** - Capture and analyze visual context in your AI workflows
@@ -82,7 +82,7 @@ lai.init(
     session_name="My Session",              # Required: Name for this session
     api_key="...",                 # Optional: Override env var
     agent_id="...",                        # Optional: Override env var
-    providers=["openai", "anthropic"],     # Optional: LLM providers to track
+    providers=["openai", "anthropic", "google", "vertexai", "bedrock", "cohere", "groq"],     # Optional: LLM providers to track
     task="Process customer request",       # Optional: High-level task description
     production_monitoring=False,           # Optional: Production mode flag
     auto_end=True,                         # Optional: Auto-end session on exit (default: True)
@@ -317,6 +317,65 @@ lai.init(session_name="LangChain Example", providers=["langchain"])
 # LangChain calls are automatically tracked
 llm = ChatOpenAI(model="gpt-4")
 response = llm.invoke([HumanMessage(content="Hello!")])
+```
+
+### Google Generative AI (Gemini)
+```python
+import google.generativeai as genai
+
+lai.init(session_name="Gemini Example", providers=["google"])  # or "google_generativeai"
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
+model = genai.GenerativeModel("gemini-1.5-flash")
+resp = model.generate_content("Write a haiku about clouds")
+```
+
+### Vertex AI
+```python
+from google.cloud import aiplatform
+from vertexai.generative_models import GenerativeModel
+
+lai.init(session_name="Vertex Example", providers=["vertexai"])  # or "vertex_ai"
+aiplatform.init(project=os.getenv("GCP_PROJECT"), location=os.getenv("GCP_REGION", "us-central1"))
+
+model = GenerativeModel("gemini-1.5-flash")
+resp = model.generate_content("Say hello")
+```
+
+### AWS Bedrock
+```python
+import boto3
+
+lai.init(session_name="Bedrock Example", providers=["bedrock"])  # or "aws_bedrock", "amazon_bedrock"
+client = boto3.client("bedrock-runtime", region_name=os.getenv("AWS_REGION", "us-east-1"))
+
+resp = client.invoke_model(
+    modelId=os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0"),
+    body=b'{"inputText": "Hello from Bedrock"}',
+    contentType="application/json",
+    accept="application/json",
+)
+```
+
+### Cohere
+```python
+import cohere
+
+lai.init(session_name="Cohere Example", providers=["cohere"])
+co = cohere.ClientV2(api_key=os.getenv("COHERE_API_KEY"))
+resp = co.chat(model="command-r", messages=[{"role":"user","content":"Hello"}])
+```
+
+### Groq
+```python
+from groq import Groq
+
+lai.init(session_name="Groq Example", providers=["groq"])
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+resp = client.chat.completions.create(
+    model="llama-3.1-8b-instant",
+    messages=[{"role":"user","content":"Hello from Groq"}],
+)
 ```
 
 ## Advanced Features
