@@ -9,14 +9,7 @@ from typing import List, Optional
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.instrumentation.openai import OpenAIInstrumentor
-from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
-from opentelemetry.instrumentation.langchain import LangchainInstrumentor
-from opentelemetry.instrumentation.google_generativeai import GoogleGenerativeAiInstrumentor
-from opentelemetry.instrumentation.vertexai import VertexAIInstrumentor
-from opentelemetry.instrumentation.cohere import CohereInstrumentor
-from opentelemetry.instrumentation.bedrock import BedrockInstrumentor
-from opentelemetry.instrumentation.groq import GroqInstrumentor
+# Instrumentors are imported lazily inside methods to avoid import errors
 
 from .lucidic_span_processor import LucidicSpanProcessor
 from .otel_provider import OpenTelemetryProvider
@@ -116,6 +109,7 @@ class LucidicTelemetry:
     def _instrument_openai(self) -> None:
         """Instrument OpenAI"""
         try:
+            from opentelemetry.instrumentation.openai import OpenAIInstrumentor
             # Get client for masking function
             client = Client()
             
@@ -151,6 +145,7 @@ class LucidicTelemetry:
     def _instrument_anthropic(self) -> None:
         """Instrument Anthropic"""
         try:
+            from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
             instrumentor = AnthropicInstrumentor()
             
             # Get client for context
@@ -179,6 +174,7 @@ class LucidicTelemetry:
     def _instrument_langchain(self) -> None:
         """Instrument LangChain"""
         try:
+            from opentelemetry.instrumentation.langchain import LangchainInstrumentor
             instrumentor = LangchainInstrumentor()
             instrumentor.instrument(tracer_provider=self.tracer_provider)
             
@@ -192,6 +188,7 @@ class LucidicTelemetry:
     def _instrument_google_generativeai(self) -> None:
         """Instrument Google Generative AI"""
         try:
+            from opentelemetry.instrumentation.google_generativeai import GoogleGenerativeAiInstrumentor
             instrumentor = GoogleGenerativeAiInstrumentor(exception_logger=lambda e: logger.error(f"Google Generative AI error: {e}"))
             instrumentor.instrument(tracer_provider=self.tracer_provider)
             self.instrumentors["google"] = instrumentor
@@ -203,6 +200,7 @@ class LucidicTelemetry:
     def _instrument_vertexai(self) -> None:
         """Instrument Vertex AI"""
         try:
+            from opentelemetry.instrumentation.vertexai import VertexAIInstrumentor
             instrumentor = VertexAIInstrumentor(exception_logger=lambda e: logger.error(f"Vertex AI error: {e}"))
             instrumentor.instrument(tracer_provider=self.tracer_provider)
             self.instrumentors["vertexai"] = instrumentor
@@ -214,6 +212,7 @@ class LucidicTelemetry:
     def _instrument_cohere(self) -> None:
         """Instrument Cohere"""
         try:
+            from opentelemetry.instrumentation.cohere import CohereInstrumentor
             instrumentor = CohereInstrumentor(exception_logger=lambda e: logger.error(f"Cohere error: {e}"), use_legacy_attributes=True)
             instrumentor.instrument(tracer_provider=self.tracer_provider)
             self.instrumentors["cohere"] = instrumentor
@@ -225,6 +224,7 @@ class LucidicTelemetry:
     def _instrument_bedrock(self) -> None:
         """Instrument AWS Bedrock"""
         try:
+            from opentelemetry.instrumentation.bedrock import BedrockInstrumentor
             instrumentor = BedrockInstrumentor(enrich_token_usage=True, exception_logger=lambda e: logger.error(f"Bedrock error: {e}"))
             instrumentor.instrument(tracer_provider=self.tracer_provider)
             self.instrumentors["bedrock"] = instrumentor
@@ -243,6 +243,7 @@ class LucidicTelemetry:
                 if client.session and client.session.active_step:
                     attrs["lucidic.step_id"] = client.session.active_step.step_id
                 return attrs
+            from opentelemetry.instrumentation.groq import GroqInstrumentor
             instrumentor = GroqInstrumentor(exception_logger=lambda e: logger.error(f"Groq error: {e}"), use_legacy_attributes=True, get_common_metrics_attributes=get_custom_attributes)
             instrumentor.instrument(tracer_provider=self.tracer_provider)
             self.instrumentors["groq"] = instrumentor
