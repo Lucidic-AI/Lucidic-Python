@@ -397,10 +397,9 @@ class OTelGoogleGenerativeAIHandler(BaseProvider):
             self.telemetry.instrument_providers(["google"])
             # Best-effort image interception for Google clients where applicable
             try:
-                from .utils.universal_image_interceptor import patch_google_client
-                # We cannot access user model instances here; interception occurs when clients are created
-                # via UniversalImageInterceptor wrapper calls.
-                _ = patch_google_client  # avoid linter unused import
+                from .utils.universal_image_interceptor import patch_google_client, patch_google_genai
+                _ = patch_google_client
+                patch_google_genai()
             except Exception as e:
                 logger.debug(f"[OTel Google Handler] Image interception not applied: {e}")
             logger.info("[OTel Google Handler] Instrumentation enabled")

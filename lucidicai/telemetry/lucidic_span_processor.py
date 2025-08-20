@@ -16,7 +16,7 @@ from opentelemetry.semconv_ai import SpanAttributes
 from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
 from lucidicai.context import current_session_id
-from .utils.image_storage import get_stored_images, clear_stored_images
+from .utils.image_storage import get_stored_images, clear_stored_images, get_image_by_placeholder
 from .utils.text_storage import get_stored_text, clear_stored_texts
 
 logger = logging.getLogger("Lucidic")
@@ -420,53 +420,48 @@ class LucidicSpanProcessor(SpanProcessor):
         while True:
             prefix = f"gen_ai.prompt.{i}"
             role = attributes.get(f"{prefix}.role")
-            
-            if not role:
-                break
-                
-            message = {"role": role}
-            
-            # Get content
             content = attributes.get(f"{prefix}.content")
+
+            # Check if any attributes exist for this index
+            attr_has_any = False
+            for key in attributes.keys():
+                if isinstance(key, str) and key.startswith(f"{prefix}."):
+                    attr_has_any = True
+                    break
+
+            stored_text = get_stored_text(i)
+            stored_images = get_stored_images()
+
+            # Break if no indexed attrs and not the first synthetic message case
+            if not attr_has_any and not (i == 0 and (stored_text or stored_images)):
+                break
+
+            message = {"role": role or "user"}
+
             if content:
                 # Try to parse JSON content (for multimodal)
                 try:
                     import json
                     parsed_content = json.loads(content)
                     message["content"] = parsed_content
-                except:
+                except Exception:
                     message["content"] = content
             else:
-                # Content might be missing for multimodal messages due to size limits
-                # Check if we have stored text and/or images in thread-local storage
-                stored_text = get_stored_text(i)
-                stored_images = get_stored_images()
-                
-                if stored_text or stored_images:
+                # Content missing: synthesize from stored text/images
+                synthetic_content = []
+                if stored_text and i == 0:
+                    synthetic_content.append({"type": "text", "text": stored_text})
+                if stored_images and i == 0:
+                    for img in stored_images:
+                        synthetic_content.append({"type": "image_url", "image_url": {"url": img}})
+                if synthetic_content:
                     if DEBUG:
-                        logger.info(f"[SpanProcessor] No content for message {i}, but found stored text/images")
-                    
-                    # Create synthetic content with both text and images
-                    synthetic_content = []
-                    
-                    # Add text if available
-                    if stored_text:
-                        synthetic_content.append({
-                            "type": "text",
-                            "text": stored_text
-                        })
-                    
-                    # Add images if available
-                    if stored_images and i == 0:  # Assume first message might have images
-                        for idx, img in enumerate(stored_images):
-                            synthetic_content.append({
-                                "type": "image_url",
-                                "image_url": {"url": img}
-                            })
-                    
-                    if synthetic_content:
-                        message["content"] = synthetic_content
-            
+                        logger.info(f"[SpanProcessor] Using stored text/images for message {i}")
+                    message["content"] = synthetic_content
+                elif not attr_has_any:
+                    # No real attributes and nothing stored to synthesize -> stop
+                    break
+
             messages.append(message)
             i += 1
             
