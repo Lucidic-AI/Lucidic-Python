@@ -2,6 +2,9 @@ import atexit
 import logging
 import os
 import signal
+import sys
+import traceback
+import threading
 from typing import List, Literal, Optional
 
 from .client import Client
@@ -64,6 +67,137 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
+
+# Crash/exit capture configuration
+MAX_ERROR_DESCRIPTION_LENGTH = 16384
+_crash_handlers_installed = False
+_original_sys_excepthook = None
+_original_threading_excepthook = None
+_shutdown_lock = threading.Lock()
+_is_shutting_down = False
+
+
+def _mask_and_truncate(text: Optional[str]) -> Optional[str]:
+    """Apply masking and truncate to a safe length. Best effort; never raises."""
+    if text is None:
+        return text
+    try:
+        masked = Client().mask(text)
+    except Exception:
+        masked = text
+    if masked is None:
+        return masked
+    return masked[:MAX_ERROR_DESCRIPTION_LENGTH]
+
+
+def _post_fatal_event(exit_code: int, description: str, extra: Optional[dict] = None) -> None:
+    """Best-effort creation of a final Lucidic event on fatal paths.
+
+    - Idempotent using a process-wide shutdown flag to avoid duplicates when
+      multiple hooks fire (signal + excepthook).
+    - Swallows all exceptions to avoid interfering with shutdown.
+    """
+    global _is_shutting_down
+    with _shutdown_lock:
+        if _is_shutting_down:
+            return
+        _is_shutting_down = True
+    try:
+        client = Client()
+        session = getattr(client, 'session', None)
+        if not session or getattr(session, 'is_finished', False):
+            return
+        arguments = {"exit_code": exit_code}
+        if extra:
+            try:
+                arguments.update(extra)
+            except Exception:
+                pass
+
+        event_id = session.create_event(
+            description=_mask_and_truncate(description),
+            result=f"process exited with code {exit_code}",
+            function_name="__process_exit__",
+            arguments=arguments,
+        )
+        session.update_event(event_id=event_id, is_finished=True)
+    except Exception:
+        # Never raise during shutdown
+        pass
+
+
+def _install_crash_handlers() -> None:
+    """Install global uncaught exception handlers (idempotent)."""
+    global _crash_handlers_installed, _original_sys_excepthook, _original_threading_excepthook
+    if _crash_handlers_installed:
+        return
+
+    _original_sys_excepthook = sys.excepthook
+
+    def _sys_hook(exc_type, exc, tb):
+        try:
+            trace_str = ''.join(traceback.format_exception(exc_type, exc, tb))
+        except Exception:
+            trace_str = f"Uncaught exception: {getattr(exc_type, '__name__', str(exc_type))}: {exc}"
+
+        # Emit final event and end the session as unsuccessful
+        _post_fatal_event(1, trace_str, {
+            "exception_type": getattr(exc_type, "__name__", str(exc_type)),
+            "exception_message": str(exc),
+            "thread_name": threading.current_thread().name,
+        })
+        try:
+            # Prevent auto_end double work
+            client = Client()
+            try:
+                client.auto_end = False
+            except Exception:
+                pass
+            # End session explicitly as unsuccessful
+            end_session()
+        except Exception:
+            pass
+        # Best-effort force flush and shutdown telemetry
+        try:
+            telemetry = LucidicTelemetry()
+            if telemetry.is_initialized():
+                try:
+                    telemetry.force_flush()
+                except Exception:
+                    pass
+                try:
+                    telemetry.uninstrument_all()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Chain to original to preserve default printing/behavior
+        try:
+            _original_sys_excepthook(exc_type, exc, tb)
+        except Exception:
+            # Avoid recursion/errors in fatal path
+            pass
+
+    sys.excepthook = _sys_hook
+
+    # For Python 3.8+, only treat main-thread exceptions as fatal (process-exiting)
+    if hasattr(threading, 'excepthook'):
+        _original_threading_excepthook = threading.excepthook
+
+        def _thread_hook(args):
+            try:
+                if args.thread is threading.main_thread():
+                    _sys_hook(args.exc_type, args.exc_value, args.exc_traceback)
+            except Exception:
+                pass
+            try:
+                _original_threading_excepthook(args)
+            except Exception:
+                pass
+
+        threading.excepthook = _thread_hook
+
+    _crash_handlers_installed = True
 
 def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
     """Set up providers for the client, avoiding duplication
@@ -177,6 +311,7 @@ def init(
     tags: Optional[list] = None,
     masking_function = None,
     auto_end: Optional[bool] = True,
+    capture_uncaught: Optional[bool] = True,
 ) -> str:
     """
     Initialize the Lucidic client.
@@ -247,6 +382,12 @@ def init(
     # Bind this session id to the current execution context for async-safety
     try:
         set_active_session(real_session_id)
+    except Exception:
+        pass
+    # Install crash handlers unless explicitly disabled
+    try:
+        if capture_uncaught:
+            _install_crash_handlers()
     except Exception:
         pass
     
@@ -419,6 +560,20 @@ def _auto_end_session():
 
 def _signal_handler(signum, frame):
     """Handle interruption signals"""
+    # Best-effort final event for signal exits
+    try:
+        try:
+            name = signal.Signals(signum).name
+        except Exception:
+            name = str(signum)
+        try:
+            stack_str = ''.join(traceback.format_stack(frame)) if frame else ''
+        except Exception:
+            stack_str = ''
+        desc = _mask_and_truncate(f"Received signal {name}\n{stack_str}")
+        _post_fatal_event(128 + signum, desc, {"signal": name, "signum": signum})
+    except Exception:
+        pass
     _auto_end_session()
     _cleanup_telemetry()
     # Re-raise the signal for default handling

@@ -578,6 +578,57 @@ except LucidicNotInitializedError:
     print("SDK not initialized - call lai.init() first")
 ```
 
+## Crash events on uncaught exceptions
+
+When the SDK is initialized, Lucidic will capture uncaught exceptions and create a final crash event before the process exits. This is enabled by default and requires no additional configuration.
+
+### Behavior
+
+- On an uncaught exception (main thread):
+  - A Lucidic event is created and linked to the active session.
+  - The event description contains the full Python traceback. If a `masking_function` was provided to `lai.init()`, it is applied; long descriptions are truncated to ~16K characters.
+  - The event result is set to: "process exited with code 1".
+  - The session is ended as unsuccessful with reason `uncaughtException` (independent of `auto_end`).
+  - The telemetry provider is best-effort flushed and shut down.
+  - Python’s default exit behavior is preserved (exit code 1 and default exception printing).
+
+- On signals (`SIGINT`, `SIGTERM`):
+  - A final event is created with a description that includes the signal name and a best-effort stack snapshot.
+  - The event result is set to: `"process exited with code <128+signum>"` (e.g., 130 for SIGINT, 143 for SIGTERM).
+  - Existing auto-end and telemetry cleanup run, and default signal semantics are preserved.
+
+### Configuration
+
+- Enabled by default after `lai.init(...)`. To opt out:
+
+```python
+import lucidicai as lai
+
+lai.init(
+    session_name="my-session",
+    capture_uncaught=False,  # disables crash event capture
+)
+```
+
+This behavior is independent of `auto_end`; even when `auto_end` is `False`, the SDK will end the session as unsuccessful in this fatal path.
+
+### Caveats and lifecycle notes
+
+- Multiple handlers and ordering:
+  - If other libraries register their own handlers, ordering can affect which path runs first. Lucidic guards against duplication, but if another handler exits the process earlier, the crash event may not complete.
+
+- Main-thread semantics:
+  - Only uncaught exceptions on the main thread are treated as process-ending. Exceptions in worker threads do not exit the process by default and are not recorded as crash events by this mechanism.
+
+- Best-effort transport:
+  - Network issues or abrupt termination (e.g., forced container kill, `os._exit`) can prevent event delivery despite best efforts.
+
+- Exit semantics:
+  - We do not call `sys.exit(1)` from the handler; Python already exits with code 1 for uncaught exceptions, and default printing is preserved by chaining to the original `sys.excepthook`.
+
+- Not intercepted:
+  - `SystemExit` raised explicitly (e.g., `sys.exit(...)`) and `os._exit(...)` calls are not treated as uncaught exceptions and will not produce a crash event.
+
 ## Best Practices
 
 1. **Initialize Once**: Call `lai.init()` at the start of your application or workflow

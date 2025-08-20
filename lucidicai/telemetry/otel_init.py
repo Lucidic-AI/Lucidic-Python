@@ -287,3 +287,26 @@ class LucidicTelemetry:
     def is_initialized(self) -> bool:
         """Check if telemetry is initialized"""
         return self.tracer_provider is not None
+
+    def force_flush(self) -> None:
+        """Best-effort force flush of telemetry before shutdown.
+
+        Uses whichever force_flush hooks are available on the provider or span processor.
+        Swallows all exceptions to avoid interfering with process shutdown paths.
+        """
+        try:
+            provider = getattr(self, 'tracer_provider', None)
+            if provider and hasattr(provider, 'force_flush'):
+                try:
+                    provider.force_flush()
+                except Exception:
+                    pass
+            processor = getattr(self, 'span_processor', None)
+            if processor and hasattr(processor, 'force_flush'):
+                try:
+                    processor.force_flush()
+                except Exception:
+                    pass
+        except Exception:
+            # Never raise from force_flush
+            pass
