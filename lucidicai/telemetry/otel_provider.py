@@ -8,9 +8,7 @@ from opentelemetry.trace import Tracer, Span
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.instrumentation.openai import OpenAIInstrumentor
-from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
-from opentelemetry.instrumentation.langchain import LangchainInstrumentor
+# Instrumentors are imported lazily inside methods to avoid import errors
 from opentelemetry.semconv_ai import SpanAttributes
 
 from .lucidic_exporter import LucidicSpanExporter
@@ -102,6 +100,7 @@ class OpenTelemetryProvider(BaseProvider):
         """Instrument OpenAI with OpenLLMetry"""
         if "openai" not in self.instrumentors:
             try:
+                from opentelemetry.instrumentation.openai import OpenAIInstrumentor
                 instrumentor = OpenAIInstrumentor()
                 instrumentor.instrument(
                     tracer_provider=self.tracer_provider,
@@ -117,6 +116,7 @@ class OpenTelemetryProvider(BaseProvider):
         """Instrument Anthropic with OpenLLMetry"""
         if "anthropic" not in self.instrumentors:
             try:
+                from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
                 instrumentor = AnthropicInstrumentor()
                 instrumentor.instrument(
                     tracer_provider=self.tracer_provider,
@@ -131,6 +131,7 @@ class OpenTelemetryProvider(BaseProvider):
         """Instrument LangChain with OpenLLMetry"""
         if "langchain" not in self.instrumentors:
             try:
+                from opentelemetry.instrumentation.langchain import LangchainInstrumentor
                 instrumentor = LangchainInstrumentor()
                 instrumentor.instrument(tracer_provider=self.tracer_provider)
                 self.instrumentors["langchain"] = instrumentor

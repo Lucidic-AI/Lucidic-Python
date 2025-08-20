@@ -9,9 +9,7 @@ from typing import List, Optional
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.instrumentation.openai import OpenAIInstrumentor
-from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
-from opentelemetry.instrumentation.langchain import LangchainInstrumentor
+# Instrumentors are imported lazily inside methods to avoid import errors
 
 from .lucidic_span_processor import LucidicSpanProcessor
 from .otel_provider import OpenTelemetryProvider
@@ -74,25 +72,44 @@ class LucidicTelemetry:
         """Instrument specified providers"""
         with _init_lock:
             for provider in providers:
+                # Map synonyms to canonical names
+                canonical = provider
+                if provider in ("google_generativeai",):
+                    canonical = "google"
+                elif provider in ("vertex_ai",):
+                    canonical = "vertexai"
+                elif provider in ("aws_bedrock", "amazon_bedrock"):
+                    canonical = "bedrock"
                 try:
-                    if provider == "openai" and provider not in self.instrumentors:
+                    if canonical == "openai" and canonical not in self.instrumentors:
                         self._instrument_openai()
-                    elif provider == "anthropic" and provider not in self.instrumentors:
+                    elif canonical == "anthropic" and canonical not in self.instrumentors:
                         self._instrument_anthropic()
-                    elif provider == "langchain" and provider not in self.instrumentors:
+                    elif canonical == "langchain" and canonical not in self.instrumentors:
                         self._instrument_langchain()
-                    elif provider == "pydantic_ai":
+                    elif canonical == "google" and canonical not in self.instrumentors:
+                        self._instrument_google_generativeai()
+                    elif canonical == "vertexai" and canonical not in self.instrumentors:
+                        self._instrument_vertexai()
+                    elif canonical == "bedrock" and canonical not in self.instrumentors:
+                        self._instrument_bedrock()
+                    elif canonical == "cohere" and canonical not in self.instrumentors:
+                        self._instrument_cohere()
+                    elif canonical == "groq" and canonical not in self.instrumentors:
+                        self._instrument_groq()
+                    elif canonical == "pydantic_ai":
                         logger.info(f"[LucidicTelemetry] Pydantic AI will use manual instrumentation")
-                    elif provider == "openai_agents":
+                    elif canonical == "openai_agents":
                         self._instrument_openai_agents()
-                    elif provider == "litellm":
+                    elif canonical == "litellm":
                         logger.info(f"[LucidicTelemetry] LiteLLM will use callback-based instrumentation")
                 except Exception as e:
-                    logger.error(f"Failed to instrument {provider}: {e}")
+                    logger.error(f"Failed to instrument {canonical}: {e}")
     
     def _instrument_openai(self) -> None:
         """Instrument OpenAI"""
         try:
+            from opentelemetry.instrumentation.openai import OpenAIInstrumentor
             # Get client for masking function
             client = Client()
             
@@ -128,6 +145,7 @@ class LucidicTelemetry:
     def _instrument_anthropic(self) -> None:
         """Instrument Anthropic"""
         try:
+            from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
             instrumentor = AnthropicInstrumentor()
             
             # Get client for context
@@ -156,6 +174,7 @@ class LucidicTelemetry:
     def _instrument_langchain(self) -> None:
         """Instrument LangChain"""
         try:
+            from opentelemetry.instrumentation.langchain import LangchainInstrumentor
             instrumentor = LangchainInstrumentor()
             instrumentor.instrument(tracer_provider=self.tracer_provider)
             
@@ -164,6 +183,73 @@ class LucidicTelemetry:
             
         except Exception as e:
             logger.error(f"Failed to instrument LangChain: {e}")
+            raise
+
+    def _instrument_google_generativeai(self) -> None:
+        """Instrument Google Generative AI"""
+        try:
+            from opentelemetry.instrumentation.google_generativeai import GoogleGenerativeAiInstrumentor
+            instrumentor = GoogleGenerativeAiInstrumentor(exception_logger=lambda e: logger.error(f"Google Generative AI error: {e}"))
+            instrumentor.instrument(tracer_provider=self.tracer_provider)
+            self.instrumentors["google"] = instrumentor
+            logger.info("[LucidicTelemetry] Instrumented Google Generative AI")
+        except Exception as e:
+            logger.error(f"Failed to instrument Google Generative AI: {e}")
+            raise
+
+    def _instrument_vertexai(self) -> None:
+        """Instrument Vertex AI"""
+        try:
+            from opentelemetry.instrumentation.vertexai import VertexAIInstrumentor
+            instrumentor = VertexAIInstrumentor(exception_logger=lambda e: logger.error(f"Vertex AI error: {e}"))
+            instrumentor.instrument(tracer_provider=self.tracer_provider)
+            self.instrumentors["vertexai"] = instrumentor
+            logger.info("[LucidicTelemetry] Instrumented Vertex AI")
+        except Exception as e:
+            logger.error(f"Failed to instrument Vertex AI: {e}")
+            raise
+
+    def _instrument_cohere(self) -> None:
+        """Instrument Cohere"""
+        try:
+            from opentelemetry.instrumentation.cohere import CohereInstrumentor
+            instrumentor = CohereInstrumentor(exception_logger=lambda e: logger.error(f"Cohere error: {e}"), use_legacy_attributes=True)
+            instrumentor.instrument(tracer_provider=self.tracer_provider)
+            self.instrumentors["cohere"] = instrumentor
+            logger.info("[LucidicTelemetry] Instrumented Cohere")
+        except Exception as e:
+            logger.error(f"Failed to instrument Cohere: {e}")
+            raise
+
+    def _instrument_bedrock(self) -> None:
+        """Instrument AWS Bedrock"""
+        try:
+            from opentelemetry.instrumentation.bedrock import BedrockInstrumentor
+            instrumentor = BedrockInstrumentor(enrich_token_usage=True, exception_logger=lambda e: logger.error(f"Bedrock error: {e}"))
+            instrumentor.instrument(tracer_provider=self.tracer_provider)
+            self.instrumentors["bedrock"] = instrumentor
+            logger.info("[LucidicTelemetry] Instrumented Bedrock")
+        except Exception as e:
+            logger.error(f"Failed to instrument Bedrock: {e}")
+            raise
+
+    def _instrument_groq(self) -> None:
+        """Instrument Groq"""
+        try:
+            from lucidicai.client import Client
+            client = Client()
+            def get_custom_attributes():
+                attrs = {}
+                if client.session and client.session.active_step:
+                    attrs["lucidic.step_id"] = client.session.active_step.step_id
+                return attrs
+            from opentelemetry.instrumentation.groq import GroqInstrumentor
+            instrumentor = GroqInstrumentor(exception_logger=lambda e: logger.error(f"Groq error: {e}"), use_legacy_attributes=True, get_common_metrics_attributes=get_custom_attributes)
+            instrumentor.instrument(tracer_provider=self.tracer_provider)
+            self.instrumentors["groq"] = instrumentor
+            logger.info("[LucidicTelemetry] Instrumented Groq")
+        except Exception as e:
+            logger.error(f"Failed to instrument Groq: {e}")
             raise
 
     def _instrument_openai_agents(self) -> None:

@@ -124,6 +124,35 @@ class UniversalImageInterceptor:
                                     logger.info(f"[Universal Interceptor] Stored Google image, placeholder: {placeholder}")
                 processed_messages.append(message)
         return processed_messages
+
+    @staticmethod
+    def extract_and_store_images_genai_contents(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Extract and store images/text from google.genai 'contents' structure
+        
+        Example:
+        contents = [
+            {"text": "What's in this image?"},
+            {"inline_data": {"mime_type": "image/jpeg", "data": "..."}}
+        ]
+        """
+        if not isinstance(contents, list):
+            return contents
+        clear_stored_texts()
+        texts = []
+        for item in contents:
+            if isinstance(item, dict):
+                if 'text' in item and isinstance(item['text'], str):
+                    texts.append(item['text'])
+                elif 'inline_data' in item and isinstance(item['inline_data'], dict):
+                    data = item['inline_data'].get('data', '')
+                    mime = item['inline_data'].get('mime_type', 'image/jpeg')
+                    if data:
+                        data_url = f"data:{mime};base64,{data}"
+                        store_image(data_url)
+        if texts:
+            combined = ' '.join(texts)
+            store_text(combined, 0)
+        return contents
     
     @staticmethod
     def intercept_images(messages: Any, provider: str = "auto") -> Any:
@@ -273,4 +302,64 @@ def patch_google_client(client):
         client.generate_content = interceptor(original_generate)
         if DEBUG:
             logger.info("[Universal Interceptor] Patched Google client for image interception")
+    return client
+
+
+def patch_google_genai() -> None:
+    """Patch google.genai to intercept images/text passed via contents
+    Wraps Models.generate_content and AsyncModels.generate_content
+    """
+    try:
+        from google.genai import models as genai_models
+    except Exception:
+        return
+
+    def wrap_generate_content(original_func):
+        def wrapper(*args, **kwargs):
+            contents = kwargs.get('contents', None)
+            if contents is None and len(args) >= 2:
+                # Likely signature: (self, contents=..., ...)
+                contents = args[1]
+            if contents is not None:
+                try:
+                    UniversalImageInterceptor.extract_and_store_images_genai_contents(contents)
+                except Exception:
+                    pass
+            return original_func(*args, **kwargs)
+        return wrapper
+
+    # Patch sync Models
+    try:
+        if hasattr(genai_models, 'Models') and hasattr(genai_models.Models, 'generate_content'):
+            original = genai_models.Models.generate_content
+            if not getattr(original, '__lucidic_patched__', False):
+                patched = wrap_generate_content(original)
+                setattr(patched, '__lucidic_patched__', True)
+                genai_models.Models.generate_content = patched
+    except Exception:
+        pass
+
+    # Patch async Models (if present)
+    try:
+        if hasattr(genai_models, 'AsyncModels') and hasattr(genai_models.AsyncModels, 'generate_content'):
+            original_async = genai_models.AsyncModels.generate_content
+            if not getattr(original_async, '__lucidic_patched__', False):
+                patched_async = wrap_generate_content(original_async)
+                setattr(patched_async, '__lucidic_patched__', True)
+                genai_models.AsyncModels.generate_content = patched_async
+    except Exception:
+        pass
+
+
+def patch_vertexai_client(client):
+    """Patch a Vertex AI client/model instance to intercept images (Google format)"""
+    interceptor = UniversalImageInterceptor.create_interceptor("google")
+    
+    # Vertex AI GenerativeModel has generate_content / generate_content_async
+    if hasattr(client, 'generate_content'):
+        original_generate = client.generate_content
+        client.generate_content = interceptor(original_generate)
+    if hasattr(client, 'generate_content_async'):
+        original_generate_async = getattr(client, 'generate_content_async')
+        client.generate_content_async = UniversalImageInterceptor.create_async_interceptor("google")(original_generate_async)
     return client
