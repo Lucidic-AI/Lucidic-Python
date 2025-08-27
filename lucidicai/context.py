@@ -19,6 +19,12 @@ current_session_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 )
 
 
+# NEW: Context variable for parent event nesting
+current_parent_event_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "lucidic.parent_event_id", default=None
+)
+
+
 def set_active_session(session_id: Optional[str]) -> None:
     """Bind the given session id to the current execution context."""
     current_session_id.set(session_id)
@@ -47,6 +53,25 @@ async def bind_session_async(session_id: str) -> AsyncIterator[None]:
         yield
     finally:
         current_session_id.reset(token)
+
+
+# NEW: Parent event context managers
+@contextmanager
+def event_context(event_id: str) -> Iterator[None]:
+    token = current_parent_event_id.set(event_id)
+    try:
+        yield
+    finally:
+        current_parent_event_id.reset(token)
+
+
+@asynccontextmanager
+async def event_context_async(event_id: str) -> AsyncIterator[None]:
+    token = current_parent_event_id.set(event_id)
+    try:
+        yield
+    finally:
+        current_parent_event_id.reset(token)
 
 
 @contextmanager
