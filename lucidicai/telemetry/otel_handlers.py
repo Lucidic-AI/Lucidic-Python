@@ -25,7 +25,7 @@ class OTelOpenAIHandler(BaseProvider):
         self.telemetry = LucidicTelemetry()
         
     def handle_response(self, response, kwargs, session: Optional = None):
-        """Not needed with OpenTelemetry approach"""
+        """Not needed with OpenTelemetry approach; legacy no-op."""
         return response
         
     def override(self):
@@ -41,7 +41,7 @@ class OTelOpenAIHandler(BaseProvider):
             # Instrument OpenAI
             self.telemetry.instrument_providers(["openai"])
             
-            # Also patch OpenAI client to intercept images
+            # Also patch OpenAI client to intercept images (unchanged)
             try:
                 with _patch_lock:
                     global _openai_patched

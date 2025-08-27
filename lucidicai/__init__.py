@@ -11,7 +11,6 @@ from .client import Client
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError, PromptError
 from .event import Event
 from .session import Session
-from .step import Step
 
 # Import OpenTelemetry-based handlers
 from .telemetry.otel_handlers import (
@@ -27,7 +26,7 @@ from .telemetry.otel_handlers import (
 from .telemetry.otel_init import LucidicTelemetry
 
 # Import decorators
-from .decorators import step, event
+from .decorators import event
 from .context import (
     set_active_session,
     bind_session,
@@ -266,13 +265,10 @@ def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
 __all__ = [
     'Client',
     'Session',
-    'Step',
     'Event',
     'init',
     'continue_session',
-    'create_step',
-    'end_step',
-    'update_step',
+    # step APIs removed in new event model
     'create_event',
     'update_event',
     'end_event',
@@ -284,7 +280,6 @@ __all__ = [
     'LucidicNotInitializedError',
     'PromptError',
     'InvalidOperationError',
-    'step',
     'event',
     'set_active_session',
     'bind_session',
@@ -388,6 +383,12 @@ def init(
     try:
         if capture_uncaught:
             _install_crash_handlers()
+            # Also install error event handler for uncaught exceptions
+            try:
+                from .errors import install_error_handler
+                install_error_handler()
+            except Exception:
+                pass
     except Exception:
         pass
     
@@ -632,187 +633,46 @@ def create_mass_sim(
     return mass_sim_id
 
 
-def create_step(
-    state: Optional[str] = None, 
-    action: Optional[str] = None, 
-    goal: Optional[str] = None,
-    eval_score: Optional[float] = None,
-    eval_description: Optional[str] = None,
-    screenshot: Optional[str] = None,
-    screenshot_path: Optional[str] = None
-) -> None:
-    """
-    Create a new step. Previous step must be finished to create a new step.
-    
-    Args:
-        state: State description.
-        action: Action description.
-        goal: Goal description.
-        eval_score: Evaluation score.
-        eval_description: Evaluation description.
-        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
-        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
-    """
-    client = Client()
-    if not client.session:
-        return
-    return client.session.create_step(**locals())
+def create_step(*args, **kwargs):
+    """Removed in new event model. No-op placeholder."""
+    return None
 
 
-def update_step(
-    step_id: Optional[str] = None,
-    state: Optional[str] = None, 
-    action: Optional[str] = None, 
-    goal: Optional[str] = None,
-    eval_score: Optional[float] = None,
-    eval_description: Optional[str] = None,
-    screenshot: Optional[str] = None,
-    screenshot_path: Optional[str] = None
-) -> None:
-    """
-    Update the current step.
-    
-    Args:
-        step_id: ID of the step to update.
-        state: State description.
-        action: Action description.
-        goal: Goal description.
-        eval_score: Evaluation score.
-        eval_description: Evaluation description.
-        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
-        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
-    """
-    client = Client()
-    if not client.session:
-        return
-    if not client.session.active_step:
-        raise InvalidOperationError("No active step to update")
-    client.session.update_step(**locals())
+def update_step(*args, **kwargs):
+    """Removed in new event model. No-op placeholder."""
+    return None
 
 
-def end_step(
-    step_id: Optional[str] = None,
-    state: Optional[str] = None, 
-    action: Optional[str] = None, 
-    goal: Optional[str] = None,
-    eval_score: Optional[float] = None,
-    eval_description: Optional[str] = None,
-    screenshot: Optional[str] = None,
-    screenshot_path: Optional[str] = None
-) -> None:
-    """
-    End the current step.
-    
-    Args:
-        step_id: ID of the step to end.
-        state: State description.
-        action: Action description.
-        goal: Goal description.
-        eval_score: Evaluation score.
-        eval_description: Evaluation description.
-        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
-        screenshot_path: Screenshot path.
-    """
-    client = Client()
-    if not client.session:
-        return
-    
-    if not client.session.active_step and step_id is None:
-        raise InvalidOperationError("No active step to end")
-    
-    # Filter out None values from locals
-    params = locals()
-    kwargs = {k: v for k, v in params.items() if v is not None and k not in ['client', 'params']}
-    kwargs['is_finished'] = True
-    
-    client.session.update_step(**kwargs)
+def end_step(*args, **kwargs):
+    """Removed in new event model. No-op placeholder."""
+    return None
 
 
 def create_event(
-    step_id: Optional[str] = None,
-    description: Optional[str] = None,
-    result: Optional[str] = None,
-    cost_added: Optional[float] = None, 
-    model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None,
-    function_name: Optional[str] = None,
-    arguments: Optional[dict] = None,
+    type: str = "generic",
+    **kwargs
 ) -> str:
-    """
-    Create a new event in the current step. Current step must not be finished.
-    
-    Args:
-        description: Description of the event.
-        result: Result of the event.
-        cost_added: Cost added by the event.
-        model: Model used for the event.
-        screenshots: List of screenshots encoded in base64.
-        function_name: Name of the function that created the event.
-        arguments: Arguments of the function that created the event.
-    """
-
     client = Client()
     if not client.session:
         return
-    return client.session.create_event(**locals())
+    return client.session.create_event(type=type, **kwargs)
 
 
 def update_event(
     event_id: Optional[str] = None,
-    description: Optional[str] = None,
-    result: Optional[str] = None,
-    cost_added: Optional[float] = None, 
-    model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None,
-    function_name: Optional[str] = None,
-    arguments: Optional[dict] = None,
+    **kwargs
 ) -> None:
-    """
-    Update the event with the given ID in the current step.
-    
-    Args:
-        event_id: ID of the event to update.
-        description: Description of the event.
-        result: Result of the event.
-        cost_added: Cost added by the event.
-        model: Model used for the event.
-        screenshots: List of screenshots encoded in base64.
-        function_name: Name of the function that created the event.
-        arguments: Arguments of the function that created the event.
-    """
     client = Client()
     if not client.session:
         return
-    client.session.update_event(**locals())
-
-
-def end_event(
-    event_id: Optional[str] = None,
-    description: Optional[str] = None,
-    result: Optional[str] = None,
-    cost_added: Optional[float] = None, 
-    model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None,
-    function_name: Optional[str] = None,
-    arguments: Optional[dict] = None,
-) -> None:
-    """
-    End the latest event in the current step.
-    
-    Args:
-        event_id: ID of the event to end.
-        description: Description of the event.
-        result: Result of the event.
-        cost_added: Cost added by the event.
-        model: Model used for the event.
-        screenshots: List of screenshots encoded in base64.
-        function_name: Name of the function that created the event.
-        arguments: Arguments of the function that created the event.
-    """
-    client = Client()
-    if not client.session:
+    if not event_id:
         return
-    client.session.update_event(is_finished=True, **locals())
+    client.session.update_event(event_id=event_id, **kwargs)
+
+
+def end_event(*args, **kwargs) -> None:
+    """Deprecated in new model. No-op for compatibility of imports."""
+    return
 
 
 def get_prompt(

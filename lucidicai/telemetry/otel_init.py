@@ -117,20 +117,11 @@ class LucidicTelemetry:
             instrumentor = OpenAIInstrumentor()
             
             # Create a custom callback for getting attributes
-            def get_custom_attributes():
-                attrs = {}
-                
-                # Add step context if available
-                if client.session and client.session.active_step:
-                    attrs["lucidic.step_id"] = client.session.active_step.step_id
-                    
-                return attrs
-            
             instrumentor.instrument(
                 tracer_provider=self.tracer_provider,
                 enrich_token_usage=True,
                 exception_logger=lambda e: logger.error(f"OpenAI error: {e}"),
-                get_common_metrics_attributes=get_custom_attributes,
+                get_common_metrics_attributes=lambda: {},
                 enable_trace_context_propagation=True,
                 use_legacy_attributes=True  # Force legacy attributes mode for now
             )
@@ -151,16 +142,10 @@ class LucidicTelemetry:
             # Get client for context
             client = Client()
             
-            def get_custom_attributes():
-                attrs = {}
-                if client.session and client.session.active_step:
-                    attrs["lucidic.step_id"] = client.session.active_step.step_id
-                return attrs
-            
             instrumentor.instrument(
                 tracer_provider=self.tracer_provider,
                 exception_logger=lambda e: logger.error(f"Anthropic error: {e}"),
-                get_common_metrics_attributes=get_custom_attributes,
+                get_common_metrics_attributes=lambda: {},
                 use_legacy_attributes=True  # Force legacy attributes mode
             )
             
@@ -238,13 +223,8 @@ class LucidicTelemetry:
         try:
             from lucidicai.client import Client
             client = Client()
-            def get_custom_attributes():
-                attrs = {}
-                if client.session and client.session.active_step:
-                    attrs["lucidic.step_id"] = client.session.active_step.step_id
-                return attrs
             from opentelemetry.instrumentation.groq import GroqInstrumentor
-            instrumentor = GroqInstrumentor(exception_logger=lambda e: logger.error(f"Groq error: {e}"), use_legacy_attributes=True, get_common_metrics_attributes=get_custom_attributes)
+            instrumentor = GroqInstrumentor(exception_logger=lambda e: logger.error(f"Groq error: {e}"), use_legacy_attributes=True, get_common_metrics_attributes=lambda: {})
             instrumentor.instrument(tracer_provider=self.tracer_provider)
             self.instrumentors["groq"] = instrumentor
             logger.info("[LucidicTelemetry] Instrumented Groq")

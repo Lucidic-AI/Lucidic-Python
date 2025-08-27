@@ -1,7 +1,7 @@
 import os
 import time
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 import requests
 import logging
@@ -14,6 +14,7 @@ from .telemetry.base_provider import BaseProvider
 from .session import Session
 from .singleton import singleton, clear_singletons
 from .lru import LRUCache
+from .event import Event
 
 NETWORK_RETRIES = 3
 
@@ -139,14 +140,14 @@ class Client:
         return self.session.session_id
 
     def create_event_for_session(self, session_id: str, **kwargs) -> str:
-        """Create an event for a specific session id without mutating global session.
+        """Create an event for a specific session id (new typed model).
 
-        This avoids cross-thread races by not switching the active session on
-        the singleton client. It constructs an ephemeral Session facade to send
-        requests under the provided session id.
+        This avoids mutating the global session and directly uses the new
+        event API. Prefer passing typed fields and a 'type' argument.
         """
-        temp_session = Session(agent_id=self.agent_id, session_id=session_id)
-        return temp_session.create_event(**kwargs)
+        kwargs = dict(kwargs)
+        kwargs['session_id'] = session_id
+        return self.create_event(**kwargs)
 
     def continue_session(self, session_id: str):
         if session_id in self.custom_session_id_translations:
@@ -221,6 +222,159 @@ class Client:
         except requests.exceptions.HTTPError as e:
             raise InvalidOperationError(f"Request to Lucidic AI Backend failed: {e.response.text}")
         return response.json()
+
+    # ==== New Typed Event Model Helpers ====
+    def _build_payload(self, type: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Build type-specific payload and place unrecognized keys in misc."""
+        # Remove non-payload top-level fields from kwargs copy
+        non_payload_fields = [
+            'parent_event_id', 'tags', 'metadata', 'occurred_at', 'duration', 'session_id',
+            'event_id'
+        ]
+        for field in non_payload_fields:
+            if field in kwargs:
+                kwargs.pop(field, None)
+
+        if type == "llm_generation":
+            return self._build_llm_payload(kwargs)
+        elif type == "function_call":
+            return self._build_function_payload(kwargs)
+        elif type == "error_traceback":
+            return self._build_error_payload(kwargs)
+        else:
+            return self._build_generic_payload(kwargs)
+
+    def _build_llm_payload(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "request": {},
+            "response": {},
+            "usage": {},
+            "status": "ok",
+            "misc": {}
+        }
+        # Request fields
+        for field in ["provider", "model", "messages", "params"]:
+            if field in kwargs:
+                payload["request"][field] = kwargs.pop(field)
+        # Response fields
+        for field in ["output", "messages", "tool_calls", "thinking", "raw"]:
+            if field in kwargs:
+                payload["response"][field] = kwargs.pop(field)
+        # Usage fields
+        for field in ["input_tokens", "output_tokens", "cache", "cost"]:
+            if field in kwargs:
+                payload["usage"][field] = kwargs.pop(field)
+        # Status / error
+        if 'status' in kwargs:
+            payload['status'] = kwargs.pop('status')
+        if 'error' in kwargs:
+            payload['error'] = kwargs.pop('error')
+        payload["misc"] = kwargs
+        return payload
+
+    def _build_function_payload(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "function_name": kwargs.pop("function_name", "unknown"),
+            "arguments": kwargs.pop("arguments", {}),
+            "return_value": kwargs.pop("return_value", None),
+            "misc": kwargs
+        }
+        return payload
+
+    def _build_error_payload(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "error": kwargs.pop("error", ""),
+            "traceback": kwargs.pop("traceback", ""),
+            "misc": kwargs
+        }
+        return payload
+
+    def _build_generic_payload(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "details": kwargs.pop("details", kwargs.pop("description", "")),
+            "misc": kwargs
+        }
+        return payload
+
+    def create_event(self, type: str = "generic", **kwargs) -> Event:
+        """Create a typed event.
+
+        Args:
+            type: One of [llm_generation, function_call, error_traceback, generic]
+            kwargs: Typed fields for payload and optional top-level fields:
+                   parent_event_id, tags, metadata, occurred_at, duration, session_id
+        Returns:
+            Event: newly created event object
+        """
+        # Resolve session_id: explicit -> context -> current session
+        session_id = kwargs.pop('session_id', None)
+        if not session_id:
+            try:
+                from .context import current_session_id
+                session_id = current_session_id.get(None)
+            except Exception:
+                session_id = None
+        if not session_id and self.session:
+            session_id = self.session.session_id
+        if not session_id:
+            raise InvalidOperationError("No active session for event creation")
+
+        # Parent event id from kwargs or parent context
+        parent_event_id = kwargs.get('parent_event_id')
+        if not parent_event_id:
+            try:
+                from .context import current_parent_event_id
+                parent_event_id = current_parent_event_id.get(None)
+            except Exception:
+                parent_event_id = None
+
+        # Build payload
+        payload = self._build_payload(type, dict(kwargs))
+
+        # Build request body
+        from datetime import datetime as _dt
+        event_request: Dict[str, Any] = {
+            "session_id": session_id,
+            "type": type,
+            "parent_event_id": parent_event_id,
+            "occurred_at": kwargs.get("occurred_at", _dt.now()).isoformat(),
+            "duration": kwargs.get("duration"),
+            "tags": kwargs.get("tags", []),
+            "metadata": kwargs.get("metadata", {}),
+            "payload": payload,
+        }
+
+        # POST /events
+        response = self.make_request('events', 'POST', event_request)
+        event = Event(response, self)
+        if self.session and self.session.session_id == session_id:
+            if hasattr(self.session, 'event_history') and isinstance(self.session.event_history, list):
+                self.session.event_history.append(event)
+        return event
+
+    def update_event(self, event_id: str, type: Optional[str] = None, **kwargs) -> Event:
+        """Update an existing event.
+
+        If 'type' is provided, rebuilds a payload from kwargs; otherwise,
+        accepts a 'payload' field in kwargs for direct updates.
+        """
+        update_body: Dict[str, Any] = {
+            "event_id": event_id,
+        }
+        # Top-level fields
+        for key in ["occurred_at", "duration", "tags", "metadata"]:
+            if key in kwargs and kwargs[key] is not None:
+                update_body[key] = kwargs[key]
+
+        # Payload
+        if type:
+            update_body["payload"] = self._build_payload(type, dict(kwargs))
+        elif "payload" in kwargs:
+            update_body["payload"] = kwargs["payload"]
+
+        # PUT /events/{event_id}
+        response = self.make_request(f"events/{event_id}", 'PUT', update_body)
+        return Event(response, self)
 
     def mask(self, data):
         if not self.masking_function:

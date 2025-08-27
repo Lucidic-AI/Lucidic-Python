@@ -15,7 +15,7 @@ from opentelemetry.semconv_ai import SpanAttributes
 
 from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
-from lucidicai.context import current_session_id
+from lucidicai.context import current_session_id, current_parent_event_id
 from .utils.image_storage import get_stored_images, clear_stored_images, get_image_by_placeholder
 from .utils.text_storage import get_stored_text, clear_stored_texts
 
@@ -75,7 +75,7 @@ class LucidicSpanProcessor(SpanProcessor):
                 traceback.print_exc()
     
     def on_end(self, span: Span) -> None:
-        """Called when a span ends - create and complete the Lucidic event"""
+        """Called when a span ends - create typed LLM_GENERATION event"""
         try:
             span_id = span.get_span_context().span_id
             
@@ -100,8 +100,8 @@ class LucidicSpanProcessor(SpanProcessor):
             client = Client()
             span_context = self.span_contexts.pop(span_id, {})
             
-            # Create event with all the attributes now available
-            event_id = self._create_event_from_span_end(span, client)
+            # Create typed event with all the attributes now available
+            event_id = self._create_typed_event_from_span_end(span, client)
             
             if DEBUG:
                 logger.info(f"[SpanProcessor] Created and completed event {event_id} for span {span_id}")
@@ -148,7 +148,7 @@ class LucidicSpanProcessor(SpanProcessor):
         return False
     
     def _create_event_from_span_start(self, span: Span, client: Client) -> Optional[str]:
-        """Create event when span starts"""
+        """Deprecated: old model start-event creation (kept for reference)"""
         try:
             attributes = dict(span.attributes or {})
             
@@ -201,8 +201,8 @@ class LucidicSpanProcessor(SpanProcessor):
             logger.error(f"Failed to create event: {e}")
             return None
     
-    def _create_event_from_span_end(self, span: Span, client: Client) -> Optional[str]:
-        """Create and complete event when span ends with all attributes available"""
+    def _create_typed_event_from_span_end(self, span: Span, client: Client) -> Optional[str]:
+        """Create LLM_GENERATION typed event when span ends with all attributes available"""
         try:
             attributes = dict(span.attributes or {})
             
@@ -271,28 +271,33 @@ class LucidicSpanProcessor(SpanProcessor):
                     logger.info("[SpanProcessor] No session id found for span; skipping event creation")
                 return None
 
-            # Create event with all data
-            event_kwargs = {
-                'description': description,
-                'result': formatted_result,
-                'model': model,
-                'is_finished': True,
-                'duration': duration_seconds
-            }
-            
-            if images:
-                event_kwargs['screenshots'] = images
-                
-            if cost is not None:
-                event_kwargs['cost_added'] = cost
-                
-            # Check for step context
-            step_id = attributes.get('lucidic.step_id')
-            if step_id:
-                event_kwargs['step_id'] = step_id
-                
-            # Create the event (already completed) for the resolved session id
-            event_id = client.create_event_for_session(target_session_id, **event_kwargs)
+            # Build typed payload fields for LLM_GENERATION
+            parent_id = None
+            try:
+                parent_id = current_parent_event_id.get(None)
+            except Exception:
+                parent_id = None
+
+            event_id = None
+            try:
+                event = client.create_event(
+                    type="llm_generation",
+                    session_id=target_session_id,
+                    parent_event_id=parent_id,
+                    occurred_at=None,
+                    duration=duration_seconds,
+                    provider=self._detect_provider_name(attributes),
+                    model=model,
+                    messages=self._extract_messages_for_payload(attributes),
+                    params=self._extract_params(attributes),
+                    output=raw_result,
+                    input_tokens=self._extract_prompt_tokens(attributes),
+                    output_tokens=self._extract_completion_tokens(attributes),
+                    cost=cost,
+                )
+                event_id = getattr(event, 'event_id', None)
+            except Exception as e:
+                logger.error(f"Failed to create typed event: {e}")
                 
             return event_id
             
@@ -351,6 +356,41 @@ class LucidicSpanProcessor(SpanProcessor):
             
         except Exception as e:
             logger.error(f"Failed to update event: {e}")
+
+    def _detect_provider_name(self, attributes: Dict[str, Any]) -> str:
+        name = attributes.get('gen_ai.system')
+        if name:
+            return name
+        # heuristic
+        return "openai" if 'openai' in (attributes.get('service.name', '').lower()) else attributes.get('service.name', 'unknown')
+
+    def _extract_messages_for_payload(self, attributes: Dict[str, Any]) -> list:
+        msgs = self._extract_indexed_messages(attributes)
+        if msgs:
+            return msgs
+        raw = attributes.get('gen_ai.messages')
+        return raw if isinstance(raw, list) else []
+
+    def _extract_params(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "temperature": attributes.get('gen_ai.request.temperature'),
+            "max_tokens": attributes.get('gen_ai.request.max_tokens'),
+            "top_p": attributes.get('gen_ai.request.top_p'),
+        }
+
+    def _extract_prompt_tokens(self, attributes: Dict[str, Any]) -> int:
+        return (
+            attributes.get(SpanAttributes.LLM_USAGE_PROMPT_TOKENS) or
+            attributes.get('gen_ai.usage.prompt_tokens') or
+            attributes.get('gen_ai.usage.input_tokens') or 0
+        )
+
+    def _extract_completion_tokens(self, attributes: Dict[str, Any]) -> int:
+        return (
+            attributes.get(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS) or
+            attributes.get('gen_ai.usage.completion_tokens') or
+            attributes.get('gen_ai.usage.output_tokens') or 0
+        )
     
     def _extract_description(self, span: Span, attributes: Dict[str, Any]) -> str:
         """Extract description from span"""

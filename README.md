@@ -4,7 +4,7 @@ The official Python SDK for [Lucidic AI](https://lucidic.ai), providing comprehe
 
 ## Features
 
-- **Session & Step Tracking** - Track complex AI agent workflows with hierarchical session management
+- **Session & Event Tracking** - Track complex AI workflows with typed events and nesting
 - **Multi-Provider Support** - Automatic instrumentation for OpenAI, Anthropic, LangChain, Google Generative AI (Gemini), Vertex AI, AWS Bedrock, Cohere, Groq, and more
 - **Real-time Analytics** - Monitor costs, performance, and behavior of your AI applications
 - **Data Privacy** - Built-in masking functions to protect sensitive information
@@ -383,7 +383,7 @@ resp = client.chat.completions.create(
 ### Decorators
 Simplify your code with Python decorators for automatic tracking:
 
-#### Step Decorator
+#### Event Decorator
 Wrap functions to automatically create and manage steps:
 
 ```python

@@ -1,4 +1,6 @@
 from typing import Optional
+import sys
+import traceback
 
 class APIKeyVerificationError(Exception):
     """Exception for API key verification errors"""
@@ -19,3 +21,34 @@ class InvalidOperationError(Exception):
     "Exception for errors resulting from attempting an invalid operation"
     def __init__(self, message: str):
         super().__init__(f"An invalid Lucidic operation was attempted: {message}")
+
+
+def install_error_handler():
+    """Install global handler to create ERROR_TRACEBACK events for uncaught exceptions."""
+    from .client import Client
+    from .context import current_parent_event_id
+
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        try:
+            client = Client()
+            if client and client.session:
+                tb = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+                parent_id = None
+                try:
+                    parent_id = current_parent_event_id.get(None)
+                except Exception:
+                    parent_id = None
+                client.create_event(
+                    type="error_traceback",
+                    error=str(exc_value),
+                    traceback=tb,
+                    parent_event_id=parent_id
+                )
+        except Exception:
+            pass
+        try:
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        except Exception:
+            pass
+
+    sys.excepthook = handle_exception

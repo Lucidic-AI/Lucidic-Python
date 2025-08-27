@@ -16,6 +16,7 @@ except ImportError:
 
 from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
+from lucidicai.context import current_parent_event_id
 
 logger = logging.getLogger("Lucidic")
 DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
@@ -102,7 +103,7 @@ class LucidicLiteLLMCallback(CustomLogger):
                 traceback.print_exc()
     
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
-        """Called on successful LLM completion"""
+        """Called on successful LLM completion -> create typed LLM_GENERATION event"""
         # Generate unique callback ID
         callback_id = f"success_{id(kwargs)}_{start_time}"
         self._register_callback(callback_id)
@@ -141,33 +142,26 @@ class LucidicLiteLLMCallback(CustomLogger):
             # Extract any images from multimodal requests
             images = self._extract_images_from_messages(messages)
             
-            # Create event
-            event_kwargs = {
-                "description": description,
-                "result": result,
-                "model": f"{provider}/{model}" if "/" not in model else model,
-                "is_finished": True
-            }
-            
-            if cost is not None:
-                event_kwargs["cost_added"] = cost
-                
-            if images:
-                event_kwargs["screenshots"] = images
-                
-            # Add metadata
-            metadata = {
-                "provider": provider,
-                "duration_ms": (end_time - start_time) * 1000,
-                "litellm": True
-            }
-            if usage:
-                metadata["usage"] = usage
-                
-            event_kwargs["metadata"] = metadata
-            
-            # Create the event
-            client.session.create_event(**event_kwargs)
+            # Create LLM_GENERATION typed event
+            parent_id = None
+            try:
+                parent_id = current_parent_event_id.get(None)
+            except Exception:
+                parent_id = None
+
+            client.create_event(
+                type="llm_generation",
+                provider=provider,
+                model=model,
+                messages=messages,
+                output=result,
+                input_tokens=(usage or {}).get("prompt_tokens", 0),
+                output_tokens=(usage or {}).get("completion_tokens", 0),
+                cost=cost,
+                parent_event_id=parent_id,
+                occurred_at=datetime.fromtimestamp(start_time),
+                duration=(end_time - start_time),
+            )
             
             if DEBUG:
                 logger.info(f"LiteLLM Bridge: Created event for {model} completion")
@@ -207,21 +201,21 @@ class LucidicLiteLLMCallback(CustomLogger):
             # Format error
             error_msg = str(response_obj) if response_obj else "Unknown error"
             
-            # Create failed event
-            event_kwargs = {
-                "description": description,
-                "result": f"Error: {error_msg}",
-                "model": f"{provider}/{model}" if "/" not in model else model,
-                "is_finished": True,
-                "metadata": {
-                    "provider": provider,
-                    "duration_ms": (end_time - start_time) * 1000,
-                    "litellm": True,
-                    "error": True
-                }
-            }
-            
-            client.session.create_event(**event_kwargs)
+            # Create error typed event under current parent if any
+            parent_id = None
+            try:
+                parent_id = current_parent_event_id.get(None)
+            except Exception:
+                parent_id = None
+            client.create_event(
+                type="error_traceback",
+                error=error_msg,
+                traceback="",
+                parent_event_id=parent_id,
+                occurred_at=datetime.fromtimestamp(start_time),
+                duration=(end_time - start_time),
+                metadata={"provider": provider, "litellm": True}
+            )
             
             if DEBUG:
                 logger.info(f"LiteLLM Bridge: Created error event for {model}")
