@@ -14,11 +14,9 @@ lai.init(
     task="Demonstrate decorator usage in a customer support scenario"
 )
 
-# Example 1: Using step decorator for high-level workflow tracking
-@lai.step(
-    state="Received customer inquiry",
-    action="Analyze and categorize issue",
-    goal="Identify the type of support needed"
+# Example 1: High-level workflow tracking (single immutable event)
+@lai.event(
+    description="Received customer inquiry: Analyze and categorize issue (Identify the type of support needed)"
 )
 def categorize_customer_issue(customer_message: str) -> dict:
     """Categorize the customer's issue to route to appropriate handler."""
@@ -66,11 +64,9 @@ def generate_initial_response(issue_data: dict) -> str:
     return responses.get(issue_data['category'], responses['general'])
 
 
-# Example 3: Nested decorators - step with events inside
-@lai.step(
-    state="Processing support ticket",
-    action="Generate complete support response",
-    goal="Resolve customer issue"
+# Example 3: Nested decorators - event with nested events inside
+@lai.event(
+    description="Processing support ticket: Generate complete support response (Resolve customer issue)"
 )
 def handle_support_ticket(customer_message: str) -> dict:
     """Complete workflow for handling a support ticket."""
@@ -153,6 +149,8 @@ def main():
         print(f"Category: {result['category']} (confidence: {result['confidence']})")
         print(f"Status: {result['status']}")
         print("-" * 50 + "\n")
+
+        break
     
     # End the session
     lai.end_session(
