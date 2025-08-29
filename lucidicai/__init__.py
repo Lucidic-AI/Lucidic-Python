@@ -376,13 +376,21 @@ def end_session(
     if not target_sid:
         return
 
-    # If ending the globally active session, keep existing cleanup behavior
+    # If ending the globally active session, perform cleanup
     if client.session and client.session.session_id == target_sid:
-        # Wait for any pending LiteLLM callbacks before ending session
-        for provider in client.providers:
-            if hasattr(provider, '_callback') and hasattr(provider._callback, 'wait_for_pending_callbacks'):
-                logger.info("Waiting for LiteLLM callbacks to complete before ending session...")
-                provider._callback.wait_for_pending_callbacks(timeout=5.0)
+        # Best-effort: wait for LiteLLM callbacks to flush before ending
+        try:
+            import litellm  
+            cbs = getattr(litellm, 'callbacks', None)
+            if cbs:
+                for cb in cbs:
+                    try:
+                        if hasattr(cb, 'wait_for_pending_callbacks'):
+                            cb.wait_for_pending_callbacks(timeout=1)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         client.session.update_session(is_finished=True, **locals())
         client.clear()
         return

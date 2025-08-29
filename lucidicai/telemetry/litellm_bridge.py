@@ -149,6 +149,10 @@ class LucidicLiteLLMCallback(CustomLogger):
             except Exception:
                 parent_id = None
 
+            # occurred_at/duration from datetimes
+            occ_dt = start_time if isinstance(start_time, datetime) else None
+            duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
+
             client.create_event(
                 type="llm_generation",
                 provider=provider,
@@ -159,8 +163,8 @@ class LucidicLiteLLMCallback(CustomLogger):
                 output_tokens=(usage or {}).get("completion_tokens", 0),
                 cost=cost,
                 parent_event_id=parent_id,
-                occurred_at=datetime.fromtimestamp(start_time),
-                duration=(end_time - start_time),
+                occurred_at=occ_dt,
+                duration=duration_secs,
             )
             
             if DEBUG:
@@ -207,13 +211,16 @@ class LucidicLiteLLMCallback(CustomLogger):
                 parent_id = current_parent_event_id.get(None)
             except Exception:
                 parent_id = None
+            occ_dt = start_time if isinstance(start_time, datetime) else None
+            duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
+
             client.create_event(
                 type="error_traceback",
                 error=error_msg,
                 traceback="",
                 parent_event_id=parent_id,
-                occurred_at=datetime.fromtimestamp(start_time),
-                duration=(end_time - start_time),
+                occurred_at=occ_dt,
+                duration=duration_secs,
                 metadata={"provider": provider, "litellm": True}
             )
             
