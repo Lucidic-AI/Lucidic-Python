@@ -1,15 +1,16 @@
-"""Decorators for the Lucidic SDK to create typed events (linear for decorators)."""
+"""Decorators for the Lucidic SDK to create typed, nested events."""
 import functools
 import inspect
 import json
 import logging
-import time
+from datetime import datetime
 import uuid
 from typing import Any, Callable, Optional, TypeVar
 from collections.abc import Iterable
 
 from .client import Client
 from .errors import LucidicNotInitializedError
+from .context import current_parent_event_id, event_context, event_context_async
 
 logger = logging.getLogger("Lucidic")
 
@@ -30,7 +31,7 @@ def _serialize(value: Any):
 
 
 def event(**decorator_kwargs) -> Callable[[F], F]:
-    """Universal decorator creating FUNCTION_CALL events at the end (no updates, no nesting)."""
+    """Universal decorator creating FUNCTION_CALL events with nesting and error capture."""
 
     def decorator(func: F) -> F:
         @functools.wraps(func)
@@ -42,7 +43,6 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
             except (LucidicNotInitializedError, AttributeError):
                 return func(*args, **kwargs)
 
-            start_time = datetime.now().astimezone()
             # Build arguments snapshot
             sig = inspect.signature(func)
             bound = sig.bind(*args, **kwargs)
@@ -51,7 +51,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
 
             parent_id = current_parent_event_id.get(None)
             pre_event_id = str(uuid.uuid4())
-            start_time = time.time()
+            start_time = datetime.now().astimezone()
             result = None
             error: Optional[BaseException] = None
 
@@ -72,7 +72,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                         return_value=None if error else _serialize(result),
                         error=str(error) if error else None,
                         parent_event_id=parent_id,
-                        duration=(time.time() - start_time),
+                        duration=(datetime.now().astimezone() - start_time).total_seconds(),
                         **decorator_kwargs
                     )
                 except Exception:
@@ -87,7 +87,6 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
             except (LucidicNotInitializedError, AttributeError):
                 return await func(*args, **kwargs)
 
-            start_time = datetime.now().astimezone()
             sig = inspect.signature(func)
             bound = sig.bind(*args, **kwargs)
             bound.apply_defaults()
@@ -95,7 +94,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
 
             parent_id = current_parent_event_id.get(None)
             pre_event_id = str(uuid.uuid4())
-            start_time = time.time()
+            start_time = datetime.now().astimezone()
             result = None
             error: Optional[BaseException] = None
 
@@ -116,7 +115,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                         return_value=None if error else _serialize(result),
                         error=str(error) if error else None,
                         parent_event_id=parent_id,
-                        duration=(time.time() - start_time),
+                        duration=(datetime.now().astimezone() - start_time).total_seconds(),
                         **decorator_kwargs
                     )
                 except Exception:
