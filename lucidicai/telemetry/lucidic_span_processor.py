@@ -255,53 +255,8 @@ class LucidicSpanProcessor(SpanProcessor):
             return None
     
     def _update_event_from_span_end(self, span: Span, event_id: str, client: Client) -> None:
-        """Update event when span ends"""
-        try:
-            attributes = dict(span.attributes or {})
-            
-            # Extract response
-            result = self._extract_result(span, attributes)
-            
-            # Apply masking to result if configured
-            if client.masking_function:
-                result = client.mask(result)
-            
-            # Calculate cost
-            cost = self._calculate_cost(attributes)
-            
-            # Calculate duration in seconds
-            duration_seconds = None
-            if span.start_time and span.end_time:
-                duration_ns = span.end_time - span.start_time
-                duration_seconds = duration_ns / 1_000_000_000
-            
-            # Check success
-            is_successful = span.status.status_code != StatusCode.ERROR
-            
-            # Update event
-            update_kwargs = {
-                'event_id': event_id,
-                'result': result,
-                'is_finished': True,
-                'duration': duration_seconds
-            }
-            
-            if cost is not None:
-                update_kwargs['cost_added'] = cost
-                
-            # Update model if we got a response model
-            response_model = attributes.get(SpanAttributes.LLM_RESPONSE_MODEL) or \
-                           attributes.get('gen_ai.response.model')
-            if response_model:
-                update_kwargs['model'] = response_model
-
-            if DEBUG:
-                logger.info(f"[SpanProcessor -- DEBUG] update_kwargs: {update_kwargs}")
-                
-            client.session.update_event(**update_kwargs)
-            
-        except Exception as e:
-            logger.error(f"Failed to update event: {e}")
+        """Deprecated: events are immutable in new model (no updates)."""
+        return
 
     def _detect_provider_name(self, attributes: Dict[str, Any]) -> str:
         name = attributes.get('gen_ai.system')

@@ -48,22 +48,14 @@ class LucidicTelemetry:
                 logger.debug("OpenTelemetry already initialized")
                 return
             try:
-                resource = Resource.create({
-                    "service.name": service_name,
-                    "service.version": "1.0.0",
-                    "lucidic.agent_id": agent_id,
-                })
-                provider = TracerProvider(resource=resource)
-                processor = LucidicSpanProcessor()
-                provider.add_span_processor(processor)
-                try:
-                    trace.set_tracer_provider(provider)
-                except Exception as e:
-                    # Another provider may already be registered; proceed with ours as a local provider
-                    logger.debug(f"Global tracer provider already set: {e}")
-                self.tracer_provider = provider
-                self.span_processor = processor
-                logger.info("[LucidicTelemetry] OpenTelemetry initialized")
+                # Delegate to OpenTelemetryProvider which configures BatchSpanProcessor + LucidicSpanExporter
+                client = Client()
+                self.provider.initialize_telemetry(agent_id=client.agent_id)
+                # Reuse provider's tracer_provider reference for shutdown/flush
+                self.tracer_provider = self.provider.tracer_provider
+                # No direct span_processor anymore; exporter is managed by BatchSpanProcessor
+                self.span_processor = None
+                logger.info("[LucidicTelemetry] OpenTelemetry initialized (Exporter mode)")
             except Exception as e:
                 logger.error(f"Failed to initialize OpenTelemetry: {e}")
                 raise

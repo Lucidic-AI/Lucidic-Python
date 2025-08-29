@@ -50,42 +50,33 @@ class PydanticAIHandler(BaseProvider):
         
         return ' | '.join(formatted_messages[:3])  # Limit to first 3 messages
 
-    def _handle_response(self, response, event_id, messages, model_settings):
-        """Handle non-streaming response"""
-        if not event_id:
-            return response
-        
+    def _handle_response(self, response, parent_id, messages, model_settings):
+        """Create a single immutable event at completion"""
         try:
-            # Extract response text and usage information
             response_text = self._extract_response_text(response)
             usage_info = self._extract_usage_info(response)
             model_name = self._extract_model_name(response, model_settings)
-            
-            # Calculate cost if usage info is available
-            cost = None
-            if usage_info and model_name:
-                cost = calculate_cost(model_name, usage_info)
-            
-            Client().session.update_event(
-                event_id=event_id,
-                is_finished=True,
-                is_successful=True,
-                cost_added=cost,
+            cost = calculate_cost(model_name, usage_info) if (usage_info and model_name) else None
+            Client().create_event(
+                type="llm_generation",
+                parent_event_id=parent_id,
                 model=model_name,
-                result=response_text
+                messages=messages,
+                output=response_text,
+                input_tokens=(usage_info or {}).get("prompt_tokens", 0),
+                output_tokens=(usage_info or {}).get("completion_tokens", 0),
+                cost=cost,
             )
-            
         except Exception as e:
-            Client().session.update_event(
-                event_id=event_id,
-                is_finished=True,
-                is_successful=False,
-                result=f"Error processing response: {str(e)}"
+            Client().create_event(
+                type="error_traceback",
+                error=str(e),
+                traceback="",
+                parent_event_id=parent_id,
             )
-        
         return response
 
-    def _wrap_stream(self, original_stream, event_id, messages, model_instance):
+    def _wrap_stream(self, original_stream, parent_id, messages, model_instance):
         """Wrap streaming response to track accumulation"""
         
         class StreamWrapper:
@@ -150,7 +141,7 @@ class PydanticAIHandler(BaseProvider):
                     
                 except StopAsyncIteration:
                     # Stream is done, update the event with accumulated text
-                    if self._event_id and not Client().session._active_event.is_finished:
+                    try:
                         model_name = self._handler._extract_model_name(None, self._model_instance)
                         # Try to get usage info from the original stream
                         usage_info = None
@@ -176,13 +167,15 @@ class PydanticAIHandler(BaseProvider):
                         
                         final_result = self._accumulated_text or "No content streamed"
                         
-                        Client().session.update_event(
-                            event_id=self._event_id,
-                            is_finished=True,
-                            is_successful=True,
+                        Client().create_event(
+                            type="llm_generation",
+                            parent_event_id=self._event_id,
                             model=model_name,
-                            cost_added=cost,
-                            result=final_result
+                            messages=messages,
+                            output=final_result,
+                            input_tokens=(usage_info or {}).get("prompt_tokens", 0),
+                            output_tokens=(usage_info or {}).get("completion_tokens", 0),
+                            cost=cost,
                         )
                     
                     # Re-raise StopAsyncIteration to end iteration
@@ -190,16 +183,15 @@ class PydanticAIHandler(BaseProvider):
                     
                 except Exception as e:
                     # Handle errors
-                    if self._event_id and not Client().session._active_event.is_finished:
-                        Client().session.update_event(
-                            event_id=self._event_id,
-                            is_finished=True,
-                            is_successful=False,
-                            result=f"Error during streaming: {str(e)}"
-                        )
+                    Client().create_event(
+                        type="error_traceback",
+                        error=str(e),
+                        traceback="",
+                        parent_event_id=self._event_id,
+                    )
                     raise
         
-        return StreamWrapper(original_stream, event_id, self, model_instance)
+        return StreamWrapper(original_stream, parent_id, self, model_instance)
 
     def _extract_response_text(self, response):
         """Extract text content from response"""
@@ -382,24 +374,19 @@ class PydanticAIHandler(BaseProvider):
     def _wrap_request(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Wrap regular request method to track LLM calls"""
         description = self._format_messages(messages)
-        event_id = Client().session.create_event(
-            description=description,
-            result="Waiting for response..."
-        )
+        event_id = None  # parent context only; we emit a single event at end
         
         async def async_wrapper():
             try:
-                # Make the original API call
                 response = await original_method(model_instance, messages, model_settings, model_request_parameters)
-                
-                # Handle the response
                 return self._handle_response(response, event_id, messages, model_instance)
                 
             except Exception as e:
-                Client().session.update_event(
-                    is_finished=True,
-                    is_successful=False,
-                    result=f"Error during request: {str(e)}"
+                Client().create_event(
+                    type="error_traceback",
+                    error=str(e),
+                    traceback="",
+                    parent_event_id=event_id,
                 )
                 raise
         
@@ -437,12 +424,12 @@ class PydanticAIHandler(BaseProvider):
                     return self.handler._wrap_stream(original_stream, event_id, self.messages, self.model_instance)
                     
                 except Exception as e:
-                    if Client().session._active_event:
-                        Client().session.update_event(
-                            is_finished=True,
-                            is_successful=False,
-                            result=f"Error during streaming: {str(e)}"
-                        )
+                    Client().create_event(
+                        type="error_traceback",
+                        error=str(e),
+                        traceback="",
+                        parent_event_id=event_id,
+                    )
                     raise
             
             async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -455,10 +442,7 @@ class PydanticAIHandler(BaseProvider):
     async def _wrap_request_stream(self, model_instance, messages, model_settings, model_request_parameters, original_method):
         """Wrap streaming request method"""
         description = self._format_messages(messages)
-        event = Client().session.create_event(
-            description=description,
-            result="Streaming response..."
-        )
+        event = None
         
         try:
             # Get the original stream
@@ -468,12 +452,12 @@ class PydanticAIHandler(BaseProvider):
             return self._wrap_stream(original_stream, event, messages, model_instance)
             
         except Exception as e:
-            if Client().session._active_event:
-                Client().session.update_event(
-                    is_finished=True,
-                    is_successful=False,
-                    result=f"Error during streaming: {str(e)}"
-                )
+            Client().create_event(
+                type="error_traceback",
+                error=str(e),
+                traceback="",
+                parent_event_id=event,
+            )
             raise
 
     def override(self):

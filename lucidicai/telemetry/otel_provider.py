@@ -42,15 +42,11 @@ class OpenTelemetryProvider(BaseProvider):
         # Create tracer provider
         self.tracer_provider = TracerProvider(resource=resource)
         
-        # Add our custom exporter
+        # Add our custom exporter via batch processor (Exporter-only path)
         lucidic_exporter = LucidicSpanExporter()
         span_processor = BatchSpanProcessor(lucidic_exporter)
         self.tracer_provider.add_span_processor(span_processor)
-        # Also add session-stamping processor to ensure correct attribution
-        try:
-            self.tracer_provider.add_span_processor(LucidicSpanProcessor())
-        except Exception:
-            pass
+        # Remove SpanProcessor usage for event creation to avoid synchronous work
         
         # Set as global provider (ignore if already set)
         try:
