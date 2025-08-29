@@ -26,7 +26,7 @@ class LucidicLiteLLMCallback(CustomLogger):
     """
     Custom callback for LiteLLM that bridges to Lucidic's event system.
     
-    This callback integrates LiteLLM's logging with Lucidic's session/step/event hierarchy,
+    This callback integrates LiteLLM's logging with Lucidic's session/event hierarchy,
     enabling automatic tracking of all LiteLLM-supported providers.
     """
     
@@ -149,6 +149,10 @@ class LucidicLiteLLMCallback(CustomLogger):
             except Exception:
                 parent_id = None
 
+            # occurred_at/duration from datetimes
+            occ_dt = start_time if isinstance(start_time, datetime) else None
+            duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
+
             client.create_event(
                 type="llm_generation",
                 provider=provider,
@@ -159,8 +163,8 @@ class LucidicLiteLLMCallback(CustomLogger):
                 output_tokens=(usage or {}).get("completion_tokens", 0),
                 cost=cost,
                 parent_event_id=parent_id,
-                occurred_at=datetime.fromtimestamp(start_time),
-                duration=(end_time - start_time),
+                occurred_at=occ_dt,
+                duration=duration_secs,
             )
             
             if DEBUG:
@@ -207,13 +211,16 @@ class LucidicLiteLLMCallback(CustomLogger):
                 parent_id = current_parent_event_id.get(None)
             except Exception:
                 parent_id = None
+            occ_dt = start_time if isinstance(start_time, datetime) else None
+            duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
+
             client.create_event(
                 type="error_traceback",
                 error=error_msg,
                 traceback="",
                 parent_event_id=parent_id,
-                occurred_at=datetime.fromtimestamp(start_time),
-                duration=(end_time - start_time),
+                occurred_at=occ_dt,
+                duration=duration_secs,
                 metadata={"provider": provider, "litellm": True}
             )
             
@@ -361,3 +368,37 @@ class LucidicLiteLLMCallback(CustomLogger):
                                     images.append(url)
                                     
         return images
+
+
+def setup_litellm_callback():
+    """Registers the LucidicLiteLLMCallback with LiteLLM if available.
+    
+    This function ensures only one instance of the callback is registered,
+    preventing duplicates across multiple SDK initializations.
+    """
+    try:
+        import litellm
+    except ImportError:
+        logger.info("[LiteLLM] litellm not installed, skipping callback setup")
+        return
+    
+    # Initialize callbacks list if needed
+    if not hasattr(litellm, 'callbacks'):
+        litellm.callbacks = []
+    elif litellm.callbacks is None:
+        litellm.callbacks = []
+    
+    # Check for existing registration to prevent duplicates
+    for existing in litellm.callbacks:
+        if isinstance(existing, LucidicLiteLLMCallback):
+            if DEBUG:
+                logger.debug("[LiteLLM] Callback already registered")
+            return
+    
+    # Register new callback
+    try:
+        cb = LucidicLiteLLMCallback()
+        litellm.callbacks.append(cb)
+        logger.info("[LiteLLM] Registered Lucidic callback for event tracking")
+    except Exception as e:
+        logger.error(f"[LiteLLM] Failed to register callback: {e}")

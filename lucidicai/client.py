@@ -10,11 +10,12 @@ from urllib3.util import Retry
 
 
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError
-from .telemetry.base_provider import BaseProvider 
 from .session import Session
 from .singleton import singleton, clear_singletons
 from .lru import LRUCache
 from .event import Event
+from .event_queue import EventQueue
+import uuid
 
 NETWORK_RETRIES = 3
 
@@ -31,7 +32,6 @@ class Client:
         self.session = None
         self.previous_sessions = LRUCache(500)  # For LRU cache of previously initialized sessions
         self.custom_session_id_translations = LRUCache(500) # For translations of custom session IDs to real session IDs
-        self.providers = []
         self.api_key = api_key
         self.agent_id = agent_id
         self.masking_function = None
@@ -47,6 +47,8 @@ class Client:
         self.request_session.mount("https://", adapter)
         self.set_api_key(api_key)
         self.prompts = dict()
+        # Initialize event queue (non-blocking event delivery)
+        self._event_queue = EventQueue(self)
 
     def set_api_key(self, api_key: str):
         self.api_key = api_key
@@ -57,29 +59,19 @@ class Client:
             raise APIKeyVerificationError("Invalid API Key")
 
     def clear(self):
-        self.undo_overrides()
+        # Clean up singleton state
         clear_singletons()
         self.initialized = False
         self.session = None
-        self.providers = []
         del self
 
     def verify_api_key(self, base_url: str, api_key: str) -> Tuple[str, str]:
         data = self.make_request('verifyapikey', 'GET', {})  # TODO: Verify against agent ID provided
         return data["project"], data["project_id"]
 
-    def set_provider(self, provider: BaseProvider) -> None:
-        """Set the LLM provider to track"""
-        # Avoid duplicate provider registration of the same class
-        for existing in self.providers:
-            if type(existing) is type(provider):
-                return
-        self.providers.append(provider)
-        provider.override()
-
-    def undo_overrides(self):
-        for provider in self.providers:
-            provider.undo_override()
+    def set_provider(self, provider) -> None:
+        """Deprecated: manual provider overrides removed (no-op)."""
+        return
 
     def init_session(
         self,
@@ -149,24 +141,6 @@ class Client:
         kwargs['session_id'] = session_id
         return self.create_event(**kwargs)
 
-    def continue_session(self, session_id: str):
-        if session_id in self.custom_session_id_translations:
-            session_id = self.custom_session_id_translations[session_id]
-        if self.session and self.session.session_id == session_id:
-            return self.session.session_id
-        if self.session:
-            self.previous_sessions[self.session.session_id] = self.session
-        data = self.make_request('continuesession', 'POST', {"session_id": session_id})
-        real_session_id = data["session_id"]
-        if session_id != real_session_id:
-            self.custom_session_id_translations[session_id] = real_session_id
-        self.session = Session(
-            agent_id=self.agent_id,
-            session_id=real_session_id
-        )
-        import logging as _logging
-        _logging.getLogger('Lucidic').info(f"Session {data.get('session_name', '')} continuing...")
-        return self.session.session_id
 
     def init_mass_sim(self, **kwargs) -> str:
         kwargs['agent_id'] = self.agent_id
@@ -203,6 +177,7 @@ class Client:
         }  # TODO: make into enum
         data['current_time'] = datetime.now().astimezone(timezone.utc).isoformat()
         func = http_methods[method]
+        response = None
         for _ in range(NETWORK_RETRIES):
             try:
                 response = func(data)
@@ -296,15 +271,13 @@ class Client:
         }
         return payload
 
-    def create_event(self, type: str = "generic", **kwargs) -> Event:
-        """Create a typed event.
+    def create_event(self, type: str = "generic", **kwargs) -> str:
+        """Create a typed event (non-blocking) and return client-side UUID.
 
-        Args:
-            type: One of [llm_generation, function_call, error_traceback, generic]
-            kwargs: Typed fields for payload and optional top-level fields:
-                   parent_event_id, tags, metadata, occurred_at, duration, session_id
-        Returns:
-            Event: newly created event object
+        - Generates and returns client_event_id immediately
+        - Enqueues the full event for background processing via EventQueue
+        - Supports parent nesting via client-side parent_event_id
+        - Handles client-side blob thresholding in the queue
         """
         # Resolve session_id: explicit -> context -> current session
         session_id = kwargs.pop('session_id', None)
@@ -319,7 +292,7 @@ class Client:
         if not session_id:
             raise InvalidOperationError("No active session for event creation")
 
-        # Parent event id from kwargs or parent context
+        # Parent event id from kwargs or parent context (client-side)
         parent_event_id = kwargs.get('parent_event_id')
         if not parent_event_id:
             try:
@@ -328,28 +301,32 @@ class Client:
             except Exception:
                 parent_event_id = None
 
-        # Build payload
+        # Build payload (typed)
         payload = self._build_payload(type, dict(kwargs))
 
-        # Build request body
-        from datetime import datetime as _dt, timezone as _tz
-        # Compute occurred_at with timezone information
+        # Occurred-at
+        from datetime import datetime as _dt
         _occ = kwargs.get("occurred_at")
         if isinstance(_occ, str):
             occurred_at_str = _occ
         elif isinstance(_occ, _dt):
             if _occ.tzinfo is None:
-                # Assume naive datetime is in local time and attach local tz
                 local_tz = _dt.now().astimezone().tzinfo
                 occurred_at_str = _occ.replace(tzinfo=local_tz).isoformat()
             else:
                 occurred_at_str = _occ.isoformat()
         else:
             occurred_at_str = _dt.now().astimezone().isoformat()
+
+        # Client-side UUIDs
+        client_event_id = kwargs.get('event_id') or str(uuid.uuid4())
+
+        # Build request body with client ids
         event_request: Dict[str, Any] = {
             "session_id": session_id,
+            "client_event_id": client_event_id,
+            "parent_client_event_id": parent_event_id,
             "type": type,
-            "parent_event_id": parent_event_id,
             "occurred_at": occurred_at_str,
             "duration": kwargs.get("duration"),
             "tags": kwargs.get("tags", []),
@@ -357,37 +334,13 @@ class Client:
             "payload": payload,
         }
 
-        # POST /events
-        response = self.make_request('events', 'POST', event_request)
-        event = Event(response, self)
-        if self.session and self.session.session_id == session_id:
-            if hasattr(self.session, 'event_history') and isinstance(self.session.event_history, list):
-                self.session.event_history.append(event)
-        return event
+        # Queue for background processing and return immediately
+        self._event_queue.queue_event(event_request)
+        return client_event_id
 
-    def update_event(self, event_id: str, type: Optional[str] = None, **kwargs) -> Event:
-        """Update an existing event.
-
-        If 'type' is provided, rebuilds a payload from kwargs; otherwise,
-        accepts a 'payload' field in kwargs for direct updates.
-        """
-        update_body: Dict[str, Any] = {
-            "event_id": event_id,
-        }
-        # Top-level fields
-        for key in ["occurred_at", "duration", "tags", "metadata"]:
-            if key in kwargs and kwargs[key] is not None:
-                update_body[key] = kwargs[key]
-
-        # Payload
-        if type:
-            update_body["payload"] = self._build_payload(type, dict(kwargs))
-        elif "payload" in kwargs:
-            update_body["payload"] = kwargs["payload"]
-
-        # POST /events
-        response = self.make_request("events", 'POST', update_body)
-        return Event(response, self)
+    def update_event(self, event_id: str, type: Optional[str] = None, **kwargs) -> str:
+        """Deprecated: events are immutable in the new model."""
+        raise InvalidOperationError("update_event is no longer supported. Events are immutable.")
 
     def mask(self, data):
         if not self.masking_function:

@@ -1,16 +1,21 @@
-"""Custom OpenTelemetry exporter for Lucidic backend compatibility"""
+"""Custom OpenTelemetry exporter for Lucidic (Exporter-only mode).
+
+Converts completed spans into immutable typed LLM events via Client.create_event(),
+which enqueues non-blocking delivery through the EventQueue.
+"""
 import json
 import logging
 from typing import Sequence, Optional, Dict, Any, List
+from datetime import datetime, timezone
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import StatusCode
 from opentelemetry.semconv_ai import SpanAttributes
 
 from lucidicai.client import Client
-from lucidicai.context import current_session_id
+from lucidicai.context import current_session_id, current_parent_event_id
 from lucidicai.model_pricing import calculate_cost
-from lucidicai.image_upload import extract_base64_images
+from .extract import detect_is_llm_span, extract_images, extract_prompts, extract_completions, extract_model
 
 logger = logging.getLogger("Lucidic")
 import os
@@ -20,69 +25,81 @@ VERBOSE = os.getenv("LUCIDIC_VERBOSE", "False") == "True"
 
 
 class LucidicSpanExporter(SpanExporter):
-    """Custom exporter that converts OpenTelemetry spans to Lucidic events"""
-    
-    def __init__(self):
-        self.pending_events = {}  # Track events by span_id
-        
+    """Exporter that creates immutable LLM events for completed spans."""
+
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        """Export spans by converting them to Lucidic events"""
         try:
             client = Client()
-                
             for span in spans:
                 self._process_span(span, client)
-                
             return SpanExportResult.SUCCESS
         except Exception as e:
             logger.error(f"Failed to export spans: {e}")
             return SpanExportResult.FAILURE
-    
+
     def _process_span(self, span: ReadableSpan, client: Client) -> None:
-        """Process a single span and convert to Lucidic event"""
+        """Convert a single LLM span into a typed, immutable event."""
         try:
-            # Skip non-LLM spans
-            if not self._is_llm_span(span):
+            if not detect_is_llm_span(span):
                 return
-                
-            # Extract relevant attributes
+
             attributes = dict(span.attributes or {})
-            
-            # Create or update event based on span lifecycle
-            span_id = format(span.context.span_id, '016x')
-            
-            if span_id not in self.pending_events:
-                # New span - create event
-                event_id = self._create_event_from_span(span, attributes, client)
-                if event_id:
-                    self.pending_events[span_id] = {
-                        'event_id': event_id,
-                        'start_time': span.start_time
-                    }
-            else:
-                # Span ended - update event
-                event_info = self.pending_events.pop(span_id)
-                self._update_event_from_span(span, attributes, event_info['event_id'], client)
-                
+
+            # Resolve session id
+            target_session_id = attributes.get('lucidic.session_id')
+            if not target_session_id:
+                try:
+                    target_session_id = current_session_id.get(None)
+                except Exception:
+                    target_session_id = None
+            if not target_session_id and getattr(client, 'session', None) and getattr(client.session, 'session_id', None):
+                target_session_id = client.session.session_id
+            if not target_session_id:
+                return
+
+            # Parent nesting
+            parent_id = None
+            try:
+                parent_id = current_parent_event_id.get(None)
+            except Exception:
+                parent_id = None
+
+            # Timing
+            occurred_at = datetime.fromtimestamp(span.start_time / 1_000_000_000, tz=timezone.utc) if span.start_time else datetime.now(tz=timezone.utc)
+            duration_seconds = ((span.end_time - span.start_time) / 1_000_000_000) if (span.start_time and span.end_time) else None
+
+            # Typed fields using extract utilities
+            model = extract_model(attributes) or 'unknown'
+            provider = self._detect_provider_name(attributes)
+            messages = extract_prompts(attributes) or []
+            params = self._extract_params(attributes)
+            output_text = extract_completions(span, attributes) or "Response received"
+            input_tokens = self._extract_prompt_tokens(attributes)
+            output_tokens = self._extract_completion_tokens(attributes)
+            cost = self._calculate_cost(attributes)
+            images = extract_images(attributes)
+
+            # Create immutable event via non-blocking queue
+            client.create_event(
+                type="llm_generation",
+                session_id=target_session_id,
+                parent_event_id=parent_id,
+                occurred_at=occurred_at,
+                duration=duration_seconds,
+                provider=provider,
+                model=model,
+                messages=messages,
+                params=params,
+                output=output_text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=cost,
+                raw={"images": images} if images else None,
+            )
+
         except Exception as e:
             logger.error(f"Failed to process span {span.name}: {e}")
     
-    def _is_llm_span(self, span: ReadableSpan) -> bool:
-        """Check if this is an LLM-related span"""
-        # Check span name patterns
-        llm_patterns = ['openai', 'anthropic', 'chat', 'completion', 'embedding', 'llm']
-        span_name_lower = span.name.lower()
-        
-        if any(pattern in span_name_lower for pattern in llm_patterns):
-            return True
-            
-        # Check for LLM attributes
-        if span.attributes:
-            for key in span.attributes:
-                if key.startswith('gen_ai.') or key.startswith('llm.'):
-                    return True
-                    
-        return False
     
     def _create_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], client: Client) -> Optional[str]:
         """Create a Lucidic event from span start"""
@@ -121,11 +138,6 @@ class LucidicSpanExporter(SpanExporter):
             if images:
                 event_kwargs['screenshots'] = images
                 
-            # Check if we have a specific step_id in span attributes
-            step_id = attributes.get('lucidic.step_id')
-            if step_id:
-                event_kwargs['step_id'] = step_id
-                
             return client.create_event_for_session(target_session_id, **event_kwargs)
             
         except Exception as e:
@@ -133,32 +145,8 @@ class LucidicSpanExporter(SpanExporter):
             return None
     
     def _update_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], event_id: str, client: Client) -> None:
-        """Update a Lucidic event from span end"""
-        try:
-            # Extract response/result
-            result = self._extract_result(span, attributes)
-            
-            # Calculate cost if we have token usage
-            cost = self._calculate_cost(attributes)
-            
-            # Determine success
-            is_successful = span.status.status_code != StatusCode.ERROR
-            
-            update_kwargs = {
-                'event_id': event_id,
-                'result': result,
-                'is_finished': True,
-                'is_successful': is_successful
-            }
-            
-            if cost is not None:
-                update_kwargs['cost_added'] = cost
-                
-            # Route update to the same session; event_id is globally unique so server resolves it
-            client.session.update_event(**update_kwargs)
-            
-        except Exception as e:
-            logger.error(f"Failed to update event from span: {e}")
+        """Deprecated: events are immutable; no updates performed."""
+        return
     
     def _extract_description(self, span: ReadableSpan, attributes: Dict[str, Any]) -> str:
         """Extract description from span attributes"""
@@ -198,74 +186,60 @@ class LucidicSpanExporter(SpanExporter):
             
         return "Response received"
     
-    def _extract_images(self, attributes: Dict[str, Any]) -> List[str]:
-        """Extract base64 images from attributes"""
-        images = []
-        
-        # Check prompts for multimodal content
-        prompts = attributes.get(SpanAttributes.LLM_PROMPTS) or \
-                 attributes.get('gen_ai.prompt')
-                 
-        if isinstance(prompts, list):
-            for prompt in prompts:
-                if isinstance(prompt, dict) and 'content' in prompt:
-                    content = prompt['content']
-                    if isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict) and item.get('type') == 'image_url':
-                                image_url = item.get('image_url', {})
-                                if isinstance(image_url, dict) and 'url' in image_url:
-                                    url = image_url['url']
-                                    if url.startswith('data:image'):
-                                        images.append(url)
-                                        
-        return images
+    def _detect_provider_name(self, attributes: Dict[str, Any]) -> str:
+        name = attributes.get('gen_ai.system') or attributes.get('service.name')
+        if name:
+            return str(name)
+        return "openai" if 'openai' in (str(attributes.get('service.name', '')).lower()) else "unknown"
     
-    def _format_messages(self, messages: List[Any]) -> str:
-        """Format message list into description"""
-        formatted = []
-        
-        for msg in messages:
-            if isinstance(msg, dict):
-                role = msg.get('role', 'unknown')
-                content = msg.get('content', '')
-                
-                if isinstance(content, str):
-                    formatted.append(f"{role}: {content}")
-                elif isinstance(content, list):
-                    # Handle multimodal content
-                    text_parts = []
-                    for item in content:
-                        if isinstance(item, dict) and item.get('type') == 'text':
-                            text_parts.append(item.get('text', ''))
-                    if text_parts:
-                        formatted.append(f"{role}: {' '.join(text_parts)}")
-                        
-        return '\n'.join(formatted) if formatted else "Model request"
+
+    def _extract_params(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "temperature": attributes.get('gen_ai.request.temperature'),
+            "max_tokens": attributes.get('gen_ai.request.max_tokens'),
+            "top_p": attributes.get('gen_ai.request.top_p'),
+        }
+
+    def _extract_prompt_tokens(self, attributes: Dict[str, Any]) -> int:
+        return (
+            attributes.get(SpanAttributes.LLM_USAGE_PROMPT_TOKENS) or
+            attributes.get('gen_ai.usage.prompt_tokens') or
+            attributes.get('gen_ai.usage.input_tokens') or 0
+        )
+
+    def _extract_completion_tokens(self, attributes: Dict[str, Any]) -> int:
+        return (
+            attributes.get(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS) or
+            attributes.get('gen_ai.usage.completion_tokens') or
+            attributes.get('gen_ai.usage.output_tokens') or 0
+        )
     
     def _calculate_cost(self, attributes: Dict[str, Any]) -> Optional[float]:
-        """Calculate cost from token usage"""
-        prompt_tokens = attributes.get(SpanAttributes.LLM_USAGE_PROMPT_TOKENS) or \
-                       attributes.get('gen_ai.usage.prompt_tokens') or 0
-        completion_tokens = attributes.get(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS) or \
-                           attributes.get('gen_ai.usage.completion_tokens') or 0
-        
-        if prompt_tokens or completion_tokens:
-            model = attributes.get(SpanAttributes.LLM_RESPONSE_MODEL) or \
-                   attributes.get(SpanAttributes.LLM_REQUEST_MODEL) or \
-                   attributes.get('gen_ai.request.model')
-                   
+        prompt_tokens = (
+            attributes.get(SpanAttributes.LLM_USAGE_PROMPT_TOKENS) or
+            attributes.get('gen_ai.usage.prompt_tokens') or
+            attributes.get('gen_ai.usage.input_tokens') or 0
+        )
+        completion_tokens = (
+            attributes.get(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS) or
+            attributes.get('gen_ai.usage.completion_tokens') or
+            attributes.get('gen_ai.usage.output_tokens') or 0
+        )
+        total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+        if total_tokens > 0:
+            model = (
+                attributes.get(SpanAttributes.LLM_RESPONSE_MODEL) or
+                attributes.get(SpanAttributes.LLM_REQUEST_MODEL) or
+                attributes.get('gen_ai.response.model') or
+                attributes.get('gen_ai.request.model')
+            )
             if model:
-                return calculate_cost(prompt_tokens, completion_tokens, model)
-                
+                usage = {"prompt_tokens": prompt_tokens or 0, "completion_tokens": completion_tokens or 0, "total_tokens": total_tokens}
+                return calculate_cost(model, usage)
         return None
     
     def shutdown(self) -> None:
-        """Shutdown the exporter"""
-        # Process any remaining pending events
-        if self.pending_events:
-            logger.warning(f"Shutting down with {len(self.pending_events)} pending events")
-            
+        return None
+
     def force_flush(self, timeout_millis: int = 30000) -> bool:
-        """Force flush any pending spans"""
         return True

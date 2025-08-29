@@ -25,7 +25,7 @@ class TestGroqComprehensive(unittest.TestCase):
             raise unittest.SkipTest("Missing GROQ_API_KEY")
 
         lai.init(session_name="Groq Unit Tests", providers=["groq"], auto_end=False)
-        lai.create_step(state="Testing Groq", action="Run unit tests", goal="Validate functionality")
+        # Steps removed in new SDK – no-op
 
     def test_chat_completion_sync(self):
         try:

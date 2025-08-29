@@ -58,12 +58,7 @@ class TestLiteLLMComprehensive(unittest.TestCase):
             providers=["litellm"]
         )
         
-        # Create test step
-        lai.create_step(
-            state="Testing LiteLLM Integration",
-            action="Run unit tests",
-            goal="Validate all LiteLLM functionality"
-        )
+        # Steps removed in new SDK – no-op
         
         # Set API keys for LiteLLM
         litellm.openai_key = OPENAI_API_KEY
@@ -72,8 +67,7 @@ class TestLiteLLMComprehensive(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         """Tear down test class"""
-        lai.end_step()
-        lai.end_session()
+        # Session end handled by test runner or explicit calls if needed
     
     def test_openai_provider_sync(self):
         """Test OpenAI provider through LiteLLM tracks correct information"""
