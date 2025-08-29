@@ -21,42 +21,10 @@ class StreamingResponseWrapper:
         self.accumulated_content = ""
         self.usage = None
         
-        # Create initial event
-        self._create_initial_event()
+        # We no longer create an initial event; emit a single immutable event on finalize
     
     def _create_initial_event(self):
-        """Create the initial event for streaming response"""
-        try:
-            # Check if event_id was already created
-            if '_event_id' in self.kwargs:
-                self.event_id = self.kwargs['_event_id']
-                logger.info(f"[Streaming] Using existing event ID: {self.event_id}")
-                return
-                
-            if Client().session:
-                description, images = self._format_messages(self.kwargs.get('messages', ''))
-                
-                event_data = {
-                    'action': description,
-                    'cost': 0,
-                    'provider': 'OpenAI',
-                    'model': self.kwargs.get('model', 'unknown'),
-                    'tool': 'streaming',
-                    'raw_request': json.dumps({
-                        'model': self.kwargs.get('model'),
-                        'messages': self._serialize_messages(self.kwargs.get('messages', [])),
-                        'stream': True,
-                        **{k: v for k, v in self.kwargs.items() if k not in ['messages', 'model', 'stream', '_event_id']}
-                    })
-                }
-                
-                if images:
-                    event_data['screenshots'] = images
-                
-                self.event_id = Client().session.create_event(**event_data)
-                logger.debug(f"[Streaming] Created new streaming event with ID: {self.event_id}")
-        except Exception as e:
-            logger.error(f"[Streaming] Error creating initial streaming event: {str(e)}")
+        return
     
     def _format_messages(self, messages):
         """Format messages for description and extract images"""
@@ -195,10 +163,6 @@ class StreamingResponseWrapper:
         try:
             logger.info(f"[Streaming] Finalizing event {self.event_id}, accumulated content length: {len(self.accumulated_content)}")
             
-            if not self.event_id:
-                logger.warning("[Streaming] No event_id to finalize")
-                return
-                
             if not self.session:
                 # Try to get session from client
                 try:
@@ -229,18 +193,19 @@ class StreamingResponseWrapper:
             model = self.kwargs.get('model', 'unknown')
             cost = self._calculate_cost(model, prompt_tokens, completion_tokens)
             
-            # Update event with safe defaults
-            update_data = {
-                'result': self.accumulated_content if self.accumulated_content else "Stream completed (no content received)",
-                'cost_added': cost if cost else 0.0,
-                'is_finished': True,
-                'model': model
-            }
-            
-            update_data['event_id'] = self.event_id
-            logger.info(f"[Streaming] Updating event with: result='{update_data.get('result', '')[:50]}...', cost_added={update_data.get('cost_added', 0)}, is_finished=True")
-            self.session.update_event(**update_data)
-            logger.info(f"[Streaming] Successfully finalized streaming event {self.event_id}")
+            # Create single immutable event at end
+            result_text = self.accumulated_content if self.accumulated_content else "Stream completed (no content received)"
+            Client().create_event(
+                type="llm_generation",
+                model=model,
+                messages=self.kwargs.get('messages', []),
+                output=result_text,
+                input_tokens=int(prompt_tokens),
+                output_tokens=int(completion_tokens),
+                cost=cost,
+                duration=duration,
+            )
+            logger.info(f"[Streaming] Emitted immutable streaming event")
             
         except Exception as e:
             logger.error(f"[Streaming] Error finalizing event {self.event_id}: {str(e)}")

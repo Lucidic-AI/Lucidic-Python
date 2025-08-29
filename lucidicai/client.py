@@ -15,6 +15,8 @@ from .session import Session
 from .singleton import singleton, clear_singletons
 from .lru import LRUCache
 from .event import Event
+from .event_queue import EventQueue
+import uuid
 
 NETWORK_RETRIES = 3
 
@@ -47,6 +49,8 @@ class Client:
         self.request_session.mount("https://", adapter)
         self.set_api_key(api_key)
         self.prompts = dict()
+        # Initialize event queue (non-blocking event delivery)
+        self._event_queue = EventQueue(self)
 
     def set_api_key(self, api_key: str):
         self.api_key = api_key
@@ -297,14 +301,12 @@ class Client:
         return payload
 
     def create_event(self, type: str = "generic", **kwargs) -> str:
-        """Create a typed event.
+        """Create a typed event (non-blocking) and return client-side UUID.
 
-        Args:
-            type: One of [llm_generation, function_call, error_traceback, generic]
-            kwargs: Typed fields for payload and optional top-level fields:
-                   parent_event_id, tags, metadata, occurred_at, duration, session_id
-        Returns:
-            Event: newly created event object
+        - Generates and returns client_event_id immediately
+        - Enqueues the full event for background processing via EventQueue
+        - Supports parent nesting via client-side parent_event_id
+        - Handles client-side blob thresholding in the queue
         """
         # Resolve session_id: explicit -> context -> current session
         session_id = kwargs.pop('session_id', None)
@@ -319,7 +321,7 @@ class Client:
         if not session_id:
             raise InvalidOperationError("No active session for event creation")
 
-        # Parent event id from kwargs or parent context
+        # Parent event id from kwargs or parent context (client-side)
         parent_event_id = kwargs.get('parent_event_id')
         if not parent_event_id:
             try:
@@ -328,28 +330,32 @@ class Client:
             except Exception:
                 parent_event_id = None
 
-        # Build payload
+        # Build payload (typed)
         payload = self._build_payload(type, dict(kwargs))
 
-        # Build request body
-        from datetime import datetime as _dt, timezone as _tz
-        # Compute occurred_at with timezone information
+        # Occurred-at
+        from datetime import datetime as _dt
         _occ = kwargs.get("occurred_at")
         if isinstance(_occ, str):
             occurred_at_str = _occ
         elif isinstance(_occ, _dt):
             if _occ.tzinfo is None:
-                # Assume naive datetime is in local time and attach local tz
                 local_tz = _dt.now().astimezone().tzinfo
                 occurred_at_str = _occ.replace(tzinfo=local_tz).isoformat()
             else:
                 occurred_at_str = _occ.isoformat()
         else:
             occurred_at_str = _dt.now().astimezone().isoformat()
+
+        # Client-side UUIDs
+        client_event_id = kwargs.get('event_id') or str(uuid.uuid4())
+
+        # Build request body with client ids
         event_request: Dict[str, Any] = {
             "session_id": session_id,
+            "client_event_id": client_event_id,
+            "parent_client_event_id": parent_event_id,
             "type": type,
-            "parent_event_id": parent_event_id,
             "occurred_at": occurred_at_str,
             "duration": kwargs.get("duration"),
             "tags": kwargs.get("tags", []),
@@ -357,52 +363,13 @@ class Client:
             "payload": payload,
         }
 
-        # POST /events
-        response = self.make_request('events', 'POST', event_request)
-        event = Event(response, self)
-        if self.session and self.session.session_id == session_id:
-            if hasattr(self.session, 'event_history') and isinstance(self.session.event_history, list):
-                self.session.event_history.append(event)
-            # track latest event for convenience APIs
-            try:
-                self.session.latest_event = event
-            except Exception:
-                pass
-        return event.event_id
+        # Queue for background processing and return immediately
+        self._event_queue.queue_event(event_request)
+        return client_event_id
 
     def update_event(self, event_id: str, type: Optional[str] = None, **kwargs) -> str:
-        """Update an existing event.
-
-        If 'type' is provided, rebuilds a payload from kwargs; otherwise,
-        accepts a 'payload' field in kwargs for direct updates.
-        """
-        update_body: Dict[str, Any] = {
-            "event_id": event_id,
-        }
-        # Top-level fields
-        for key in ["occurred_at", "duration", "tags", "metadata"]:
-            if key in kwargs and kwargs[key] is not None:
-                update_body[key] = kwargs[key]
-
-        # Payload
-        if type:
-            update_body["payload"] = self._build_payload(type, dict(kwargs))
-        elif "payload" in kwargs:
-            update_body["payload"] = kwargs["payload"]
-
-        # PUT /events/{event_id}
-        response = self.make_request(f"events/{event_id}", 'PUT', update_body)
-        updated = Event(response, self)
-        # update in history if present
-        if self.session and hasattr(self.session, 'event_history'):
-            try:
-                for i, existing in enumerate(self.session.event_history):
-                    if getattr(existing, 'event_id', None) == event_id:
-                        self.session.event_history[i] = updated
-                        break
-            except Exception:
-                pass
-        return updated.event_id
+        """Deprecated: events are immutable in the new model."""
+        raise InvalidOperationError("update_event is no longer supported. Events are immutable.")
 
     def mask(self, data):
         if not self.masking_function:

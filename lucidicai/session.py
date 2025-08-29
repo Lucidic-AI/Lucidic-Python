@@ -48,8 +48,4 @@ class Session:
         event_id = Client().create_event(type=type, **kwargs)
         return event_id
 
-    def update_event(self, event_id: str, **kwargs) -> str:
-        from .client import Client
-        return Client().update_event(event_id=event_id, **kwargs)
-
             

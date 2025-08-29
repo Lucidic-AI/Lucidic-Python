@@ -113,13 +113,13 @@ def _post_fatal_event(exit_code: int, description: str, extra: Optional[dict] = 
             except Exception:
                 pass
 
-        event_id = session.create_event(
-            description=_mask_and_truncate(description),
-            result=f"process exited with code {exit_code}",
-            function_name="__process_exit__",
-            arguments=arguments,
+        # Create a single immutable event describing the crash
+        session.create_event(
+            type="error_traceback",
+            error=_mask_and_truncate(description),
+            traceback="",
+            metadata={"exit_code": exit_code, **({} if not extra else extra)},
         )
-        session.update_event(event_id=event_id, is_finished=True)
     except Exception:
         # Never raise during shutdown
         pass
@@ -145,6 +145,13 @@ def _install_crash_handlers() -> None:
             "exception_message": str(exc),
             "thread_name": threading.current_thread().name,
         })
+        # Best-effort flush event queue before shutting down
+        try:
+            client = Client()
+            if hasattr(client, "_event_queue"):
+                client._event_queue.force_flush()
+        except Exception:
+            pass
         try:
             # Prevent auto_end double work
             client = Client()
@@ -269,8 +276,6 @@ __all__ = [
     'init',
     'continue_session',
     'create_event',
-    'update_event',
-    'end_event',
     'end_session',
     'get_prompt',
     'get_session',
@@ -575,6 +580,13 @@ def _signal_handler(signum, frame):
     except Exception:
         pass
     _auto_end_session()
+    # Best-effort flush of event queue on signal
+    try:
+        client = Client()
+        if hasattr(client, "_event_queue"):
+            client._event_queue.force_flush()
+    except Exception:
+        pass
     _cleanup_telemetry()
     # Re-raise the signal for default handling
     signal.signal(signum, signal.SIG_DFL)
@@ -640,23 +652,6 @@ def create_event(
     if not client.session:
         return
     return client.session.create_event(type=type, **kwargs)
-
-
-def update_event(
-    event_id: Optional[str] = None,
-    **kwargs
-) -> Optional[str]:
-    client = Client()
-    if not client.session:
-        return None
-    if not event_id:
-        return None
-    return client.session.update_event(event_id=event_id, **kwargs)
-
-
-def end_event(*args, **kwargs) -> Optional[str]:
-    """Deprecated in new model. No-op for compatibility of imports."""
-    return None
 
 
 def get_prompt(

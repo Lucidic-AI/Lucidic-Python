@@ -3,6 +3,8 @@ import functools
 import inspect
 import json
 import logging
+import time
+import uuid
 from typing import Any, Callable, Optional, TypeVar
 from collections.abc import Iterable
 
@@ -48,31 +50,33 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
             args_dict = {name: _serialize(val) for name, val in bound.arguments.items()}
 
             parent_id = current_parent_event_id.get(None)
-            event_id = client.create_event(
-                type="function_call",
-                function_name=func.__name__,
-                arguments={"args": args_dict},
-                parent_event_id=parent_id,
-                **decorator_kwargs
-            )
+            pre_event_id = str(uuid.uuid4())
+            start_time = time.time()
+            result = None
+            error: Optional[BaseException] = None
 
-            with event_context(event_id):
-                try:
+            try:
+                with event_context(pre_event_id):
                     result = func(*args, **kwargs)
-                    client.update_event(
-                        event_id=event_id,
-                        type="function_call",
-                        return_value=_serialize(result)
-                    )
-                    return result
-                except Exception as e:
+                return result
+            except Exception as e:
+                error = e
+                raise
+            finally:
+                try:
                     client.create_event(
-                        type="error_traceback",
-                        error=str(e),
-                        traceback=''.join(__import__('traceback').format_exc()),
-                        parent_event_id=event_id
+                        type="function_call",
+                        event_id=pre_event_id,
+                        function_name=func.__name__,
+                        arguments={"args": args_dict},
+                        return_value=None if error else _serialize(result),
+                        error=str(error) if error else None,
+                        parent_event_id=parent_id,
+                        duration=(time.time() - start_time),
+                        **decorator_kwargs
                     )
-                    raise
+                except Exception:
+                    pass
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -89,31 +93,33 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
             args_dict = {name: _serialize(val) for name, val in bound.arguments.items()}
 
             parent_id = current_parent_event_id.get(None)
-            event_id = client.create_event(
-                type="function_call",
-                function_name=func.__name__,
-                arguments={"args": args_dict},
-                parent_event_id=parent_id,
-                **decorator_kwargs
-            )
+            pre_event_id = str(uuid.uuid4())
+            start_time = time.time()
+            result = None
+            error: Optional[BaseException] = None
 
-            async with event_context_async(event_id):
-                try:
+            try:
+                async with event_context_async(pre_event_id):
                     result = await func(*args, **kwargs)
-                    client.update_event(
-                        event_id=event_id,
-                        type="function_call",
-                        return_value=_serialize(result)
-                    )
-                    return result
-                except Exception as e:
+                return result
+            except Exception as e:
+                error = e
+                raise
+            finally:
+                try:
                     client.create_event(
-                        type="error_traceback",
-                        error=str(e),
-                        traceback=''.join(__import__('traceback').format_exc()),
-                        parent_event_id=event_id
+                        type="function_call",
+                        event_id=pre_event_id,
+                        function_name=func.__name__,
+                        arguments={"args": args_dict},
+                        return_value=None if error else _serialize(result),
+                        error=str(error) if error else None,
+                        parent_event_id=parent_id,
+                        duration=(time.time() - start_time),
+                        **decorator_kwargs
                     )
-                    raise
+                except Exception:
+                    pass
 
         if inspect.iscoroutinefunction(func):
             return async_wrapper  # type: ignore
