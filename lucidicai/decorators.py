@@ -1,14 +1,14 @@
-"""Decorators for the Lucidic SDK to create typed, nested events."""
+"""Decorators for the Lucidic SDK to create typed events (linear for decorators)."""
 import functools
 import inspect
 import json
 import logging
+from datetime import datetime
 from typing import Any, Callable, Optional, TypeVar
 from collections.abc import Iterable
 
 from .client import Client
 from .errors import LucidicNotInitializedError
-from .context import current_parent_event_id, event_context, event_context_async
 
 logger = logging.getLogger("Lucidic")
 
@@ -29,7 +29,7 @@ def _serialize(value: Any):
 
 
 def event(**decorator_kwargs) -> Callable[[F], F]:
-    """Universal decorator creating FUNCTION_CALL events with nesting and error capture."""
+    """Universal decorator creating FUNCTION_CALL events at the end (no updates, no nesting)."""
 
     def decorator(func: F) -> F:
         @functools.wraps(func)
@@ -41,38 +41,36 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
             except (LucidicNotInitializedError, AttributeError):
                 return func(*args, **kwargs)
 
+            start_time = datetime.now().astimezone()
             # Build arguments snapshot
             sig = inspect.signature(func)
             bound = sig.bind(*args, **kwargs)
             bound.apply_defaults()
             args_dict = {name: _serialize(val) for name, val in bound.arguments.items()}
 
-            parent_id = current_parent_event_id.get(None)
-            ev = client.create_event(
-                type="function_call",
-                function_name=func.__name__,
-                arguments={"args": args_dict},
-                parent_event_id=parent_id,
-                **decorator_kwargs
-            )
-
-            with event_context(ev.event_id):
-                try:
-                    result = func(*args, **kwargs)
-                    client.update_event(
-                        event_id=ev.event_id,
-                        type="function_call",
-                        return_value=_serialize(result)
-                    )
-                    return result
-                except Exception as e:
-                    client.create_event(
-                        type="error_traceback",
-                        error=str(e),
-                        traceback=''.join(__import__('traceback').format_exc()),
-                        parent_event_id=ev.event_id
-                    )
-                    raise
+            try:
+                result = func(*args, **kwargs)
+                client.create_event(
+                    type="function_call",
+                    function_name=func.__name__,
+                    arguments={"args": args_dict},
+                    return_value=_serialize(result),
+                    occurred_at=start_time,
+                    duration=(datetime.now().astimezone() - start_time).total_seconds(),
+                    **decorator_kwargs
+                )
+                return result
+            except Exception as e:
+                import traceback as _tb
+                client.create_event(
+                    type="error_traceback",
+                    error=str(e),
+                    traceback=''.join(_tb.format_exc()),
+                    occurred_at=start_time,
+                    duration=(datetime.now().astimezone() - start_time).total_seconds(),
+                    **decorator_kwargs
+                )
+                raise
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -83,37 +81,35 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
             except (LucidicNotInitializedError, AttributeError):
                 return await func(*args, **kwargs)
 
+            start_time = datetime.now().astimezone()
             sig = inspect.signature(func)
             bound = sig.bind(*args, **kwargs)
             bound.apply_defaults()
             args_dict = {name: _serialize(val) for name, val in bound.arguments.items()}
 
-            parent_id = current_parent_event_id.get(None)
-            ev = client.create_event(
-                type="function_call",
-                function_name=func.__name__,
-                arguments={"args": args_dict},
-                parent_event_id=parent_id,
-                **decorator_kwargs
-            )
-
-            async with event_context_async(ev.event_id):
-                try:
-                    result = await func(*args, **kwargs)
-                    client.update_event(
-                        event_id=ev.event_id,
-                        type="function_call",
-                        return_value=_serialize(result)
-                    )
-                    return result
-                except Exception as e:
-                    client.create_event(
-                        type="error_traceback",
-                        error=str(e),
-                        traceback=''.join(__import__('traceback').format_exc()),
-                        parent_event_id=ev.event_id
-                    )
-                    raise
+            try:
+                result = await func(*args, **kwargs)
+                client.create_event(
+                    type="function_call",
+                    function_name=func.__name__,
+                    arguments={"args": args_dict},
+                    return_value=_serialize(result),
+                    occurred_at=start_time,
+                    duration=(datetime.now().astimezone() - start_time).total_seconds(),
+                    **decorator_kwargs
+                )
+                return result
+            except Exception as e:
+                import traceback as _tb
+                client.create_event(
+                    type="error_traceback",
+                    error=str(e),
+                    traceback=''.join(_tb.format_exc()),
+                    occurred_at=start_time,
+                    duration=(datetime.now().astimezone() - start_time).total_seconds(),
+                    **decorator_kwargs
+                )
+                raise
 
         if inspect.iscoroutinefunction(func):
             return async_wrapper  # type: ignore
