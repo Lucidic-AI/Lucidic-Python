@@ -296,7 +296,7 @@ class Client:
         }
         return payload
 
-    def create_event(self, type: str = "generic", **kwargs) -> Event:
+    def create_event(self, type: str = "generic", **kwargs) -> str:
         """Create a typed event.
 
         Args:
@@ -363,9 +363,14 @@ class Client:
         if self.session and self.session.session_id == session_id:
             if hasattr(self.session, 'event_history') and isinstance(self.session.event_history, list):
                 self.session.event_history.append(event)
-        return event
+            # track latest event for convenience APIs
+            try:
+                self.session.latest_event = event
+            except Exception:
+                pass
+        return event.event_id
 
-    def update_event(self, event_id: str, type: Optional[str] = None, **kwargs) -> Event:
+    def update_event(self, event_id: str, type: Optional[str] = None, **kwargs) -> str:
         """Update an existing event.
 
         If 'type' is provided, rebuilds a payload from kwargs; otherwise,
@@ -385,9 +390,19 @@ class Client:
         elif "payload" in kwargs:
             update_body["payload"] = kwargs["payload"]
 
-        # POST /events
-        response = self.make_request("events", 'POST', update_body)
-        return Event(response, self)
+        # PUT /events/{event_id}
+        response = self.make_request(f"events/{event_id}", 'PUT', update_body)
+        updated = Event(response, self)
+        # update in history if present
+        if self.session and hasattr(self.session, 'event_history'):
+            try:
+                for i, existing in enumerate(self.session.event_history):
+                    if getattr(existing, 'event_id', None) == event_id:
+                        self.session.event_history[i] = updated
+                        break
+            except Exception:
+                pass
+        return updated.event_id
 
     def mask(self, data):
         if not self.masking_function:

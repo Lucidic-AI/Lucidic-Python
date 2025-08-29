@@ -147,60 +147,6 @@ class LucidicSpanProcessor(SpanProcessor):
                     
         return False
     
-    def _create_event_from_span_start(self, span: Span, client: Client) -> Optional[str]:
-        """Deprecated: old model start-event creation (kept for reference)"""
-        try:
-            attributes = dict(span.attributes or {})
-            
-            # Extract description
-            if DEBUG:
-                logger.info(f"[SpanProcessor -- DEBUG] Extracting Description from span start: {span}")
-            description = self._extract_description(span, attributes)
-            
-            # Extract images
-            images = self._extract_images(attributes)
-            
-            # Get model
-            model = (
-                attributes.get(SpanAttributes.LLM_REQUEST_MODEL) or
-                attributes.get('gen_ai.request.model') or
-                attributes.get('llm.model') or
-                'unknown'
-            )
-            
-            # Initial result based on whether it's streaming
-            is_streaming = attributes.get(SpanAttributes.LLM_IS_STREAMING, False) or \
-                         attributes.get('llm.is_streaming', False)
-            initial_result = None if is_streaming else "Waiting for response..."
-            
-            # Apply masking to description if configured
-            if client.masking_function:
-                description = client.mask(description)
-            
-            # Create event - session.create_event will handle temporary step creation if needed
-            event_kwargs = {
-                'description': description,
-                'result': initial_result,
-                'model': model
-            }
-
-            if DEBUG:
-                logger.info(f"[SpanProcessor -- DEBUG] event_kwargs: {event_kwargs}")
-            
-            if images:
-                event_kwargs['screenshots'] = images
-                
-            # Check for step context
-            step_id = attributes.get('lucidic.step_id')
-            if step_id:
-                event_kwargs['step_id'] = step_id
-                
-            return client.session.create_event(**event_kwargs)
-            
-        except Exception as e:
-            logger.error(f"Failed to create event: {e}")
-            return None
-    
     def _create_typed_event_from_span_end(self, span: Span, client: Client) -> Optional[str]:
         """Create LLM_GENERATION typed event when span ends with all attributes available"""
         try:

@@ -145,34 +145,8 @@ class OpenTelemetryProvider(BaseProvider):
         # We'll need to create custom instrumentation or use manual spans
         logger.info("[OpenTelemetry Provider] Pydantic AI instrumentation not yet available in OpenLLMetry")
         
-    @contextmanager
-    def trace_step(self, step_id: str, state: str = None, action: str = None, goal: str = None):
-        """Context manager to associate spans with a specific step"""
-        span = self.tracer.start_span(
-            name=f"step.{step_id}",
-            attributes={
-                "lucidic.step_id": step_id,
-                "lucidic.step.state": state or "",
-                "lucidic.step.action": action or "",
-                "lucidic.step.goal": goal or ""
-            }
-        )
-        
-        token = context.attach(trace.set_span_in_context(span))
-        try:
-            yield span
-        finally:
-            context.detach(token)
-            span.end()
-            
     def add_image_to_span(self, image_data: str, image_type: str = "screenshot") -> None:
         """Add image data to current span"""
         current_span = trace.get_current_span()
         if current_span and current_span.is_recording():
             current_span.set_attribute(f"lucidic.image.{image_type}", image_data)
-            
-    def set_step_context(self, step_id: str) -> None:
-        """Set step ID in current span context"""
-        current_span = trace.get_current_span()
-        if current_span and current_span.is_recording():
-            current_span.set_attribute("lucidic.step_id", step_id)

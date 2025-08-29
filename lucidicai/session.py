@@ -38,18 +38,17 @@ class Session:
         }
         Client().make_request('updatesession', 'PUT', request_data)
 
-    def create_event(self, type: str = "generic", **kwargs):
+    def create_event(self, type: str = "generic", **kwargs) -> str:
         """Proxy to client.create_event bound to this session."""
         if not self.session_id:
             raise LucidicNotInitializedError()
         from .client import Client
         kwargs = dict(kwargs)
         kwargs['session_id'] = self.session_id
-        event = Client().create_event(type=type, **kwargs)
-        self.latest_event = event
-        return event.event_id
+        event_id = Client().create_event(type=type, **kwargs)
+        return event_id
 
-    def update_event(self, event_id: str, **kwargs):
+    def update_event(self, event_id: str, **kwargs) -> str:
         from .client import Client
         return Client().update_event(event_id=event_id, **kwargs)
 

@@ -121,11 +121,6 @@ class LucidicSpanExporter(SpanExporter):
             if images:
                 event_kwargs['screenshots'] = images
                 
-            # Check if we have a specific step_id in span attributes
-            step_id = attributes.get('lucidic.step_id')
-            if step_id:
-                event_kwargs['step_id'] = step_id
-                
             return client.create_event_for_session(target_session_id, **event_kwargs)
             
         except Exception as e:

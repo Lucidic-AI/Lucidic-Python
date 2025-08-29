@@ -48,7 +48,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
             args_dict = {name: _serialize(val) for name, val in bound.arguments.items()}
 
             parent_id = current_parent_event_id.get(None)
-            ev = client.create_event(
+            event_id = client.create_event(
                 type="function_call",
                 function_name=func.__name__,
                 arguments={"args": args_dict},
@@ -56,11 +56,11 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                 **decorator_kwargs
             )
 
-            with event_context(ev.event_id):
+            with event_context(event_id):
                 try:
                     result = func(*args, **kwargs)
                     client.update_event(
-                        event_id=ev.event_id,
+                        event_id=event_id,
                         type="function_call",
                         return_value=_serialize(result)
                     )
@@ -70,7 +70,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                         type="error_traceback",
                         error=str(e),
                         traceback=''.join(__import__('traceback').format_exc()),
-                        parent_event_id=ev.event_id
+                        parent_event_id=event_id
                     )
                     raise
 
@@ -89,7 +89,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
             args_dict = {name: _serialize(val) for name, val in bound.arguments.items()}
 
             parent_id = current_parent_event_id.get(None)
-            ev = client.create_event(
+            event_id = client.create_event(
                 type="function_call",
                 function_name=func.__name__,
                 arguments={"args": args_dict},
@@ -97,11 +97,11 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                 **decorator_kwargs
             )
 
-            async with event_context_async(ev.event_id):
+            async with event_context_async(event_id):
                 try:
                     result = await func(*args, **kwargs)
                     client.update_event(
-                        event_id=ev.event_id,
+                        event_id=event_id,
                         type="function_call",
                         return_value=_serialize(result)
                     )
@@ -111,7 +111,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                         type="error_traceback",
                         error=str(e),
                         traceback=''.join(__import__('traceback').format_exc()),
-                        parent_event_id=ev.event_id
+                        parent_event_id=event_id
                     )
                     raise
 

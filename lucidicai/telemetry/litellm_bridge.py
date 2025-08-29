@@ -26,7 +26,7 @@ class LucidicLiteLLMCallback(CustomLogger):
     """
     Custom callback for LiteLLM that bridges to Lucidic's event system.
     
-    This callback integrates LiteLLM's logging with Lucidic's session/step/event hierarchy,
+    This callback integrates LiteLLM's logging with Lucidic's session/event hierarchy,
     enabling automatic tracking of all LiteLLM-supported providers.
     """
     

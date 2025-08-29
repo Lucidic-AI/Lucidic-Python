@@ -268,7 +268,6 @@ __all__ = [
     'Event',
     'init',
     'continue_session',
-    # step APIs removed in new event model
     'create_event',
     'update_event',
     'end_event',
@@ -633,21 +632,6 @@ def create_mass_sim(
     return mass_sim_id
 
 
-def create_step(*args, **kwargs):
-    """Removed in new event model. No-op placeholder."""
-    return None
-
-
-def update_step(*args, **kwargs):
-    """Removed in new event model. No-op placeholder."""
-    return None
-
-
-def end_step(*args, **kwargs):
-    """Removed in new event model. No-op placeholder."""
-    return None
-
-
 def create_event(
     type: str = "generic",
     **kwargs
@@ -661,18 +645,18 @@ def create_event(
 def update_event(
     event_id: Optional[str] = None,
     **kwargs
-) -> None:
+) -> Optional[str]:
     client = Client()
     if not client.session:
-        return
+        return None
     if not event_id:
-        return
-    client.session.update_event(event_id=event_id, **kwargs)
+        return None
+    return client.session.update_event(event_id=event_id, **kwargs)
 
 
-def end_event(*args, **kwargs) -> None:
+def end_event(*args, **kwargs) -> Optional[str]:
     """Deprecated in new model. No-op for compatibility of imports."""
-    return
+    return None
 
 
 def get_prompt(
