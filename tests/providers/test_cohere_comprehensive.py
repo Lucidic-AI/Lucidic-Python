@@ -25,7 +25,7 @@ class TestCohereComprehensive(unittest.TestCase):
             raise unittest.SkipTest("Missing COHERE_API_KEY")
 
         lai.init(session_name="Cohere Unit Tests", providers=["cohere"], auto_end=False)
-        lai.create_step(state="Testing Cohere", action="Run unit tests", goal="Validate functionality")
+        # Steps removed in new SDK – no-op
 
     def test_chat_sync(self):
         try:

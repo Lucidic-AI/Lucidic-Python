@@ -34,12 +34,7 @@ class TestAnthropicComprehensive(unittest.TestCase):
             providers=["anthropic", "openai"]  # Both for testing via OpenAI SDK
         )
         
-        # Create test step
-        lai.create_step(
-            state="Testing Anthropic SDK",
-            action="Run unit tests",
-            goal="Validate all Anthropic functionality"
-        )
+        # Steps removed in new SDK – no-op
         
         cls.sync_client = Anthropic(api_key=ANTHROPIC_API_KEY)
         cls.async_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -52,7 +47,7 @@ class TestAnthropicComprehensive(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         """Tear down test class"""
-        lai.end_step()
+        # Steps removed – no-op
         lai.end_session()
     
     def test_native_sync(self):

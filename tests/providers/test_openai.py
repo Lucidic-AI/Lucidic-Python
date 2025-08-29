@@ -30,22 +30,14 @@ class TestOpenAIBasic(unittest.TestCase):
             providers=["openai"]
         )
         
-        # Create test step
-        lai.create_step(
-            state="Analyzing airport runway image",
-            action="Identify airport and count runways",
-            goal="Determine airport name and runway count from image"
-        )
-
-        print(f"🔍 Step created")
+        # Steps removed in new SDK – no-op
         
         cls.client = OpenAI(api_key=OPENAI_API_KEY)
     
     @classmethod
     def tearDownClass(cls):
         """Clean up Lucidic session"""
-        lai.end_step()
-        lai.end_session()
+        # Session end handled by test runner or explicit calls if needed
     
     def test_airport_runway_analysis(self):
         """Test asking model about airport and runway count in ord_runways.jpg"""
