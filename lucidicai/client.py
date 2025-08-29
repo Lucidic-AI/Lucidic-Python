@@ -332,12 +332,25 @@ class Client:
         payload = self._build_payload(type, dict(kwargs))
 
         # Build request body
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
+        # Compute occurred_at with timezone information
+        _occ = kwargs.get("occurred_at")
+        if isinstance(_occ, str):
+            occurred_at_str = _occ
+        elif isinstance(_occ, _dt):
+            if _occ.tzinfo is None:
+                # Assume naive datetime is in local time and attach local tz
+                local_tz = _dt.now().astimezone().tzinfo
+                occurred_at_str = _occ.replace(tzinfo=local_tz).isoformat()
+            else:
+                occurred_at_str = _occ.isoformat()
+        else:
+            occurred_at_str = _dt.now().astimezone().isoformat()
         event_request: Dict[str, Any] = {
             "session_id": session_id,
             "type": type,
             "parent_event_id": parent_event_id,
-            "occurred_at": kwargs.get("occurred_at", _dt.now()).isoformat(),
+            "occurred_at": occurred_at_str,
             "duration": kwargs.get("duration"),
             "tags": kwargs.get("tags", []),
             "metadata": kwargs.get("metadata", {}),
@@ -372,8 +385,8 @@ class Client:
         elif "payload" in kwargs:
             update_body["payload"] = kwargs["payload"]
 
-        # PUT /events/{event_id}
-        response = self.make_request(f"events/{event_id}", 'PUT', update_body)
+        # POST /events
+        response = self.make_request("events", 'POST', update_body)
         return Event(response, self)
 
     def mask(self, data):
