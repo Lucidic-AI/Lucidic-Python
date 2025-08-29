@@ -15,6 +15,7 @@ from opentelemetry.semconv_ai import SpanAttributes
 from lucidicai.client import Client
 from lucidicai.context import current_session_id, current_parent_event_id
 from lucidicai.model_pricing import calculate_cost
+from .extract import detect_is_llm_span, extract_images, extract_prompts, extract_completions, extract_model
 
 logger = logging.getLogger("Lucidic")
 import os
@@ -39,7 +40,7 @@ class LucidicSpanExporter(SpanExporter):
     def _process_span(self, span: ReadableSpan, client: Client) -> None:
         """Convert a single LLM span into a typed, immutable event."""
         try:
-            if not self._is_llm_span(span):
+            if not detect_is_llm_span(span):
                 return
 
             attributes = dict(span.attributes or {})
@@ -67,18 +68,16 @@ class LucidicSpanExporter(SpanExporter):
             occurred_at = datetime.fromtimestamp(span.start_time / 1_000_000_000, tz=timezone.utc) if span.start_time else datetime.now(tz=timezone.utc)
             duration_seconds = ((span.end_time - span.start_time) / 1_000_000_000) if (span.start_time and span.end_time) else None
 
-            # Typed fields
-            model = attributes.get(SpanAttributes.LLM_RESPONSE_MODEL) or \
-                    attributes.get(SpanAttributes.LLM_REQUEST_MODEL) or \
-                    attributes.get('gen_ai.response.model') or \
-                    attributes.get('gen_ai.request.model') or 'unknown'
+            # Typed fields using extract utilities
+            model = extract_model(attributes) or 'unknown'
             provider = self._detect_provider_name(attributes)
-            messages = self._extract_messages(attributes)
+            messages = extract_prompts(attributes) or []
             params = self._extract_params(attributes)
-            output_text = self._extract_result(span, attributes)
+            output_text = extract_completions(span, attributes) or "Response received"
             input_tokens = self._extract_prompt_tokens(attributes)
             output_tokens = self._extract_completion_tokens(attributes)
             cost = self._calculate_cost(attributes)
+            images = extract_images(attributes)
 
             # Create immutable event via non-blocking queue
             client.create_event(
@@ -95,27 +94,12 @@ class LucidicSpanExporter(SpanExporter):
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cost=cost,
+                raw={"images": images} if images else None,
             )
 
         except Exception as e:
             logger.error(f"Failed to process span {span.name}: {e}")
     
-    def _is_llm_span(self, span: ReadableSpan) -> bool:
-        """Check if this is an LLM-related span"""
-        # Check span name patterns
-        llm_patterns = ['openai', 'anthropic', 'chat', 'completion', 'embedding', 'llm']
-        span_name_lower = span.name.lower()
-        
-        if any(pattern in span_name_lower for pattern in llm_patterns):
-            return True
-            
-        # Check for LLM attributes
-        if span.attributes:
-            for key in span.attributes:
-                if key.startswith('gen_ai.') or key.startswith('llm.'):
-                    return True
-                    
-        return False
     
     def _create_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], client: Client) -> Optional[str]:
         """Create a Lucidic event from span start"""
@@ -208,12 +192,6 @@ class LucidicSpanExporter(SpanExporter):
             return str(name)
         return "openai" if 'openai' in (str(attributes.get('service.name', '')).lower()) else "unknown"
     
-    def _extract_messages(self, attributes: Dict[str, Any]) -> List[Any]:
-        prompts = attributes.get(SpanAttributes.LLM_PROMPTS) or \
-                  attributes.get('gen_ai.prompt') or \
-                  attributes.get('gen_ai.messages') or \
-                  attributes.get('llm.messages')
-        return prompts if isinstance(prompts, list) else []
 
     def _extract_params(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
         return {

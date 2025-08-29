@@ -10,7 +10,6 @@ from urllib3.util import Retry
 
 
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError
-from .telemetry.base_provider import BaseProvider 
 from .session import Session
 from .singleton import singleton, clear_singletons
 from .lru import LRUCache
@@ -33,7 +32,6 @@ class Client:
         self.session = None
         self.previous_sessions = LRUCache(500)  # For LRU cache of previously initialized sessions
         self.custom_session_id_translations = LRUCache(500) # For translations of custom session IDs to real session IDs
-        self.providers = []
         self.api_key = api_key
         self.agent_id = agent_id
         self.masking_function = None
@@ -61,29 +59,19 @@ class Client:
             raise APIKeyVerificationError("Invalid API Key")
 
     def clear(self):
-        self.undo_overrides()
+        # Clean up singleton state
         clear_singletons()
         self.initialized = False
         self.session = None
-        self.providers = []
         del self
 
     def verify_api_key(self, base_url: str, api_key: str) -> Tuple[str, str]:
         data = self.make_request('verifyapikey', 'GET', {})  # TODO: Verify against agent ID provided
         return data["project"], data["project_id"]
 
-    def set_provider(self, provider: BaseProvider) -> None:
-        """Set the LLM provider to track"""
-        # Avoid duplicate provider registration of the same class
-        for existing in self.providers:
-            if type(existing) is type(provider):
-                return
-        self.providers.append(provider)
-        provider.override()
-
-    def undo_overrides(self):
-        for provider in self.providers:
-            provider.undo_override()
+    def set_provider(self, provider) -> None:
+        """Deprecated: manual provider overrides removed (no-op)."""
+        return
 
     def init_session(
         self,
@@ -153,24 +141,6 @@ class Client:
         kwargs['session_id'] = session_id
         return self.create_event(**kwargs)
 
-    def continue_session(self, session_id: str):
-        if session_id in self.custom_session_id_translations:
-            session_id = self.custom_session_id_translations[session_id]
-        if self.session and self.session.session_id == session_id:
-            return self.session.session_id
-        if self.session:
-            self.previous_sessions[self.session.session_id] = self.session
-        data = self.make_request('continuesession', 'POST', {"session_id": session_id})
-        real_session_id = data["session_id"]
-        if session_id != real_session_id:
-            self.custom_session_id_translations[session_id] = real_session_id
-        self.session = Session(
-            agent_id=self.agent_id,
-            session_id=real_session_id
-        )
-        import logging as _logging
-        _logging.getLogger('Lucidic').info(f"Session {data.get('session_name', '')} continuing...")
-        return self.session.session_id
 
     def init_mass_sim(self, **kwargs) -> str:
         kwargs['agent_id'] = self.agent_id

@@ -12,19 +12,6 @@ from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotIn
 from .event import Event
 from .session import Session
 
-# Import OpenTelemetry-based handlers
-from .telemetry.otel_handlers import (
-    OTelOpenAIHandler,
-    OTelAnthropicHandler,
-    OTelLangChainHandler,
-    OTelPydanticAIHandler,
-    OTelOpenAIAgentsHandler,
-    OTelLiteLLMHandler
-)
-
-# Import telemetry manager
-from .telemetry.otel_init import LucidicTelemetry
-
 # Import decorators
 from .decorators import event
 from .context import (
@@ -164,19 +151,7 @@ def _install_crash_handlers() -> None:
         except Exception:
             pass
         # Best-effort force flush and shutdown telemetry
-        try:
-            telemetry = LucidicTelemetry()
-            if telemetry.is_initialized():
-                try:
-                    telemetry.force_flush()
-                except Exception:
-                    pass
-                try:
-                    telemetry.uninstrument_all()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        # Telemetry cleanup is handled via _cleanup_telemetry on exit
         # Chain to original to preserve default printing/behavior
         try:
             _original_sys_excepthook(exc_type, exc, tb)
@@ -205,76 +180,11 @@ def _install_crash_handlers() -> None:
 
     _crash_handlers_installed = True
 
-def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
-    """Set up providers for the client, avoiding duplication
-    
-    Args:
-        client: The Lucidic client instance
-        providers: List of provider types to set up
-    """
-    # Track which providers have been set up to avoid duplication
-    setup_providers = set()
-    
-    # Initialize telemetry if using OpenTelemetry
-    if providers:
-        telemetry = LucidicTelemetry()
-        if not telemetry.is_initialized():
-            telemetry.initialize(agent_id=client.agent_id)
-    
-    for provider in providers:
-        if provider in setup_providers:
-            continue
-            
-        if provider == "openai":
-            client.set_provider(OTelOpenAIHandler())
-            setup_providers.add("openai")
-        elif provider == "anthropic":
-            client.set_provider(OTelAnthropicHandler())
-            setup_providers.add("anthropic")
-        elif provider == "langchain":
-            client.set_provider(OTelLangChainHandler())
-            logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
-            setup_providers.add("langchain")
-        elif provider == "pydantic_ai":
-            client.set_provider(OTelPydanticAIHandler())
-            setup_providers.add("pydantic_ai")
-        elif provider == "openai_agents":
-            try:
-                client.set_provider(OTelOpenAIAgentsHandler())
-                setup_providers.add("openai_agents")
-            except Exception as e:
-                logger.error(f"Failed to set up OpenAI Agents provider: {e}")
-                raise
-        elif provider == "litellm":
-            client.set_provider(OTelLiteLLMHandler())
-            setup_providers.add("litellm")
-        elif provider in ("bedrock", "aws_bedrock", "amazon_bedrock"):
-            from .telemetry.otel_handlers import OTelBedrockHandler
-            client.set_provider(OTelBedrockHandler())
-            setup_providers.add("bedrock")
-        elif provider in ("google", "google_generativeai"):
-            from .telemetry.otel_handlers import OTelGoogleGenerativeAIHandler
-            client.set_provider(OTelGoogleGenerativeAIHandler())
-            setup_providers.add("google")
-        elif provider in ("vertexai", "vertex_ai"):
-            from .telemetry.otel_handlers import OTelVertexAIHandler
-            client.set_provider(OTelVertexAIHandler())
-            setup_providers.add("vertexai")
-        elif provider == "cohere":
-            from .telemetry.otel_handlers import OTelCohereHandler
-            client.set_provider(OTelCohereHandler())
-            setup_providers.add("cohere")
-        elif provider == "groq":
-            from .telemetry.otel_handlers import OTelGroqHandler
-            client.set_provider(OTelGroqHandler())
-            setup_providers.add("groq")
-
 __all__ = [
     'Client',
     'Session',
     'Event',
     'init',
-    'continue_session',
     'create_event',
     'end_session',
     'get_prompt',
@@ -362,7 +272,13 @@ def init(
         auto_end = os.getenv("LUCIDIC_AUTO_END", "True").lower() == "true"
     
     # Set up providers
-    _setup_providers(client, providers)
+    # Initialize unified telemetry (exporter-only) instead of per-provider handlers
+    if providers:
+        try:
+            from .telemetry.telemetry_init import initialize_telemetry
+            initialize_telemetry(providers=providers, agent_id=client.agent_id)
+        except Exception as e:
+            logger.error(f"Failed to initialize telemetry: {e}")
     real_session_id = client.init_session(
         session_name=session_name,
         mass_sim_id=mass_sim_id,
@@ -398,52 +314,6 @@ def init(
     
     logger.info("Session initialized successfully")
     return real_session_id
-
-
-def continue_session(
-    session_id: str,
-    api_key: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    providers: Optional[List[ProviderType]] = [],
-    masking_function = None,
-    auto_end: Optional[bool] = True,
-):
-    if api_key is None:
-        api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if api_key is None:
-            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
-    if agent_id is None:
-        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-        if agent_id is None:
-            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-    
-    client = Client()
-    if client.session:
-        raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.end_session() or lai.reset_sdk() first.")
-    # if not yet initialized or still the NullClient -> create a real client when init is called
-    if not getattr(client, 'initialized', False):
-        client = Client(api_key=api_key, agent_id=agent_id)
-    
-    # Handle auto_end with environment variable support
-    if auto_end is None:
-        auto_end = os.getenv("LUCIDIC_AUTO_END", "True").lower() == "true"
-    
-    # Set up providers
-    _setup_providers(client, providers)
-    session_id = client.continue_session(session_id=session_id)
-    if masking_function:
-        client.masking_function = masking_function
-    
-    # Set the auto_end flag on the client
-    client.auto_end = auto_end
-    
-    logger.info(f"Session {session_id} continuing...")
-    # Bind this session id to the current execution context for async-safety
-    try:
-        set_active_session(session_id)
-    except Exception:
-        pass
-    return session_id  # For consistency
 
 
 def update_session(
@@ -522,33 +392,10 @@ def end_session(
     temp.update_session(is_finished=True, **locals())
 
 
-def reset_sdk() -> None:
-    """
-    DEPRECATED: Reset the SDK.
-    """
-    return
-
-    client = Client()
-    if not client.initialized:
-        return
-    
-    # Shutdown OpenTelemetry if it was initialized
-    telemetry = LucidicTelemetry()
-    if telemetry.is_initialized():
-        telemetry.uninstrument_all()
-    
-    client.clear()
-
-
 def _cleanup_telemetry():
     """Cleanup function for OpenTelemetry shutdown"""
-    try:
-        telemetry = LucidicTelemetry()
-        if telemetry.is_initialized():
-            telemetry.uninstrument_all()
-            logger.info("OpenTelemetry instrumentation cleaned up")
-    except Exception as e:
-        logger.error(f"Error during telemetry cleanup: {e}")
+    # Telemetry cleanup is now handled by provider shutdown
+    pass
 
 
 def _auto_end_session():
