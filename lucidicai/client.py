@@ -177,6 +177,7 @@ class Client:
         }  # TODO: make into enum
         data['current_time'] = datetime.now().astimezone(timezone.utc).isoformat()
         func = http_methods[method]
+        response = None
         for _ in range(NETWORK_RETRIES):
             try:
                 response = func(data)

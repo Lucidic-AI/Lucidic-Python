@@ -9,11 +9,16 @@ This module implements the TypeScript-style EventQueue for the Python SDK:
 import gzip
 import io
 import json
+import logging
 import os
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("Lucidic")
+DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
+VERBOSE = os.getenv("LUCIDIC_VERBOSE", "False") == "True"
 
 
 class EventQueue:
@@ -23,6 +28,7 @@ class EventQueue:
         self.flush_interval_ms: int = int(os.getenv("LUCIDIC_FLUSH_INTERVAL", 100))
         self.flush_at_count: int = int(os.getenv("LUCIDIC_FLUSH_AT", 100))
         self.blob_threshold: int = int(os.getenv("LUCIDIC_BLOB_THRESHOLD", 64 * 1024))
+        self._daemon_mode = os.getenv("LUCIDIC_DAEMON_QUEUE", "true").lower() == "true"
 
         # Runtime state
         self._client = client
@@ -50,12 +56,19 @@ class EventQueue:
         """
         with self._lock:
             if len(self._queue) >= self.max_queue_size:
-                # Drop oldest to make room to avoid unbounded growth
+                if DEBUG:
+                    logger.debug(f"[EventQueue] Queue at max size {self.max_queue_size}, dropping oldest")
                 self._queue.pop(0)
             # Ensure a defer counter exists for parent-order deferrals
             if "defer_count" not in event_request:
                 event_request["defer_count"] = 0
             self._queue.append(event_request)
+            
+            if DEBUG:
+                logger.debug(f"[EventQueue] Queued event {event_request.get('client_event_id')}, queue size: {len(self._queue)}")
+            if VERBOSE:
+                logger.debug(f"[EventQueue] Event payload: {json.dumps(event_request, indent=2)}")
+            
             # Wake worker if batch large enough
             if len(self._queue) >= self.flush_at_count:
                 self._cv.notify()
@@ -71,18 +84,38 @@ class EventQueue:
             time.sleep(0.05)
 
     def shutdown(self) -> None:
+        """Enhanced shutdown with better flushing."""
+        if DEBUG:
+            with self._lock:
+                logger.debug(f"[EventQueue] Shutdown requested, queue size: {len(self._queue)}")
+        
+        # First try to flush remaining events
+        self.force_flush(timeout_seconds=2.0)
+        
+        # Then signal stop
         with self._lock:
             self._stopped = True
             self._cv.notify()
+        
+        # Wait for worker with timeout
         if self._worker and self._worker.is_alive():
-            self._worker.join(timeout=1.0)
+            self._worker.join(timeout=3.0)
+            if self._worker.is_alive() and DEBUG:
+                logger.debug("[EventQueue] Worker thread did not terminate in time")
 
     # --- Internals ---
     def _start_worker(self) -> None:
         if self._worker and self._worker.is_alive():
             return
-        self._worker = threading.Thread(target=self._run_loop, name="LucidicEventQueue", daemon=True)
+        # Use configurable daemon mode
+        self._worker = threading.Thread(
+            target=self._run_loop, 
+            name="LucidicEventQueue", 
+            daemon=self._daemon_mode
+        )
         self._worker.start()
+        if DEBUG:
+            logger.debug(f"[EventQueue] Started worker thread (daemon={self._daemon_mode})")
 
     def _run_loop(self) -> None:
         next_wake = time.time() + (self.flush_interval_ms / 1000.0)
@@ -118,6 +151,9 @@ class EventQueue:
                 pass
 
     def _process_batch(self, batch: List[Dict[str, Any]]) -> None:
+        if DEBUG:
+            logger.debug(f"[EventQueue] Processing batch of {len(batch)} events")
+        
         # Reorder within batch to respect parent -> child when both present
         id_to_evt = {e.get("client_event_id"): e for e in batch if e.get("client_event_id")}
         remaining = list(batch)
@@ -146,6 +182,9 @@ class EventQueue:
                 remaining = []
 
         for event_request in ordered:
+            if DEBUG:
+                logger.debug(f"[EventQueue] Sending event {event_request.get('client_event_id')}")
+            
             # Retry up to 3 times with exponential backoff
             attempt = 0
             backoff = 0.25
@@ -156,48 +195,70 @@ class EventQueue:
                         ev_id = event_request.get("client_event_id")
                         if ev_id:
                             self._sent_ids.add(ev_id)
+                            if DEBUG:
+                                logger.debug(f"[EventQueue] Successfully sent event {ev_id}")
                     break
-                except Exception:
+                except Exception as e:
                     attempt += 1
+                    if DEBUG:
+                        logger.debug(f"[EventQueue] Failed to send event (attempt {attempt}/3): {e}")
                     if attempt >= 3:
+                        logger.error(f"[EventQueue] Failed to send event after 3 attempts: {event_request.get('client_event_id')}")
                         break
                     time.sleep(backoff)
                     backoff *= 2
 
     def _send_event(self, event_request: Dict[str, Any]) -> bool:
-        # If parent exists and not yet sent, defer up to 5 times
-        parent_id = event_request.get("parent_client_event_id")
-        if parent_id and parent_id not in self._sent_ids:
-            # Defer unless we've tried several times already
-            if event_request.get("defer_count", 0) < 5:
-                event_request["defer_count"] = event_request.get("defer_count", 0) + 1
-                # Push to the end of the queue for later attempt
-                with self._lock:
-                    self._queue.append(event_request)
-                    self._cv.notify()
-                return True
-        # Offload large payloads to blob storage
-        payload = event_request.get("payload", {})
-        raw_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        should_offload = len(raw_bytes) > self.blob_threshold
+        """Send event with enhanced error handling."""
+        try:
+            # If parent exists and not yet sent, defer up to 5 times
+            parent_id = event_request.get("parent_client_event_id")
+            if parent_id and parent_id not in self._sent_ids:
+                # Defer unless we've tried several times already
+                if event_request.get("defer_count", 0) < 5:
+                    event_request["defer_count"] = event_request.get("defer_count", 0) + 1
+                    # Push to the end of the queue for later attempt
+                    with self._lock:
+                        self._queue.append(event_request)
+                        self._cv.notify()
+                    return True
+            
+            # Offload large payloads to blob storage
+            payload = event_request.get("payload", {})
+            raw_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            should_offload = len(raw_bytes) > self.blob_threshold
+            
+            if DEBUG:
+                logger.debug(f"[EventQueue] Event size: {len(raw_bytes)} bytes, offload: {should_offload}")
 
-        send_body: Dict[str, Any] = dict(event_request)
-        if should_offload:
-            send_body["needs_blob"] = True
-            send_body["payload"] = self._to_preview(send_body.get("type"), payload)
-        else:
-            send_body["needs_blob"] = False
+            send_body: Dict[str, Any] = dict(event_request)
+            if should_offload:
+                send_body["needs_blob"] = True
+                send_body["payload"] = self._to_preview(send_body.get("type"), payload)
+            else:
+                send_body["needs_blob"] = False
+            
+            if VERBOSE and not should_offload:
+                logger.debug(f"[EventQueue] Sending body: {json.dumps(send_body, indent=2)}")
 
-        # POST /events
-        response = self._client.make_request("events", "POST", send_body)
+            # POST /events
+            response = self._client.make_request("events", "POST", send_body)
 
-        # If offloading, synchronously upload compressed payload
-        if should_offload:
-            blob_url = response.get("blob_url")
-            if blob_url:
-                compressed = self._compress_json(payload)
-                self._upload_blob(blob_url, compressed)
-        return True
+            # If offloading, synchronously upload compressed payload
+            if should_offload:
+                blob_url = response.get("blob_url")
+                if blob_url:
+                    compressed = self._compress_json(payload)
+                    self._upload_blob(blob_url, compressed)
+                else:
+                    logger.error("[EventQueue] No blob_url received for large payload")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"[EventQueue] Failed to send event: {e}")
+            raise  # Re-raise for retry logic
 
     # --- Helpers for blob handling ---
     @staticmethod
@@ -209,15 +270,29 @@ class EventQueue:
         return buf.getvalue()
 
     def _upload_blob(self, blob_url: str, data: bytes) -> None:
-        # Use the underlying requests session to PUT to presigned URL
-        session = getattr(self._client, "request_session", None)
-        if session is None:
-            import requests
-            session = requests.Session()
-        headers = {"Content-Type": "application/json", "Content-Encoding": "gzip"}
-        resp = session.put(blob_url, data=data, headers=headers)
-        # Best-effort: raise if non-2xx so retry can happen
-        resp.raise_for_status()
+        """Upload blob with proper error handling and logging."""
+        try:
+            # Use the underlying requests session to PUT to presigned URL
+            session = getattr(self._client, "request_session", None)
+            if session is None:
+                import requests
+                session = requests.Session()
+            
+            if DEBUG:
+                logger.debug(f"[EventQueue] Uploading blob, size: {len(data)} bytes")
+            
+            headers = {"Content-Type": "application/json", "Content-Encoding": "gzip"}
+            resp = session.put(blob_url, data=data, headers=headers)
+            resp.raise_for_status()
+            
+            if DEBUG:
+                logger.debug(f"[EventQueue] Blob upload successful, status: {resp.status_code}")
+                
+        except Exception as e:
+            # Log error but don't fail silently
+            logger.error(f"[EventQueue] Blob upload failed: {e}")
+            # Re-raise to trigger retry logic
+            raise
 
     @staticmethod
     def _to_preview(event_type: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:

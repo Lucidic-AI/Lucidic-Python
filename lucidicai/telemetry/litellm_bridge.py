@@ -361,3 +361,37 @@ class LucidicLiteLLMCallback(CustomLogger):
                                     images.append(url)
                                     
         return images
+
+
+def setup_litellm_callback():
+    """Registers the LucidicLiteLLMCallback with LiteLLM if available.
+    
+    This function ensures only one instance of the callback is registered,
+    preventing duplicates across multiple SDK initializations.
+    """
+    try:
+        import litellm
+    except ImportError:
+        logger.info("[LiteLLM] litellm not installed, skipping callback setup")
+        return
+    
+    # Initialize callbacks list if needed
+    if not hasattr(litellm, 'callbacks'):
+        litellm.callbacks = []
+    elif litellm.callbacks is None:
+        litellm.callbacks = []
+    
+    # Check for existing registration to prevent duplicates
+    for existing in litellm.callbacks:
+        if isinstance(existing, LucidicLiteLLMCallback):
+            if DEBUG:
+                logger.debug("[LiteLLM] Callback already registered")
+            return
+    
+    # Register new callback
+    try:
+        cb = LucidicLiteLLMCallback()
+        litellm.callbacks.append(cb)
+        logger.info("[LiteLLM] Registered Lucidic callback for event tracking")
+    except Exception as e:
+        logger.error(f"[LiteLLM] Failed to register callback: {e}")

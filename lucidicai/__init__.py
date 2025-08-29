@@ -405,13 +405,25 @@ def _auto_end_session():
         if hasattr(client, 'auto_end') and client.auto_end and client.session and not client.session.is_finished:
             logger.info("Auto-ending active session on exit")
             client.auto_end = False  # To avoid repeating auto-end on exit
+            
+            # Force flush event queue before ending session
+            if hasattr(client, '_event_queue'):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("[Shutdown] Flushing event queue before session end")
+                client._event_queue.force_flush(timeout_seconds=5.0)
+            
             end_session()
+            
+            # Shutdown event queue properly
+            if hasattr(client, '_event_queue'):
+                client._event_queue.shutdown()
+                
     except Exception as e:
         logger.debug(f"Error during auto-end session: {e}")
 
 
 def _signal_handler(signum, frame):
-    """Handle interruption signals"""
+    """Handle interruption signals with better queue flushing."""
     # Best-effort final event for signal exits
     try:
         try:
@@ -426,14 +438,19 @@ def _signal_handler(signum, frame):
         _post_fatal_event(128 + signum, desc, {"signal": name, "signum": signum})
     except Exception:
         pass
-    _auto_end_session()
-    # Best-effort flush of event queue on signal
+    
+    # Enhanced queue flushing
     try:
         client = Client()
         if hasattr(client, "_event_queue"):
-            client._event_queue.force_flush()
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"[Signal] Flushing event queue on signal {signum}")
+            client._event_queue.force_flush(timeout_seconds=3.0)
+            client._event_queue.shutdown()
     except Exception:
         pass
+    
+    _auto_end_session()
     _cleanup_telemetry()
     # Re-raise the signal for default handling
     signal.signal(signum, signal.SIG_DFL)
