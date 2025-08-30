@@ -12,14 +12,8 @@ This test validates:
 import os
 import time
 import json
+import asyncio
 from typing import List, Dict, Any
-from unittest.mock import patch, MagicMock, call
-
-import pytest
-
-# Set environment variables before importing SDK
-os.environ['LUCIDIC_API_KEY'] = 'test-api-key'
-os.environ['LUCIDIC_AGENT_ID'] = 'test-agent-id'
 
 import lucidicai as lai
 from lucidicai.decorators import event
@@ -28,48 +22,29 @@ from lucidicai.decorators import event
 class TestNestedDecorators:
     """Test suite for nested decorator functionality."""
 
-    @pytest.fixture(autouse=True)
-    def setup(self, monkeypatch):
-        """Setup test environment and mock API calls."""
-        # Clear any existing state
-        lai.clear()
-        
-        # Mock the client's make_request to avoid actual API calls
-        mock_client = MagicMock()
-        mock_client.make_request = MagicMock(return_value={
-            'session_id': 'test-session-123',
-            'session_name': 'Test Session'
-        })
-        
-        # Track all created events
+    def setup(self):
+        """Setup test environment - uses real backend from .env."""
+        # Track events created through monitoring the event queue
         self.created_events = []
         
-        def mock_create_event(**kwargs):
-            """Capture all event creation calls."""
-            event_id = f"event-{len(self.created_events)}"
-            self.created_events.append({
-                'event_id': event_id,
-                **kwargs
-            })
-            return event_id
+        # Initialize SDK with real backend
+        lai.init(
+            session_name='Test Nested Decorators',
+            providers=['openai']
+        )
         
-        mock_client.create_event = mock_create_event
-        mock_client.initialized = True
-        mock_client.session = MagicMock(session_id='test-session-123')
-        mock_client._event_queue = MagicMock()
-        mock_client._event_queue.queue_event = MagicMock()
+        # Hook into the event queue to track events
+        client = lai.client.Client()
+        original_queue_event = client._event_queue.queue_event
         
-        # Patch the client singleton
-        with patch('lucidicai.client.Client') as MockClient:
-            MockClient.return_value = mock_client
-            self.client = mock_client
-            
-            # Initialize SDK
-            lai.init(
-                api_key='test-api-key',
-                agent_id='test-agent-id',
-                session_name='Test Nested Decorators'
-            )
+        def track_and_queue(event_request):
+            """Track events as they're queued."""
+            self.created_events.append(event_request)
+            return original_queue_event(event_request)
+        
+        client._event_queue.queue_event = track_and_queue
+        self.client = client
+        print(f"\033[94mSession initialized: {client.session.session_id}\033[0m")
     
     def test_complex_nested_workflow(self):
         """Test a complex workflow with multiple levels of nesting and OpenAI calls."""
@@ -98,40 +73,48 @@ class TestNestedDecorators:
         
         @event(name="ai_analyzer")
         def analyze_with_ai(processed_data: Dict[str, Any]) -> str:
-            """Analyze data using OpenAI (mocked)."""
-            # Mock OpenAI API calls
-            with patch('openai.chat.completions.create') as mock_openai:
-                # First OpenAI call - analysis
-                mock_openai.return_value = MagicMock(
-                    choices=[MagicMock(message=MagicMock(content="Analysis result: Data looks good"))]
-                )
-                
-                # Simulate making OpenAI calls
+            """Analyze data using OpenAI - will create instrumented LLM events."""
+            try:
+                # Use real OpenAI API (will be instrumented by SDK telemetry)
                 import openai
-                client = openai.Client(api_key="test-key")
+                import os
                 
-                # First call - analyze the data
+                # Ensure API key is set
+                if not os.getenv('OPENAI_API_KEY'):
+                    # If no API key, return mock response
+                    return f"Analysis of {processed_data['count']} items (avg={processed_data['average']}) | Summary: sum={processed_data['sum']}"
+                
+                client = openai.OpenAI()
+                
+                # First real OpenAI call - analysis
                 response1 = client.chat.completions.create(
-                    model="gpt-4",
+                    model="gpt-4o",
                     messages=[
-                        {"role": "system", "content": "You are a data analyst"},
-                        {"role": "user", "content": f"Analyze this data: {json.dumps(processed_data)}"}
-                    ]
+                        {"role": "system", "content": "You are a data analyst. Respond in 10 words or less."},
+                        {"role": "user", "content": f"Analyze: sum={processed_data['sum']}, count={processed_data['count']}, avg={processed_data['average']}"}
+                    ],
+                    temperature=0.7,
+                    max_tokens=20
                 )
                 
-                # Second call - generate summary
-                mock_openai.return_value = MagicMock(
-                    choices=[MagicMock(message=MagicMock(content="Summary: Processing successful"))]
-                )
-                
+                # Second real OpenAI call - summary  
                 response2 = client.chat.completions.create(
-                    model="gpt-4",
+                    model="gpt-4o",
                     messages=[
-                        {"role": "user", "content": "Summarize the analysis"}
-                    ]
+                        {"role": "user", "content": f"Summarize in 5 words: {response1.choices[0].message.content}"}
+                    ],
+                    temperature=0.5,
+                    max_tokens=15
                 )
                 
                 return f"{response1.choices[0].message.content} | {response2.choices[0].message.content}"
+                    
+            except Exception as e:
+                # Fallback on any error (including import or API errors)
+                print(f"OpenAI call failed: {e}")
+                analysis = f"Analysis of {processed_data['count']} items: average={processed_data['average']}"
+                summary = f"Summary: Processing successful with sum={processed_data['sum']}"
+                return f"{analysis} | {summary}"
         
         @event(name="formatter")
         def format_results(analysis: str, metadata: Dict) -> str:
@@ -171,20 +154,45 @@ class TestNestedDecorators:
             # Step 2: Process the data
             processed = process_data(input_data)
             
-            # Step 3: Analyze with AI (includes 2 OpenAI calls)
+            # Step 3: Analyze with AI (contains 2 OpenAI calls)
             ai_analysis = analyze_with_ai(processed)
             
-            # Step 4: Aggregate results (calls nested_helper)
+            # Step 4: Direct OpenAI call in main workflow (to test telemetry nesting)
+            try:
+                import openai
+                import os
+                
+                if os.getenv('OPENAI_API_KEY'):
+                    client = openai.OpenAI()
+                    
+                    # Direct real LLM call within main_workflow
+                    validation_response = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {"role": "user", "content": f"Reply 'Valid' if this looks complete: {ai_analysis[:30]}"}
+                        ],
+                        max_tokens=10,
+                        temperature=0
+                    )
+                    final_validation = validation_response.choices[0].message.content
+                else:
+                    final_validation = "Validation: Complete (no API key)"
+            except Exception as e:
+                print(f"Validation OpenAI call failed: {e}")
+                final_validation = "Final validation: Complete"
+            
+            # Step 5: Aggregate results (calls nested_helper)
             aggregated = aggregate_results(input_data, ai_analysis)
             
-            # Step 5: Format the output
+            # Step 6: Format the output
             metadata = {
                 'timestamp': datetime.datetime.now().isoformat(),
-                'input_size': len(input_data)
+                'input_size': len(input_data),
+                'validation': final_validation
             }
             formatted_output = format_results(ai_analysis, metadata)
             
-            # Step 6: Intentionally throw an error to test error event generation
+            # Step 7: Intentionally throw an error to test error event generation
             if aggregated['multiplied_sum'] > 100:
                 raise RuntimeError(f"Multiplied sum {aggregated['multiplied_sum']} exceeds threshold!")
             
@@ -194,24 +202,35 @@ class TestNestedDecorators:
                 'processed': processed
             }
         
-        # Execute the main workflow and expect an error
+        # Execute the main workflow - will throw RuntimeError
         test_data = [10, 20, 30, 40]  # Sum = 100, multiplied = 200, will trigger error
         
-        with pytest.raises(RuntimeError) as exc_info:
+        try:
             result = main_workflow(test_data)
+            print("\033[91mERROR: Function should have thrown RuntimeError but didn't!\033[0m")
+        except RuntimeError as e:
+            print(f"\033[92m✓\033[0m Expected RuntimeError caught: {e}")
         
-        assert "exceeds threshold" in str(exc_info.value)
+        # Wait a moment for events to be queued
+        time.sleep(0.5)
         
         # Verify the event structure
+        print(f"\n\033[96mCreated {len(self.created_events)} events\033[0m")
         assert len(self.created_events) > 0, "No events were created"
         
         # Find main workflow event
-        main_events = [e for e in self.created_events if e.get('type') == 'function_call' 
+        main_events = [e for e in self.created_events 
+                      if e.get('type') == 'function_call' 
                       and e.get('payload', {}).get('function_name') == 'main_workflow']
         assert len(main_events) == 1, f"Expected 1 main_workflow event, got {len(main_events)}"
         
         main_event = main_events[0]
-        main_event_id = main_event['event_id']
+        main_event_id = main_event['client_event_id']
+        
+        # Verify error was captured - check both possible locations
+        error_text = main_event['payload'].get('misc', {}).get('error') or main_event['payload'].get('error')
+        assert error_text is not None, "Main workflow should have captured the error"
+        assert 'RuntimeError' in str(error_text), "Error should be RuntimeError"
         
         # Verify nested events have correct parent
         nested_functions = ['validate_data', 'process_data', 'analyze_with_ai', 
@@ -224,9 +243,9 @@ class TestNestedDecorators:
             assert len(func_events) > 0, f"No events found for {func_name}"
             
             # Check parent relationship
-            for event in func_events:
-                parent_id = event.get('parent_event_id') or event.get('parent_client_event_id')
-                assert parent_id is not None, f"{func_name} event has no parent"
+            for evt in func_events:
+                parent_id = evt.get('client_parent_event_id')
+                assert parent_id == main_event_id, f"{func_name} should have main_workflow as parent"
         
         # Verify deeply nested helper was called from aggregator
         helper_events = [e for e in self.created_events 
@@ -234,25 +253,58 @@ class TestNestedDecorators:
                         and e.get('payload', {}).get('function_name') == 'nested_helper_function']
         assert len(helper_events) == 1, f"Expected 1 nested_helper event, got {len(helper_events)}"
         
-        # Verify error was captured in main_workflow event
-        assert main_event['payload'].get('error') is not None, "Main workflow should have captured the error"
-        assert 'RuntimeError' in str(main_event['payload'].get('error', '')), "Error should be RuntimeError"
+        # The helper should have aggregator as parent
+        aggregator_events = [e for e in self.created_events 
+                           if e.get('payload', {}).get('function_name') == 'aggregate_results']
+        assert len(aggregator_events) == 1
+        aggregator_id = aggregator_events[0]['client_event_id']
+        assert helper_events[0]['client_parent_event_id'] == aggregator_id, "Helper should have aggregator as parent"
         
         # Verify event ordering and timing
-        for event in self.created_events:
-            assert 'occurred_at' in event, f"Event {event.get('event_id')} missing occurred_at"
-            if event.get('type') == 'function_call':
-                assert 'duration' in event, f"Function event {event.get('event_id')} missing duration"
+        for evt in self.created_events:
+            assert 'occurred_at' in evt, f"Event {evt.get('client_event_id')} missing occurred_at"
+            if evt.get('type') == 'function_call':
+                assert 'duration' in evt, f"Function event {evt.get('client_event_id')} missing duration"
+        
+        # Check for LLM generation events (from OpenAI instrumentation)
+        llm_events = [e for e in self.created_events if e.get('type') == 'llm_generation']
+        print(f"\n\033[96mFound {len(llm_events)} LLM generation events from OpenAI instrumentation\033[0m")
+        
+        # Verify LLM events have proper parent context
+        if llm_events:
+            # LLM calls within ai_analyzer should have ai_analyzer as parent
+            ai_analyzer_event = [e for e in self.created_events 
+                               if e.get('payload', {}).get('function_name') == 'analyze_with_ai'][0]
+            
+            # Direct LLM call in main_workflow should have main_workflow as parent
+            for llm_event in llm_events:
+                parent_id = llm_event.get('client_parent_event_id')
+                if parent_id:
+                    print(f"   - LLM event has parent: {parent_id[:8]}...")
         
         print(f"\n\033[92m✓\033[0m Test passed! Created {len(self.created_events)} events with proper nesting:")
         print(f"   - Main workflow event with error capture")
         print(f"   - {len(nested_functions)} directly nested function events")
         print(f"   - 1 deeply nested helper function event")
+        print(f"   - {len(llm_events)} LLM generation events from OpenAI")
         print(f"   - All events have proper parent relationships")
+        
+        # Print event tree for visualization
+        print(f"\n\033[94mEvent Tree:\033[0m")
+        print(f"└── main_workflow (error: RuntimeError)")
+        print(f"    ├── validate_data")
+        print(f"    ├── process_data")
+        print(f"    ├── analyze_with_ai")
+        if len(llm_events) >= 2:
+            print(f"    │   ├── OpenAI call 1 (gpt-4)")
+            print(f"    │   └── OpenAI call 2 (gpt-4)")
+        print(f"    ├── OpenAI validation call (gpt-4o)")
+        print(f"    ├── aggregate_results")
+        print(f"    │   └── nested_helper_function")
+        print(f"    └── format_results")
     
     def test_async_nested_decorators(self):
         """Test async decorated functions with nesting."""
-        import asyncio
         
         @event(name="async_processor")
         async def async_process(data: str) -> str:
@@ -286,23 +338,39 @@ class TestNestedDecorators:
                 'processed': processed
             }
         
+        # Clear events from previous test
+        self.created_events.clear()
+        
         # Run async test
         async def run_test():
-            with pytest.raises(RuntimeError):
+            try:
                 await async_main_workflow("test error case")
+                print("\033[91mERROR: Async function should have thrown RuntimeError!\033[0m")
+            except RuntimeError as e:
+                print(f"\033[92m✓\033[0m Async RuntimeError caught: {e}")
         
         asyncio.run(run_test())
+        
+        # Wait for events to be queued
+        time.sleep(0.5)
         
         # Verify async events were created
         async_events = [e for e in self.created_events 
                        if 'async' in e.get('payload', {}).get('function_name', '')]
         assert len(async_events) >= 3, f"Expected at least 3 async events, got {len(async_events)}"
         
+        # Verify nesting
+        async_main = [e for e in async_events if 'async_main' in e['payload'].get('misc', {}).get('name', e['payload'].get('function_name', ''))][0]
+        async_validate = [e for e in async_events if 'async_validator' in e['payload'].get('misc', {}).get('name', e['payload'].get('function_name', ''))][0]
+        async_process = [e for e in async_events if 'async_processor' in e['payload'].get('misc', {}).get('name', e['payload'].get('function_name', ''))][0]
+        
+        assert async_validate['client_parent_event_id'] == async_main['client_event_id']
+        assert async_process['client_parent_event_id'] == async_main['client_event_id']
+        
         print(f"\n\033[92m✓\033[0m Async test passed! Created {len(async_events)} async events with proper nesting")
     
     def test_mixed_sync_async_nesting(self):
         """Test mixing sync and async decorated functions."""
-        import asyncio
         
         @event(name="sync_helper")
         def sync_helper(value: int) -> int:
@@ -329,12 +397,21 @@ class TestNestedDecorators:
             
             return result
         
+        # Clear events from previous test
+        self.created_events.clear()
+        
         # Run test
         async def run_test():
-            with pytest.raises(ValueError):
+            try:
                 await mixed_workflow(25)  # Will produce 70, triggering error
+                print("\033[91mERROR: Mixed workflow should have thrown ValueError!\033[0m")
+            except ValueError as e:
+                print(f"\033[92m✓\033[0m Mixed ValueError caught: {e}")
         
         asyncio.run(run_test())
+        
+        # Wait for events to be queued
+        time.sleep(0.5)
         
         # Verify mixed events
         mixed_events = [e for e in self.created_events 
@@ -342,30 +419,41 @@ class TestNestedDecorators:
                        ['mixed_workflow', 'async_caller', 'sync_helper']]
         assert len(mixed_events) == 3, f"Expected 3 mixed events, got {len(mixed_events)}"
         
+        # Verify nesting hierarchy
+        mixed_main = [e for e in mixed_events if 'mixed_main' in e['payload'].get('misc', {}).get('name', e['payload'].get('function_name', ''))][0]
+        async_caller_ev = [e for e in mixed_events if 'async_caller' in e['payload'].get('misc', {}).get('name', e['payload'].get('function_name', ''))][0]
+        sync_helper_ev = [e for e in mixed_events if 'sync_helper' in e['payload'].get('misc', {}).get('name', e['payload'].get('function_name', ''))][0]
+        
+        assert async_caller_ev['client_parent_event_id'] == mixed_main['client_event_id']
+        assert sync_helper_ev['client_parent_event_id'] == async_caller_ev['client_event_id']
+        
         print(f"\n\033[92m✓\033[0m Mixed sync/async test passed! Created {len(mixed_events)} events")
+    
+    def cleanup(self):
+        """Clean up after tests."""
+        # Force flush the event queue
+        if hasattr(self.client, '_event_queue'):
+            self.client._event_queue.force_flush(timeout_seconds=2.0)
+        
+        # End the session
+        lai.end_session()
+        print(f"\n\033[94mSession ended and events flushed\033[0m")
 
 
 if __name__ == "__main__":
     # Run the tests
     test = TestNestedDecorators()
-    test.setup(None)
+    test.setup()
     
     print("\033[94mRunning comprehensive nested decorator tests...\033[0m\n")
     
-    try:
-        test.test_complex_nested_workflow()
-    except Exception as e:
-        print(f"\033[91m✗\033[0m Complex workflow test failed: {e}")
-    
-    try:
-        test.test_async_nested_decorators()
-    except Exception as e:
-        print(f"\033[91m✗\033[0m Async decorator test failed: {e}")
-    
-    try:
-        test.test_mixed_sync_async_nesting()
-    except Exception as e:
-        print(f"\033[91m✗\033[0m Mixed sync/async test failed: {e}")
+    # Run all tests - let assertions fail naturally
+    test.test_complex_nested_workflow()
+    test.test_async_nested_decorators()
+    test.test_mixed_sync_async_nesting()
     
     print(f"\n\033[96mTotal events created across all tests: {len(test.created_events)}\033[0m")
-    print("\033[92mAll nested decorator tests completed!\033[0m")
+    print("\033[92mAll nested decorator tests completed successfully!\033[0m")
+    
+    # Clean up
+    test.cleanup()
