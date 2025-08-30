@@ -172,6 +172,9 @@ class Client:
         return prompt
 
     def make_request(self, endpoint, method, data):
+
+        data = {k: v for k, v in data.items() if v is not None}
+
         http_methods = {
             "GET": lambda data: self.request_session.get(f"{self.base_url}/{endpoint}", params=data),
             "POST": lambda data: self.request_session.post(f"{self.base_url}/{endpoint}", json=data),
