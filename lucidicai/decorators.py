@@ -64,12 +64,21 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                 raise
             finally:
                 try:
+                    # Store error as return value with type information
+                    if error:
+                        return_val = {
+                            "error": str(error),
+                            "error_type": type(error).__name__
+                        }
+                    else:
+                        return_val = _serialize(result)
+                    
                     client.create_event(
                         type="function_call",
                         event_id=pre_event_id,
                         function_name=func.__name__,
                         arguments={"args": args_dict},
-                        return_value=None if error else _serialize(result),
+                        return_value=return_val,
                         error=str(error) if error else None,
                         parent_event_id=parent_id,
                         duration=(datetime.now().astimezone() - start_time).total_seconds(),
@@ -107,12 +116,21 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                 raise
             finally:
                 try:
+                    # Store error as return value with type information
+                    if error:
+                        return_val = {
+                            "error": str(error),
+                            "error_type": type(error).__name__
+                        }
+                    else:
+                        return_val = _serialize(result)
+                    
                     client.create_event(
                         type="function_call",
                         event_id=pre_event_id,
                         function_name=func.__name__,
                         arguments={"args": args_dict},
-                        return_value=None if error else _serialize(result),
+                        return_value=return_val,
                         error=str(error) if error else None,
                         parent_event_id=parent_id,
                         duration=(datetime.now().astimezone() - start_time).total_seconds(),
