@@ -36,6 +36,8 @@ class Session:
             "session_eval_reason": Client().mask(kwargs.get("session_eval_reason", None)),
             "tags": kwargs.get("tags", None)
         }
+        # Drop None values to avoid backend iterating over nulls
+        request_data = {k: v for k, v in request_data.items() if v is not None}
         Client().make_request('updatesession', 'PUT', request_data)
 
     def create_event(self, type: str = "generic", **kwargs) -> str:

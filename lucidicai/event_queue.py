@@ -52,7 +52,7 @@ class EventQueue:
           - type
           - payload (typed payload)
           - occurred_at (ISO string)
-          - Optional: duration, tags, metadata, parent_client_event_id
+          - Optional: duration, tags, metadata, client_parent_event_id
         """
         with self._lock:
             if len(self._queue) >= self.max_queue_size:
@@ -167,7 +167,7 @@ class EventQueue:
             progressed = False
             next_remaining: List[Dict[str, Any]] = []
             for ev in remaining:
-                parent_id = ev.get("parent_client_event_id")
+                parent_id = ev.get("client_parent_event_id")
                 if not parent_id or (parent_id not in id_to_evt) or (parent_id in processed_ids) or (parent_id in self._sent_ids):
                     ordered.append(ev)
                     if ev.get("client_event_id"):
@@ -212,7 +212,7 @@ class EventQueue:
         """Send event with enhanced error handling."""
         try:
             # If parent exists and not yet sent, defer up to 5 times
-            parent_id = event_request.get("parent_client_event_id")
+            parent_id = event_request.get("client_parent_event_id")
             if parent_id and parent_id not in self._sent_ids:
                 # Defer unless we've tried several times already
                 if event_request.get("defer_count", 0) < 5:

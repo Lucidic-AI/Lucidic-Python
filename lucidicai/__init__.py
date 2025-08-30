@@ -7,6 +7,8 @@ import traceback
 import threading
 from typing import List, Literal, Optional
 
+from dotenv import load_dotenv
+
 from .client import Client
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError, PromptError
 from .event import Event
@@ -243,6 +245,11 @@ def init(
         InvalidOperationError: If the client is already initialized.
         APIKeyVerificationError: If the API key is invalid.
     """
+
+    load_dotenv()
+
+    if os.getenv("LUCIDIC_DEBUG", "False").lower() == "true":
+        logger.setLevel(logging.DEBUG)
     
     # get current client which will be NullClient if never lai is never initialized
     client = Client()
@@ -391,13 +398,40 @@ def end_session(
                         pass
         except Exception:
             pass
-        client.session.update_session(is_finished=True, **locals())
+        # Flush event queue before ending session
+        try:
+            if hasattr(client, '_event_queue'):
+                client._event_queue.force_flush(timeout_seconds=5.0)
+        except Exception:
+            pass
+        # Send only expected fields to update endpoint
+        update_kwargs = {
+            "is_finished": True,
+            "session_eval": session_eval,
+            "session_eval_reason": session_eval_reason,
+            "is_successful": is_successful,
+            "is_successful_reason": is_successful_reason,
+        }
+        client.session.update_session(**update_kwargs)
+        # Shutdown queue after update
+        try:
+            if hasattr(client, '_event_queue'):
+                client._event_queue.shutdown()
+        except Exception:
+            pass
         client.clear()
         return
 
     # Otherwise, end the specified session id without clearing global state
     temp = Session(agent_id=client.agent_id, session_id=target_sid)
-    temp.update_session(is_finished=True, **locals())
+    update_kwargs = {
+        "is_finished": True,
+        "session_eval": session_eval,
+        "session_eval_reason": session_eval_reason,
+        "is_successful": is_successful,
+        "is_successful_reason": is_successful_reason,
+    }
+    temp.update_session(**update_kwargs)
 
 
 def _cleanup_telemetry():

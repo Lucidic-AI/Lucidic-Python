@@ -5,6 +5,7 @@ from typing import Optional, Tuple, Dict, Any
 
 import requests
 import logging
+import json
 from requests.adapters import HTTPAdapter, Retry
 from urllib3.util import Retry
 
@@ -18,6 +19,8 @@ from .event_queue import EventQueue
 import uuid
 
 NETWORK_RETRIES = 3
+
+logger = logging.getLogger("Lucidic")
 
 
 @singleton
@@ -176,6 +179,12 @@ class Client:
             "DELETE": lambda data: self.request_session.delete(f"{self.base_url}/{endpoint}", params=data),
         }  # TODO: make into enum
         data['current_time'] = datetime.now().astimezone(timezone.utc).isoformat()
+        # Debug: print final payload about to be sent
+        try:
+            dbg = json.dumps({"endpoint": endpoint, "method": method, "body": data}, ensure_ascii=False)
+            logger.debug(f"[HTTP] Sending request: {dbg}")
+        except Exception:
+            logger.debug(f"[HTTP] Sending request to {endpoint} {method}")
         func = http_methods[method]
         response = None
         for _ in range(NETWORK_RETRIES):
@@ -325,7 +334,7 @@ class Client:
         event_request: Dict[str, Any] = {
             "session_id": session_id,
             "client_event_id": client_event_id,
-            "parent_client_event_id": parent_event_id,
+            "client_parent_event_id": parent_event_id,
             "type": type,
             "occurred_at": occurred_at_str,
             "duration": kwargs.get("duration"),
