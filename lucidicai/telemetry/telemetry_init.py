@@ -12,7 +12,6 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.resources import Resource
 
 from .lucidic_exporter import LucidicSpanExporter
-from .session_stamp_processor import SessionStampProcessor
 
 logger = logging.getLogger("Lucidic")
 
@@ -30,9 +29,11 @@ def initialize_telemetry(providers: List[str], agent_id: str) -> Tuple[TracerPro
 
     provider = TracerProvider(resource=resource)
     
-    # Add session stamp processor to stamp spans with session ID
-    stamp_processor = SessionStampProcessor()
-    provider.add_span_processor(stamp_processor)
+    # Add context capture processor FIRST (runs synchronously at span creation)
+    # This captures BOTH session_id and parent_event_id from context
+    from .context_capture_processor import ContextCaptureProcessor
+    context_processor = ContextCaptureProcessor()
+    provider.add_span_processor(context_processor)
     
     # Add exporter processor for sending spans to Lucidic
     exporter = LucidicSpanExporter()

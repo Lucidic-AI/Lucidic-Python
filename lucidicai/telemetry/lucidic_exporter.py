@@ -57,12 +57,14 @@ class LucidicSpanExporter(SpanExporter):
             if not target_session_id:
                 return
 
-            # Parent nesting
-            parent_id = None
-            try:
-                parent_id = current_parent_event_id.get(None)
-            except Exception:
-                parent_id = None
+            # Parent nesting - get from span attributes (captured at span creation)
+            parent_id = attributes.get('lucidic.parent_event_id')
+            if not parent_id:
+                # Fallback to trying context (may work if same thread)
+                try:
+                    parent_id = current_parent_event_id.get(None)
+                except Exception:
+                    parent_id = None
 
             # Timing
             occurred_at = datetime.fromtimestamp(span.start_time / 1_000_000_000, tz=timezone.utc) if span.start_time else datetime.now(tz=timezone.utc)
