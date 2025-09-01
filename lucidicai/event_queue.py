@@ -13,6 +13,7 @@ import logging
 import os
 import threading
 import time
+import requests
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -272,17 +273,11 @@ class EventQueue:
     def _upload_blob(self, blob_url: str, data: bytes) -> None:
         """Upload blob with proper error handling and logging."""
         try:
-            # Use the underlying requests session to PUT to presigned URL
-            session = getattr(self._client, "request_session", None)
-            if session is None:
-                import requests
-                session = requests.Session()
-            
             if DEBUG:
                 logger.debug(f"[EventQueue] Uploading blob, size: {len(data)} bytes")
             
             headers = {"Content-Type": "application/json", "Content-Encoding": "gzip"}
-            resp = session.put(blob_url, data=data, headers=headers)
+            resp = requests.put(blob_url, data=data, headers=headers)
             resp.raise_for_status()
             
             if DEBUG:
