@@ -541,23 +541,6 @@ prompt = lai.get_prompt(
 )
 ```
 
-### Mass Simulations
-Run large-scale testing and evaluation:
-
-```python
-# Create a mass simulation
-mass_sim_id = lai.create_mass_sim(
-    mass_sim_name="Load Test",
-    total_num_sessions=1000
-)
-
-# Initialize sessions with mass_sim_id
-lai.init(
-    session_name="Test Session",
-    mass_sim_id=mass_sim_id
-)
-```
-
 ## Error Handling
 
 The SDK provides specific exceptions for different error scenarios:

@@ -152,8 +152,6 @@ def _install_crash_handlers() -> None:
             end_session()
         except Exception:
             pass
-        # Best-effort force flush and shutdown telemetry
-        # Telemetry cleanup is handled via _cleanup_telemetry on exit
         # Chain to original to preserve default printing/behavior
         try:
             _original_sys_excepthook(exc_type, exc, tb)
@@ -216,7 +214,6 @@ def init(
     task: Optional[str] = None,
     providers: Optional[List[ProviderType]] = [],
     production_monitoring: Optional[bool] = False,
-    mass_sim_id: Optional[str] = None,
     experiment_id: Optional[str] = None,
     rubrics: Optional[list] = None,
     tags: Optional[list] = None,
@@ -234,7 +231,6 @@ def init(
         agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
         task: Task description.
         providers: List of provider types ("openai", "anthropic", "langchain", "pydantic_ai").
-        mass_sim_id: Optional mass simulation ID, if session is to be part of a mass simulation.
         experiment_id: Optional experiment ID, if session is to be part of an experiment.
         rubrics: Optional rubrics for evaluation, list of strings.
         tags: Optional tags for the session, list of strings.
@@ -288,7 +284,6 @@ def init(
             logger.error(f"Failed to initialize telemetry: {e}")
     real_session_id = client.init_session(
         session_name=session_name,
-        mass_sim_id=mass_sim_id,
         task=task,
         rubrics=rubrics,
         tags=tags,
@@ -434,12 +429,6 @@ def end_session(
     temp.update_session(**update_kwargs)
 
 
-def _cleanup_telemetry():
-    """Cleanup function for OpenTelemetry shutdown"""
-    # Telemetry cleanup is now handled by provider shutdown
-    pass
-
-
 def _auto_end_session():
     """Automatically end session on exit if auto_end is enabled"""
     try:
@@ -493,61 +482,17 @@ def _signal_handler(signum, frame):
         pass
     
     _auto_end_session()
-    _cleanup_telemetry()
     # Re-raise the signal for default handling
     signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
 
 
-# Register cleanup functions (auto-end runs first due to LIFO order)
-atexit.register(_cleanup_telemetry)
+# Register cleanup function
 atexit.register(_auto_end_session)
 
 # Register signal handlers for graceful shutdown
 signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
-
-
-def create_mass_sim(
-    mass_sim_name: str,
-    total_num_sessions: int,
-    api_key: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    task: Optional[str] = None,
-    tags: Optional[list] = None
-) -> str:
-    """
-    Create a new mass simulation.
-    
-    Args:
-        mass_sim_name: Name of the mass simulation.
-        total_num_sessions: Total intended number of sessions. More sessions can be added later.
-        api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
-        agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
-        task: Task description.
-        tags: Tags for the mass simulation.
-    
-    Returns:
-        mass_sim_id: ID of the created mass simulation. Pass this to lai.init() to create a new session in the mass sim.
-    """
-    if api_key is None:
-        api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if api_key is None:
-            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
-    if agent_id is None:
-        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-        if agent_id is None:
-            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-    try:
-        client = Client()
-    except LucidicNotInitializedError:
-        client = Client( # TODO: fail hard if incorrect API key or agent ID provided and wrong, fail silently if not provided
-            api_key=api_key,
-            agent_id=agent_id,
-        )
-    mass_sim_id = client.init_mass_sim(mass_sim_name=mass_sim_name, total_num_sims=total_num_sessions, task=task, tags=tags)  # TODO: change total_num_sims to total_num_sessions everywhere
-    logger.info(f"Created mass simulation with ID: {mass_sim_id}")
-    return mass_sim_id
 
 
 def create_experiment(

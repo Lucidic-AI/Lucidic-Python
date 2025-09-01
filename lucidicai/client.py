@@ -79,7 +79,6 @@ class Client:
     def init_session(
         self,
         session_name: str,
-        mass_sim_id: Optional[str] = None,
         task: Optional[str] = None,
         rubrics: Optional[list] = None,
         tags: Optional[list] = None,
@@ -107,7 +106,6 @@ class Client:
             "agent_id": self.agent_id,
             "session_name": session_name,
             "task": task,
-            "mass_sim_id": mass_sim_id,
             "experiment_id": experiment_id,
             "rubrics": rubrics,
             "tags": tags,
@@ -125,7 +123,6 @@ class Client:
             agent_id=self.agent_id,
             session_id=real_session_id,
             session_name=session_name,
-            mass_sim_id=mass_sim_id,
             experiment_id=experiment_id,
             task=task,
             rubrics=rubrics,
@@ -143,11 +140,6 @@ class Client:
         kwargs = dict(kwargs)
         kwargs['session_id'] = session_id
         return self.create_event(**kwargs)
-
-
-    def init_mass_sim(self, **kwargs) -> str:
-        kwargs['agent_id'] = self.agent_id
-        return self.make_request('initmasssim', 'POST', kwargs)['mass_sim_id']
 
     def create_experiment(self, **kwargs) -> str:
         kwargs['agent_id'] = self.agent_id
