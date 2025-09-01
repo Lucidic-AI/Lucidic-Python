@@ -336,13 +336,17 @@ class EventQueue:
                 usage = payload.get("usage", {})
                 messages = req.get("messages", [])[:5]
                 output = payload.get("response", {}).get("output", {})
+                compressed_messages = []
                 for i, m in enumerate(messages):
-                    messages[i]["content"] = str(m["content"])[:200] if m["content"] else None
+                    compressed_message_item = {}
+                    for k, v in m.items():
+                        compressed_message_item[k] = str(v)[:200] if v else None
+                    compressed_messages.append(compressed_message_item)
                 return {
                     "request": {
                         "model": req.get("model")[:200] if req.get("model") else None,
                         "provider": req.get("provider")[:200] if req.get("provider") else None,
-                        "messages": messages,
+                        "messages": compressed_messages,
                     },
                     "usage": {
                         k: usage.get(k) for k in ("input_tokens", "output_tokens", "cost") if k in usage
