@@ -149,6 +149,10 @@ class Client:
         kwargs['agent_id'] = self.agent_id
         return self.make_request('initmasssim', 'POST', kwargs)['mass_sim_id']
 
+    def create_experiment(self, **kwargs) -> str:
+        kwargs['agent_id'] = self.agent_id
+        return self.make_request('createexperiment', 'POST', kwargs)['experiment_id']
+
     def get_prompt(self, prompt_name, cache_ttl, label) -> str:
         current_time = time.time()
         key = (prompt_name, label)

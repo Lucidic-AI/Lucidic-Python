@@ -183,10 +183,10 @@ def _install_crash_handlers() -> None:
     _crash_handlers_installed = True
 
 __all__ = [
-    'Client',
     'Session',
     'Event',
     'init',
+    'create_experiment',
     'create_event',
     'end_session',
     'get_prompt',
@@ -548,6 +548,76 @@ def create_mass_sim(
     mass_sim_id = client.init_mass_sim(mass_sim_name=mass_sim_name, total_num_sims=total_num_sessions, task=task, tags=tags)  # TODO: change total_num_sims to total_num_sessions everywhere
     logger.info(f"Created mass simulation with ID: {mass_sim_id}")
     return mass_sim_id
+
+
+def create_experiment(
+    experiment_name: str,
+    pass_fail_rubrics: list,
+    score_rubrics: Optional[list] = None,
+    description: Optional[str] = None,
+    tags: Optional[list] = None,
+    api_key: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> str:
+    """
+    Create a new experiment for grouping and analyzing sessions.
+                                                                                                   
+    Args:                                                                                      
+        experiment_name: Name of the experiment (required)      
+        pass_fail_rubrics: List of pass/fail rubric names to associate (required)                        
+        description: Description of the experiment                                             
+        task: Task description.
+        tags: List of tags for categorization                                                  
+        score_rubrics: List of score rubric names to associate                                 
+        api_key: API key (uses env if not provided)                                            
+        agent_id: Agent ID (uses env if not provided)                                          
+                                                                                                
+    Returns:                                                                                   
+        experiment_id: UUID of the created experiment                                          
+                                                                                                
+    Raises:                                                                                    
+        APIKeyVerificationError: If API key is invalid or missing
+        InvalidOperationError: If experiment creation fails
+        ValueError: If name is empty or no rubrics provided
+    """
+
+    # validation
+    if not experiment_name:
+        raise ValueError("Experiment name is required")
+    if not pass_fail_rubrics:
+        raise ValueError("Pass/fail rubrics are required")
+
+    if api_key is None:
+        api_key = os.getenv("LUCIDIC_API_KEY", None)
+        if api_key is None:
+            raise APIKeyVerificationError("Make sure to either pass your API key into create_experiment() or set the LUCIDIC_API_KEY environment variable.")
+    if agent_id is None:
+        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
+        if agent_id is None:
+            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into create_experiment() or set the LUCIDIC_AGENT_ID environment variable.")
+
+    # combine rubrics into single list
+    rubrics_names = pass_fail_rubrics + (score_rubrics or [])
+
+    if not rubrics_names: # should never happen since we already validated that pass_fail_rubrics is not empty
+        raise ValueError("No rubrics provided")
+
+    # get current client which will be NullClient if never lai.init() is never called
+    client = Client()
+    # if not yet initialized or still the NullClient -> create a real client when init is called
+    if not getattr(client, 'initialized', False):
+        client = Client(api_key=api_key, agent_id=agent_id)
+    else:
+        # Already initialized, this is a re-init
+        if api_key is not None and agent_id is not None and (api_key != client.api_key or agent_id != client.agent_id):
+            client.set_api_key(api_key)
+            client.agent_id = agent_id
+
+    # create experiment
+    experiment_id = client.create_experiment(experiment_name=experiment_name, rubrics_names=rubrics_names, description=description, tags=tags)
+    logger.info(f"Created experiment with ID: {experiment_id}") 
+
+    return experiment_id
 
 
 def create_event(
