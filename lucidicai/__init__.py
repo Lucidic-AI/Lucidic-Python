@@ -614,7 +614,7 @@ def create_experiment(
             client.agent_id = agent_id
 
     # create experiment
-    experiment_id = client.create_experiment(experiment_name=experiment_name, rubrics_names=rubrics_names, description=description, tags=tags)
+    experiment_id = client.create_experiment(experiment_name=experiment_name, rubric_names=rubrics_names, description=description, tags=tags)
     logger.info(f"Created experiment with ID: {experiment_id}") 
 
     return experiment_id
