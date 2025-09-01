@@ -30,8 +30,12 @@ class LucidicSpanExporter(SpanExporter):
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
             client = Client()
+            if DEBUG and spans:
+                logger.debug(f"[LucidicSpanExporter] Processing {len(spans)} spans")
             for span in spans:
                 self._process_span(span, client)
+            if DEBUG and spans:
+                logger.debug(f"[LucidicSpanExporter] Successfully exported {len(spans)} spans")
             return SpanExportResult.SUCCESS
         except Exception as e:
             logger.error(f"Failed to export spans: {e}")
@@ -82,7 +86,7 @@ class LucidicSpanExporter(SpanExporter):
             images = extract_images(attributes)
 
             # Create immutable event via non-blocking queue
-            client.create_event(
+            event_id = client.create_event(
                 type="llm_generation",
                 session_id=target_session_id,
                 parent_event_id=parent_id,
@@ -98,6 +102,9 @@ class LucidicSpanExporter(SpanExporter):
                 cost=cost,
                 raw={"images": images} if images else None,
             )
+            
+            if DEBUG:
+                logger.debug(f"[LucidicSpanExporter] Created LLM event {event_id} for session {target_session_id[:8]}...")
 
         except Exception as e:
             logger.error(f"Failed to process span {span.name}: {e}")

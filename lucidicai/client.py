@@ -1,5 +1,6 @@
 import os
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Dict, Any
 
@@ -39,6 +40,7 @@ class Client:
         self.agent_id = agent_id
         self.masking_function = None
         self.auto_end = False  # Default to False until explicitly set during init
+        self._shutdown = False  # Flag to prevent requests after shutdown
         self.request_session = requests.Session()
         retry_cfg = Retry(
             total=3,                     # 3 attempts in total
@@ -52,6 +54,17 @@ class Client:
         self.prompts = dict()
         # Initialize event queue (non-blocking event delivery)
         self._event_queue = EventQueue(self)
+        
+        # Track telemetry state to prevent re-initialization
+        # These are process-wide singletons for telemetry
+        self._telemetry_lock = threading.Lock()  # Prevent race conditions
+        self._tracer_provider = None
+        self._instrumentors = {}  # Dict to track which providers are instrumented
+        self._telemetry_initialized = False
+        
+        # Track active sessions to prevent premature EventQueue shutdown
+        self._active_sessions_lock = threading.Lock()
+        self._active_sessions = set()  # Set of active session IDs
 
     def set_api_key(self, api_key: str):
         self.api_key = api_key
@@ -128,9 +141,29 @@ class Client:
             rubrics=rubrics,
             tags=tags,
         )
+        
+        # Track this as an active session
+        with self._active_sessions_lock:
+            self._active_sessions.add(real_session_id)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"[Client] Added active session {real_session_id[:8]}..., total: {len(self._active_sessions)}")
+        
         self.initialized = True
         return self.session.session_id
 
+    def mark_session_inactive(self, session_id: str) -> None:
+        """Mark a session as inactive. Used when ending a session."""
+        with self._active_sessions_lock:
+            if session_id in self._active_sessions:
+                self._active_sessions.discard(session_id)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"[Client] Removed active session {session_id[:8]}..., remaining: {len(self._active_sessions)}")
+    
+    def has_active_sessions(self) -> bool:
+        """Check if there are any active sessions."""
+        with self._active_sessions_lock:
+            return len(self._active_sessions) > 0
+    
     def create_event_for_session(self, session_id: str, **kwargs) -> str:
         """Create an event for a specific session id (new typed model).
 
@@ -168,6 +201,10 @@ class Client:
         return prompt
 
     def make_request(self, endpoint, method, data):
+        # Check if client is shutting down
+        if self._shutdown:
+            logger.warning(f"[HTTP] Attempted request after shutdown: {endpoint}")
+            return {}
 
         data = {k: v for k, v in data.items() if v is not None}
 
@@ -361,3 +398,113 @@ class Client:
             logger = logging.getLogger('Lucidic')
             logger.error(f"Error in custom masking function: {repr(e)}")
             return "<Error in custom masking function, this is a fully-masked placeholder>"
+    
+    def initialize_telemetry(self, providers: list) -> bool:
+        """
+        Initialize telemetry with the given providers.
+        This is a true singleton - only the first call creates the TracerProvider.
+        Subsequent calls only add new instrumentors if needed.
+        
+        Args:
+            providers: List of provider names to instrument
+            
+        Returns:
+            True if telemetry was successfully initialized or already initialized
+        """
+        with self._telemetry_lock:
+            try:
+                # Create TracerProvider only once per process
+                if self._tracer_provider is None:
+                    logger.debug("[Telemetry] Creating TracerProvider (first initialization)")
+                    
+                    from opentelemetry import trace
+                    from opentelemetry.sdk.trace import TracerProvider
+                    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+                    from opentelemetry.sdk.resources import Resource
+                    
+                    resource = Resource.create({
+                        "service.name": "lucidic-ai",
+                        "service.version": "1.0.0",
+                        "lucidic.agent_id": self.agent_id,
+                    })
+                    
+                    # Create provider with shutdown_on_exit=False for our control
+                    self._tracer_provider = TracerProvider(resource=resource, shutdown_on_exit=False)
+                    
+                    # Add context capture processor FIRST
+                    from .telemetry.context_capture_processor import ContextCaptureProcessor
+                    context_processor = ContextCaptureProcessor()
+                    self._tracer_provider.add_span_processor(context_processor)
+                    
+                    # Add exporter processor for sending spans to Lucidic
+                    from .telemetry.lucidic_exporter import LucidicSpanExporter
+                    exporter = LucidicSpanExporter()
+                    # Configure for faster export: 100ms interval instead of default 5000ms
+                    # This matches the TypeScript SDK's flush interval pattern
+                    export_processor = BatchSpanProcessor(
+                        exporter,
+                        schedule_delay_millis=100,  # Export every 100ms
+                        max_export_batch_size=512,  # Reasonable batch size
+                        max_queue_size=2048         # Larger queue for burst handling
+                    )
+                    self._tracer_provider.add_span_processor(export_processor)
+                    
+                    # Set as global provider (only happens once)
+                    try:
+                        trace.set_tracer_provider(self._tracer_provider)
+                        logger.debug("[Telemetry] Set global TracerProvider")
+                    except Exception as e:
+                        # This is OK - might already be set
+                        logger.debug(f"[Telemetry] Global provider already set: {e}")
+                    
+                    self._telemetry_initialized = True
+                
+                # Now instrument the requested providers (can happen multiple times)
+                if providers:
+                    from .telemetry.telemetry_init import instrument_providers
+                    new_instrumentors = instrument_providers(providers, self._tracer_provider, self._instrumentors)
+                    # Update our tracking dict
+                    self._instrumentors.update(new_instrumentors)
+                    logger.debug(f"[Telemetry] Instrumented providers: {list(new_instrumentors.keys())}")
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"[Telemetry] Failed to initialize: {e}")
+                return False
+    
+    def flush_telemetry(self, timeout_seconds: float = 2.0) -> bool:
+        """
+        Flush all OpenTelemetry spans to ensure they're exported.
+        
+        This method blocks until all buffered spans in the TracerProvider
+        are exported or the timeout is reached. Critical for ensuring
+        LLM generation events are not lost during shutdown.
+        
+        Handles both active and shutdown TracerProviders gracefully.
+        
+        Args:
+            timeout_seconds: Maximum time to wait for flush completion
+            
+        Returns:
+            True if flush succeeded, False if timeout occurred
+        """
+        try:
+            if self._tracer_provider:
+                # Check if provider is already shutdown
+                if hasattr(self._tracer_provider, '_shutdown') and self._tracer_provider._shutdown:
+                    logger.debug("[Telemetry] TracerProvider already shutdown, skipping flush")
+                    return True
+                    
+                # Convert seconds to milliseconds for OpenTelemetry
+                timeout_millis = int(timeout_seconds * 1000)
+                success = self._tracer_provider.force_flush(timeout_millis)
+                if success:
+                    logger.debug(f"[Telemetry] Successfully flushed spans (timeout={timeout_seconds}s)")
+                else:
+                    logger.warning(f"[Telemetry] Flush timed out after {timeout_seconds}s")
+                return success
+            return True  # No provider = nothing to flush = success
+        except Exception as e:
+            logger.error(f"[Telemetry] Failed to flush spans: {e}")
+            return False

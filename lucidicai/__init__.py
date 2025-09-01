@@ -13,6 +13,7 @@ from .client import Client
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError, PromptError
 from .event import Event
 from .session import Session
+from .singleton import clear_singletons
 
 # Import decorators
 from .decorators import event
@@ -275,13 +276,11 @@ def init(
         auto_end = os.getenv("LUCIDIC_AUTO_END", "True").lower() == "true"
     
     # Set up providers
-    # Initialize unified telemetry (exporter-only) instead of per-provider handlers
+    # Use the client's singleton telemetry initialization
     if providers:
-        try:
-            from .telemetry.telemetry_init import initialize_telemetry
-            initialize_telemetry(providers=providers, agent_id=client.agent_id)
-        except Exception as e:
-            logger.error(f"Failed to initialize telemetry: {e}")
+        success = client.initialize_telemetry(providers)
+        if not success:
+            logger.warning("[Telemetry] Failed to initialize telemetry for some providers")
     real_session_id = client.init_session(
         session_name=session_name,
         task=task,
@@ -393,12 +392,29 @@ def end_session(
                         pass
         except Exception:
             pass
-        # Flush event queue before ending session
+        # CRITICAL: Flush OpenTelemetry spans FIRST (blocking)
+        # This ensures all spans are converted to events before we flush the event queue
+        try:
+            if hasattr(client, '_tracer_provider') and client._tracer_provider:
+                logger.debug("[Session] Flushing OpenTelemetry spans before session end...")
+                # Force flush with generous timeout to ensure all spans are exported
+                # The BatchSpanProcessor now exports every 100ms, so this should be quick
+                success = client._tracer_provider.force_flush(timeout_millis=10000)  # 10 second timeout
+                if not success:
+                    logger.warning("[Session] OpenTelemetry flush timed out - some spans may be lost")
+                else:
+                    logger.debug("[Session] OpenTelemetry spans flushed successfully")
+        except Exception as e:
+            logger.debug(f"[Session] Failed to flush telemetry spans: {e}")
+        
+        # THEN flush event queue (which now contains events from flushed spans)
         try:
             if hasattr(client, '_event_queue'):
+                logger.debug("[Session] Flushing event queue...")
                 client._event_queue.force_flush(timeout_seconds=5.0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Session] Failed to flush event queue: {e}")
+        
         # Send only expected fields to update endpoint
         update_kwargs = {
             "is_finished": True,
@@ -408,13 +424,16 @@ def end_session(
             "is_successful_reason": is_successful_reason,
         }
         client.session.update_session(**update_kwargs)
-        # Shutdown queue after update
-        try:
-            if hasattr(client, '_event_queue'):
-                client._event_queue.shutdown()
-        except Exception:
-            pass
-        client.clear()
+        
+        # Mark session as inactive
+        client.mark_session_inactive(target_sid)
+        
+        # Clear only the global session reference, not the singleton
+        # This preserves the client and event queue for other threads
+        client.session = None
+        logger.debug(f"[Session] Ended global session {target_sid}")
+        # DO NOT shutdown event queue - other threads may be using it
+        # DO NOT call client.clear() - preserve singleton for other threads
         return
 
     # Otherwise, end the specified session id without clearing global state
@@ -429,6 +448,51 @@ def end_session(
     temp.update_session(**update_kwargs)
 
 
+def flush(timeout_seconds: float = 2.0) -> bool:
+    """
+    Manually flush all pending telemetry data.
+    
+    Flushes both OpenTelemetry spans and queued events to ensure
+    all telemetry data is sent to the backend. This is called
+    automatically on process exit but can be called manually
+    for explicit control.
+    
+    Args:
+        timeout_seconds: Maximum time to wait for flush
+        
+    Returns:
+        True if all flushes succeeded, False otherwise
+        
+    Example:
+        ```python
+        import lucidicai as lai
+        
+        # ... your code using Lucidic ...
+        
+        # Manually flush before critical operation
+        lai.flush()
+        ```
+    """
+    try:
+        client = Client()
+        success = True
+        
+        # Flush OpenTelemetry spans first
+        if hasattr(client, 'flush_telemetry'):
+            span_success = client.flush_telemetry(timeout_seconds)
+            success = success and span_success
+        
+        # Then flush event queue
+        if hasattr(client, '_event_queue'):
+            client._event_queue.force_flush(timeout_seconds)
+            
+        logger.debug(f"[Flush] Manual flush completed (success={success})")
+        return success
+    except Exception as e:
+        logger.error(f"Failed to flush telemetry: {e}")
+        return False
+
+
 def _auto_end_session():
     """Automatically end session on exit if auto_end is enabled"""
     try:
@@ -437,6 +501,10 @@ def _auto_end_session():
             logger.info("Auto-ending active session on exit")
             client.auto_end = False  # To avoid repeating auto-end on exit
             
+            # Flush telemetry
+            if hasattr(client, '_tracer_provider'):
+                client._tracer_provider.force_flush(timeout_millis=5000)
+
             # Force flush event queue before ending session
             if hasattr(client, '_event_queue'):
                 if logger.isEnabledFor(logging.DEBUG):
@@ -444,13 +512,99 @@ def _auto_end_session():
                 client._event_queue.force_flush(timeout_seconds=5.0)
             
             end_session()
-            
-            # Shutdown event queue properly
-            if hasattr(client, '_event_queue'):
-                client._event_queue.shutdown()
                 
     except Exception as e:
         logger.debug(f"Error during auto-end session: {e}")
+
+
+def _cleanup_singleton_on_exit():
+    """
+    Clean up singleton resources only on process exit.
+    
+    CRITICAL ORDER:
+    1. Flush OpenTelemetry spans (blocking) - ensures spans become events
+    2. Flush EventQueue - sends all events including those from spans
+    3. Close HTTP session - graceful TCP FIN prevents broken pipes
+    4. Clear singletons - final cleanup
+    
+    This order is essential to prevent lost events and broken connections.
+    """
+    try:
+        client = Client()
+        
+        # 1. FIRST: Flush OpenTelemetry spans (blocking until exported)
+        # This is the critical fix - we must flush spans before events
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            try:
+                # Small delay to ensure spans have reached the processor
+                import time
+                time.sleep(0.1)  # 100ms to let spans reach BatchSpanProcessor
+                
+                logger.debug("[Exit] Flushing OpenTelemetry spans...")
+                # force_flush() blocks until all spans are exported or timeout
+                success = client._tracer_provider.force_flush(timeout_millis=3000)
+                if success:
+                    logger.debug("[Exit] OpenTelemetry spans flushed successfully")
+                else:
+                    logger.warning("[Exit] OpenTelemetry flush timed out - some spans may be lost")
+                
+                # Now shutdown the TracerProvider since we control it (shutdown_on_exit=False)
+                logger.debug("[Exit] Shutting down TracerProvider...")
+                client._tracer_provider.shutdown()
+                logger.debug("[Exit] TracerProvider shutdown complete")
+            except Exception as e:
+                logger.debug(f"[Exit] Telemetry cleanup error: {e}")
+        
+        # 2. SECOND: Flush and shutdown EventQueue
+        # Now it contains all events from the flushed spans
+        if hasattr(client, '_event_queue'):
+            try:
+                logger.debug("[Exit] Flushing event queue...")
+                client._event_queue.force_flush(timeout_seconds=2.0)
+                
+                # Wait for queue to be completely empty before proceeding
+                import time
+                max_wait = 5.0  # seconds
+                start_time = time.time()
+                while not client._event_queue.is_empty():
+                    if time.time() - start_time > max_wait:
+                        logger.warning("[Exit] EventQueue not empty after timeout")
+                        break
+                    time.sleep(0.01)  # Small sleep to avoid busy waiting
+                
+                if client._event_queue.is_empty():
+                    logger.debug("[Exit] EventQueue is empty, proceeding with shutdown")
+                
+                # Only shutdown if no active sessions remain
+                if not client.has_active_sessions():
+                    client._event_queue.shutdown()
+                    logger.debug("[Exit] Event queue shutdown complete")
+                else:
+                    logger.debug(f"[Exit] Skipping EventQueue shutdown - active sessions remain")
+            except Exception as e:
+                logger.debug(f"[Exit] Event queue cleanup error: {e}")
+        
+        # 3. THIRD: Close HTTP session ONLY after queue is empty
+        # This prevents broken pipes by ensuring all events are sent first
+        if hasattr(client, 'request_session'):
+            try:
+                # Mark client as shutting down to prevent new requests
+                client._shutdown = True
+                logger.debug("[Exit] Closing HTTP session (queue empty, worker stopped)")
+                client.request_session.close()
+                logger.debug("[Exit] HTTP session closed gracefully")
+            except Exception as e:
+                logger.debug(f"[Exit] HTTP session cleanup error: {e}")
+        
+        # 4. FINALLY: Clear singletons
+        # Safe to destroy now that all data is flushed
+        clear_singletons()
+        logger.debug("[Exit] Singleton cleanup complete")
+        
+    except Exception as e:
+        # Silent fail on exit to avoid disrupting process termination
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[Exit] Cleanup error: {e}")
 
 
 def _signal_handler(signum, frame):
@@ -487,8 +641,9 @@ def _signal_handler(signum, frame):
     os.kill(os.getpid(), signum)
 
 
-# Register cleanup function
-atexit.register(_auto_end_session)
+# Register cleanup functions
+atexit.register(_cleanup_singleton_on_exit)  # Clean up singleton resources on exit
+atexit.register(_auto_end_session)  # Auto-end session if enabled
 
 # Register signal handlers for graceful shutdown
 signal.signal(signal.SIGINT, _signal_handler)

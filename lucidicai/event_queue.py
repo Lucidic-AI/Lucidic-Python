@@ -41,6 +41,12 @@ class EventQueue:
         self._sent_ids: set[str] = set()
         self._deferred_queue: List[Dict[str, Any]] = []
         self._deferred_lock = threading.Lock()
+        
+        # Thread safety for flush operations
+        self._flush_lock = threading.Lock()
+        self._processing_count = 0
+        self._processing_lock = threading.Lock()
+        self._flush_complete = threading.Event()
 
         # Start background worker
         self._start_worker()
@@ -81,13 +87,59 @@ class EventQueue:
             # To match original behavior exactly, we'd need a deque, but this is simpler.
 
     def force_flush(self, timeout_seconds: float = 5.0) -> None:
-        """Flush current queue synchronously (best-effort)."""
-        end_time = time.time() + timeout_seconds
-        while time.time() < end_time:
-            if self._queue.empty():
-                return
+        """Flush current queue synchronously (best-effort). Thread-safe."""
+        with self._flush_lock:
+            if DEBUG:
+                logger.debug(f"[EventQueue] Force flush requested, queue size: {self._queue.qsize()}")
+            
+            # Signal the worker to flush immediately
             self._flush_event.set()
-            time.sleep(0.05)
+            
+            # Wait for the queue to be processed
+            end_time = time.time() + timeout_seconds
+            last_size = -1
+            stable_count = 0
+            
+            while time.time() < end_time:
+                current_size = self._queue.qsize()
+                
+                # Check if we're making progress
+                if current_size == 0 and self._processing_count == 0:
+                    # Queue is empty and nothing being processed
+                    if stable_count >= 2:  # Wait for 2 cycles to ensure stability
+                        if DEBUG:
+                            logger.debug("[EventQueue] Force flush complete - queue empty")
+                        return
+                    stable_count += 1
+                else:
+                    stable_count = 0
+                
+                # If size hasn't changed, we might be stuck
+                if current_size == last_size:
+                    stable_count += 1
+                    if stable_count >= 10:  # 0.5 seconds of no progress
+                        if DEBUG:
+                            logger.debug(f"[EventQueue] Force flush timeout - queue stuck at {current_size}")
+                        break
+                else:
+                    stable_count = 0
+                    last_size = current_size
+                
+                # Signal flush again in case worker missed it
+                self._flush_event.set()
+                time.sleep(0.05)
+            
+            if DEBUG:
+                logger.debug(f"[EventQueue] Force flush ended, remaining: {self._queue.qsize()}")
+
+    def is_empty(self) -> bool:
+        """Check if queue is completely empty and no events are being processed."""
+        with self._processing_lock:
+            queue_empty = self._queue.empty()
+            not_processing = self._processing_count == 0
+        with self._deferred_lock:
+            deferred_empty = len(self._deferred_queue) == 0
+        return queue_empty and not_processing and deferred_empty
 
     def shutdown(self) -> None:
         """Enhanced shutdown with better flushing."""
@@ -97,13 +149,21 @@ class EventQueue:
         # First try to flush remaining events
         self.force_flush(timeout_seconds=2.0)
         
+        # Wait for queue to be truly empty
+        wait_start = time.time()
+        while not self.is_empty() and (time.time() - wait_start < 2.0):
+            time.sleep(0.01)
+            
+        if not self.is_empty() and DEBUG:
+            logger.debug(f"[EventQueue] Not empty after wait: queue={self._queue.qsize()}, processing={self._processing_count}, deferred={len(self._deferred_queue)}")
+        
         # Then signal stop
         self._stopped.set()
         self._flush_event.set()  # Wake up worker
         
         # Wait for worker with timeout
         if self._worker and self._worker.is_alive():
-            self._worker.join(timeout=3.0)
+            self._worker.join(timeout=5.0)  # Increased timeout
             if self._worker.is_alive() and DEBUG:
                 logger.debug("[EventQueue] Worker thread did not terminate in time")
 
@@ -126,49 +186,71 @@ class EventQueue:
         while not self._stopped.is_set():
             batch: List[Dict[str, Any]] = []
             deadline = time.time() + (self.flush_interval_ms / 1000.0)
+            force_flush = False
             
             # Collect batch up to flush_at_count or until deadline
-            while len(batch) < self.flush_at_count:
-                remaining_time = deadline - time.time()
-                if remaining_time <= 0:
-                    break
-                    
-                try:
-                    # Wait for item with timeout
-                    timeout = min(remaining_time, 0.1)  # Check stopped flag periodically
-                    item = self._queue.get(block=True, timeout=timeout)
-                    batch.append(item)
-                    
-                    # Check if we should flush immediately
-                    if self._flush_event.is_set():
-                        self._flush_event.clear()
-                        # Drain more items if available
-                        while len(batch) < self.flush_at_count:
-                            try:
-                                item = self._queue.get_nowait()
-                                batch.append(item)
-                            except queue.Empty:
-                                break
+            while True:
+                # Check if flush was requested
+                if self._flush_event.is_set():
+                    force_flush = True
+                    self._flush_event.clear()
+                
+                # During force flush, get ALL events
+                if force_flush:
+                    # Drain entire queue when flushing
+                    while not self._queue.empty():
+                        try:
+                            item = self._queue.get_nowait()
+                            batch.append(item)
+                        except queue.Empty:
+                            break
+                    # Process what we have
+                    if batch:
                         break
-                        
-                except queue.Empty:
-                    # Check if stopped
-                    if self._stopped.is_set():
-                        # Drain remaining queue on shutdown
-                        while not self._queue.empty():
-                            try:
-                                batch.append(self._queue.get_nowait())
-                            except queue.Empty:
-                                break
+                    # If still empty after draining, wait a bit for stragglers
+                    if not batch:
+                        time.sleep(0.01)
+                        continue
+                else:
+                    # Normal batching logic
+                    if len(batch) >= self.flush_at_count:
                         break
+                    
+                    remaining_time = deadline - time.time()
+                    if remaining_time <= 0:
+                        break
+                    
+                    try:
+                        # Wait for item with timeout
+                        timeout = min(remaining_time, 0.05)  # Check more frequently
+                        item = self._queue.get(block=True, timeout=timeout)
+                        batch.append(item)
+                    except queue.Empty:
+                        # Check if stopped
+                        if self._stopped.is_set():
+                            # Drain remaining queue on shutdown
+                            while not self._queue.empty():
+                                try:
+                                    batch.append(self._queue.get_nowait())
+                                except queue.Empty:
+                                    break
+                            break
+                        # If we have events and deadline passed, process them
+                        if batch and time.time() >= deadline:
+                            break
 
             # Process batch if we have events
             if batch:
+                with self._processing_lock:
+                    self._processing_count = len(batch)
                 try:
                     self._process_batch(batch)
-                except Exception:
-                    # Swallow to keep worker alive
-                    pass
+                except Exception as e:
+                    if DEBUG:
+                        logger.debug(f"[EventQueue] Batch processing error: {e}")
+                finally:
+                    with self._processing_lock:
+                        self._processing_count = 0
                     
         # Final drain on shutdown
         final_batch = []
@@ -178,10 +260,15 @@ class EventQueue:
             except queue.Empty:
                 break
         if final_batch:
+            with self._processing_lock:
+                self._processing_count = len(final_batch)
             try:
                 self._process_batch(final_batch)
             except Exception:
                 pass
+            finally:
+                with self._processing_lock:
+                    self._processing_count = 0
 
     def _process_batch(self, batch: List[Dict[str, Any]]) -> None:
         """Process a batch of events with parent-child ordering."""
