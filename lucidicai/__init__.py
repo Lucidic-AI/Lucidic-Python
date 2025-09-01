@@ -415,6 +415,9 @@ def end_session(
         except Exception as e:
             logger.debug(f"[Session] Failed to flush event queue: {e}")
         
+        # Mark session as inactive FIRST (prevents race conditions)
+        client.mark_session_inactive(target_sid)
+        
         # Send only expected fields to update endpoint
         update_kwargs = {
             "is_finished": True,
@@ -423,10 +426,10 @@ def end_session(
             "is_successful": is_successful,
             "is_successful_reason": is_successful_reason,
         }
-        client.session.update_session(**update_kwargs)
-        
-        # Mark session as inactive
-        client.mark_session_inactive(target_sid)
+        try:
+            client.session.update_session(**update_kwargs)
+        except Exception as e:
+            logger.warning(f"[Session] Failed to update session: {e}")
         
         # Clear only the global session reference, not the singleton
         # This preserves the client and event queue for other threads
@@ -437,6 +440,9 @@ def end_session(
         return
 
     # Otherwise, end the specified session id without clearing global state
+    # CRITICAL: Mark session as inactive FIRST for ALL sessions
+    client.mark_session_inactive(target_sid)
+    
     temp = Session(agent_id=client.agent_id, session_id=target_sid)
     update_kwargs = {
         "is_finished": True,
@@ -445,7 +451,10 @@ def end_session(
         "is_successful": is_successful,
         "is_successful_reason": is_successful_reason,
     }
-    temp.update_session(**update_kwargs)
+    try:
+        temp.update_session(**update_kwargs)
+    except Exception as e:
+        logger.warning(f"[Session] Failed to update session: {e}")
 
 
 def flush(timeout_seconds: float = 2.0) -> bool:
@@ -548,10 +557,8 @@ def _cleanup_singleton_on_exit():
                 else:
                     logger.warning("[Exit] OpenTelemetry flush timed out - some spans may be lost")
                 
-                # Now shutdown the TracerProvider since we control it (shutdown_on_exit=False)
-                logger.debug("[Exit] Shutting down TracerProvider...")
-                client._tracer_provider.shutdown()
-                logger.debug("[Exit] TracerProvider shutdown complete")
+                # DON'T shutdown TracerProvider yet - wait until after EventQueue
+                # This prevents losing spans that are still being processed
             except Exception as e:
                 logger.debug(f"[Exit] Telemetry cleanup error: {e}")
         
@@ -575,16 +582,30 @@ def _cleanup_singleton_on_exit():
                 if client._event_queue.is_empty():
                     logger.debug("[Exit] EventQueue is empty, proceeding with shutdown")
                 
-                # Only shutdown if no active sessions remain
-                if not client.has_active_sessions():
-                    client._event_queue.shutdown()
-                    logger.debug("[Exit] Event queue shutdown complete")
-                else:
-                    logger.debug(f"[Exit] Skipping EventQueue shutdown - active sessions remain")
+                # Clear any stale active sessions (threads may have died without cleanup)
+                if hasattr(client, '_active_sessions'):
+                    with client._active_sessions_lock:
+                        if client._active_sessions:
+                            logger.debug(f"[Exit] Clearing {len(client._active_sessions)} remaining active sessions")
+                            client._active_sessions.clear()
+                
+                # Now shutdown EventQueue
+                client._event_queue.shutdown()
+                logger.debug("[Exit] Event queue shutdown complete")
             except Exception as e:
                 logger.debug(f"[Exit] Event queue cleanup error: {e}")
         
-        # 3. THIRD: Close HTTP session ONLY after queue is empty
+        # 3. THIRD: Shutdown TracerProvider after EventQueue is done
+        # This ensures all spans can be exported before shutdown
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            try:
+                logger.debug("[Exit] Shutting down TracerProvider...")
+                client._tracer_provider.shutdown()
+                logger.debug("[Exit] TracerProvider shutdown complete")
+            except Exception as e:
+                logger.debug(f"[Exit] TracerProvider shutdown error: {e}")
+        
+        # 4. FOURTH: Close HTTP session ONLY after everything else
         # This prevents broken pipes by ensuring all events are sent first
         if hasattr(client, 'request_session'):
             try:
@@ -596,7 +617,7 @@ def _cleanup_singleton_on_exit():
             except Exception as e:
                 logger.debug(f"[Exit] HTTP session cleanup error: {e}")
         
-        # 4. FINALLY: Clear singletons
+        # 5. FINALLY: Clear singletons
         # Safe to destroy now that all data is flushed
         clear_singletons()
         logger.debug("[Exit] Singleton cleanup complete")
