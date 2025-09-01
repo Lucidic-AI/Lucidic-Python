@@ -294,18 +294,35 @@ class EventQueue:
         t = (event_type or "generic").lower()
         try:
             if t == "llm_generation":
-                req = payload.get("request", {}) if isinstance(payload.get("request"), dict) else {}
-                usage = payload.get("usage", {}) if isinstance(payload.get("usage"), dict) else {}
+                req = payload.get("request", {})
+                usage = payload.get("usage", {})
+                messages = req.get("messages", [])[:5]
+                output = payload.get("response", {}).get("output", {})
+                for i, m in enumerate(messages):
+                    messages[i]["content"] = str(m["content"])[:200] if m["content"] else None
                 return {
                     "request": {
-                        "model": (req.get("model")[:200] if req.get("model") else None),
-                        "provider": (req.get("provider")[:200] if req.get("provider") else None),
+                        "model": req.get("model")[:200] if req.get("model") else None,
+                        "provider": req.get("provider")[:200] if req.get("provider") else None,
+                        "messages": messages,
                     },
-                    "usage": {k: usage.get(k) for k in ("input_tokens", "output_tokens", "cost") if k in usage},
+                    "usage": {
+                        k: usage.get(k) for k in ("input_tokens", "output_tokens", "cost") if k in usage
+                    },
+                    "response": {
+                        "output": str(output)[:200] if output else None,
+                    }
                 }
             if t == "function_call":
+                args = payload.get("arguments")
+                truncated_args = (
+                    {k: (str(v)[:200] if v is not None else None) for k, v in args.items()}
+                    if isinstance(args, dict)
+                    else (str(args)[:200] if args is not None else None)
+                )
                 return {
                     "function_name": (payload.get("function_name")[:200] if payload.get("function_name") else None),
+                    "arguments": truncated_args,
                 }
             if t == "error_traceback":
                 return {
