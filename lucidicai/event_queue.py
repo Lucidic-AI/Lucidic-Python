@@ -11,10 +11,10 @@ import io
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import requests
-import copy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -34,12 +34,13 @@ class EventQueue:
 
         # Runtime state
         self._client = client
-        self._queue: List[Dict[str, Any]] = []
-        self._lock = threading.Lock()
-        self._cv = threading.Condition(self._lock)
-        self._stopped = False
+        self._queue = queue.Queue(maxsize=self.max_queue_size)
+        self._stopped = threading.Event()
+        self._flush_event = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._sent_ids: set[str] = set()
+        self._deferred_queue: List[Dict[str, Any]] = []
+        self._deferred_lock = threading.Lock()
 
         # Start background worker
         self._start_worker()
@@ -56,48 +57,49 @@ class EventQueue:
           - occurred_at (ISO string)
           - Optional: duration, tags, metadata, client_parent_event_id
         """
-        with self._lock:
-            if len(self._queue) >= self.max_queue_size:
-                if DEBUG:
-                    logger.debug(f"[EventQueue] Queue at max size {self.max_queue_size}, dropping oldest")
-                self._queue.pop(0)
-            # Ensure a defer counter exists for parent-order deferrals
-            if "defer_count" not in event_request:
-                event_request["defer_count"] = 0
-            self._queue.append(event_request)
+        # Ensure a defer counter exists for parent-order deferrals
+        if "defer_count" not in event_request:
+            event_request["defer_count"] = 0
+        
+        try:
+            # Try to put with a small timeout to handle full queue
+            self._queue.put(event_request, block=True, timeout=0.001)
             
             if DEBUG:
-                logger.debug(f"[EventQueue] Queued event {event_request.get('client_event_id')}, queue size: {len(self._queue)}")
+                logger.debug(f"[EventQueue] Queued event {event_request.get('client_event_id')}, queue size: {self._queue.qsize()}")
             if VERBOSE:
                 logger.debug(f"[EventQueue] Event payload: {json.dumps(event_request, indent=2)}")
             
             # Wake worker if batch large enough
-            if len(self._queue) >= self.flush_at_count:
-                self._cv.notify()
+            if self._queue.qsize() >= self.flush_at_count:
+                self._flush_event.set()
+                
+        except queue.Full:
+            if DEBUG:
+                logger.debug(f"[EventQueue] Queue at max size {self.max_queue_size}, dropping event")
+            # In the original implementation, oldest was dropped. With Queue, we drop the new one.
+            # To match original behavior exactly, we'd need a deque, but this is simpler.
 
     def force_flush(self, timeout_seconds: float = 5.0) -> None:
         """Flush current queue synchronously (best-effort)."""
         end_time = time.time() + timeout_seconds
         while time.time() < end_time:
-            with self._lock:
-                if not self._queue:
-                    return
-                self._cv.notify()
+            if self._queue.empty():
+                return
+            self._flush_event.set()
             time.sleep(0.05)
 
     def shutdown(self) -> None:
         """Enhanced shutdown with better flushing."""
         if DEBUG:
-            with self._lock:
-                logger.debug(f"[EventQueue] Shutdown requested, queue size: {len(self._queue)}")
+            logger.debug(f"[EventQueue] Shutdown requested, queue size: {self._queue.qsize()}")
         
         # First try to flush remaining events
         self.force_flush(timeout_seconds=2.0)
         
         # Then signal stop
-        with self._lock:
-            self._stopped = True
-            self._cv.notify()
+        self._stopped.set()
+        self._flush_event.set()  # Wake up worker
         
         # Wait for worker with timeout
         if self._worker and self._worker.is_alive():
@@ -120,41 +122,77 @@ class EventQueue:
             logger.debug(f"[EventQueue] Started worker thread (daemon={self._daemon_mode})")
 
     def _run_loop(self) -> None:
-        next_wake = time.time() + (self.flush_interval_ms / 1000.0)
-        while True:
-            with self._lock:
-                # Wait until either batch size or interval
-                now = time.time()
-                timeout = max(0.0, next_wake - now)
-                if not self._stopped and len(self._queue) < self.flush_at_count:
-                    self._cv.wait(timeout=timeout)
-                if self._stopped:
-                    # Drain on shutdown
-                    batch = list(self._queue)
-                    self._queue.clear()
-                else:
-                    # Interval elapsed or batch threshold reached
-                    if time.time() >= next_wake or len(self._queue) >= self.flush_at_count:
-                        batch = self._queue[: self.flush_at_count]
-                        del self._queue[: self.flush_at_count]
-                        next_wake = time.time() + (self.flush_interval_ms / 1000.0)
-                    else:
-                        batch = []
+        """Main worker loop using queue.Queue for simpler implementation."""
+        while not self._stopped.is_set():
+            batch: List[Dict[str, Any]] = []
+            deadline = time.time() + (self.flush_interval_ms / 1000.0)
+            
+            # Collect batch up to flush_at_count or until deadline
+            while len(batch) < self.flush_at_count:
+                remaining_time = deadline - time.time()
+                if remaining_time <= 0:
+                    break
+                    
+                try:
+                    # Wait for item with timeout
+                    timeout = min(remaining_time, 0.1)  # Check stopped flag periodically
+                    item = self._queue.get(block=True, timeout=timeout)
+                    batch.append(item)
+                    
+                    # Check if we should flush immediately
+                    if self._flush_event.is_set():
+                        self._flush_event.clear()
+                        # Drain more items if available
+                        while len(batch) < self.flush_at_count:
+                            try:
+                                item = self._queue.get_nowait()
+                                batch.append(item)
+                            except queue.Empty:
+                                break
+                        break
+                        
+                except queue.Empty:
+                    # Check if stopped
+                    if self._stopped.is_set():
+                        # Drain remaining queue on shutdown
+                        while not self._queue.empty():
+                            try:
+                                batch.append(self._queue.get_nowait())
+                            except queue.Empty:
+                                break
+                        break
 
-            if not batch and not self._stopped:
-                continue
-            if not batch and self._stopped:
-                break
-
+            # Process batch if we have events
+            if batch:
+                try:
+                    self._process_batch(batch)
+                except Exception:
+                    # Swallow to keep worker alive
+                    pass
+                    
+        # Final drain on shutdown
+        final_batch = []
+        while not self._queue.empty():
             try:
-                self._process_batch(batch)
+                final_batch.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        if final_batch:
+            try:
+                self._process_batch(final_batch)
             except Exception:
-                # Swallow to keep worker alive
                 pass
 
     def _process_batch(self, batch: List[Dict[str, Any]]) -> None:
+        """Process a batch of events with parent-child ordering."""
         if DEBUG:
             logger.debug(f"[EventQueue] Processing batch of {len(batch)} events")
+        
+        # Add any deferred events back to the batch
+        with self._deferred_lock:
+            if self._deferred_queue:
+                batch.extend(self._deferred_queue)
+                self._deferred_queue.clear()
         
         # Reorder within batch to respect parent -> child when both present
         id_to_evt = {e.get("client_event_id"): e for e in batch if e.get("client_event_id")}
@@ -219,10 +257,9 @@ class EventQueue:
                 # Defer unless we've tried several times already
                 if event_request.get("defer_count", 0) < 5:
                     event_request["defer_count"] = event_request.get("defer_count", 0) + 1
-                    # Push to the end of the queue for later attempt
-                    with self._lock:
-                        self._queue.append(event_request)
-                        self._cv.notify()
+                    # Add to deferred queue for next batch
+                    with self._deferred_lock:
+                        self._deferred_queue.append(event_request)
                     return True
             
             # Offload large payloads to blob storage
@@ -299,17 +336,13 @@ class EventQueue:
                 usage = payload.get("usage", {})
                 messages = req.get("messages", [])[:5]
                 output = payload.get("response", {}).get("output", {})
-                compressed_messages = []
                 for i, m in enumerate(messages):
-                    compressed_message_item = {}
-                    for k, v in messages[i].items():
-                        compressed_message_item[k] = str(v)[:200] if v else None
-                    compressed_messages.append(compressed_message_item)
+                    messages[i]["content"] = str(m["content"])[:200] if m["content"] else None
                 return {
                     "request": {
                         "model": req.get("model")[:200] if req.get("model") else None,
                         "provider": req.get("provider")[:200] if req.get("provider") else None,
-                        "messages": compressed_messages,
+                        "messages": messages,
                     },
                     "usage": {
                         k: usage.get(k) for k in ("input_tokens", "output_tokens", "cost") if k in usage
@@ -340,5 +373,3 @@ class EventQueue:
         except Exception:
             pass
         return {"details": "preview_unavailable"}
-
-
