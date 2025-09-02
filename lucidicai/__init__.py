@@ -793,7 +793,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 def create_experiment(
     experiment_name: str,
-    pass_fail_rubrics: list,
+    pass_fail_rubrics: Optional[list],
     score_rubrics: Optional[list] = None,
     description: Optional[str] = None,
     tags: Optional[list] = None,
@@ -805,7 +805,7 @@ def create_experiment(
                                                                                                    
     Args:                                                                                      
         experiment_name: Name of the experiment (required)      
-        pass_fail_rubrics: List of pass/fail rubric names to associate (required)                        
+        pass_fail_rubrics: List of pass/fail rubric names to associate                        
         description: Description of the experiment                                             
         task: Task description.
         tags: List of tags for categorization                                                  
@@ -819,14 +819,12 @@ def create_experiment(
     Raises:                                                                                    
         APIKeyVerificationError: If API key is invalid or missing
         InvalidOperationError: If experiment creation fails
-        ValueError: If name is empty or no rubrics provided
+        ValueError: If name is empty
     """
 
     # validation
     if not experiment_name:
         raise ValueError("Experiment name is required")
-    if not pass_fail_rubrics:
-        raise ValueError("Pass/fail rubrics are required")
 
     if api_key is None:
         api_key = os.getenv("LUCIDIC_API_KEY", None)
@@ -838,10 +836,7 @@ def create_experiment(
             raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into create_experiment() or set the LUCIDIC_AGENT_ID environment variable.")
 
     # combine rubrics into single list
-    rubrics_names = pass_fail_rubrics + (score_rubrics or [])
-
-    if not rubrics_names: # should never happen since we already validated that pass_fail_rubrics is not empty
-        raise ValueError("No rubrics provided")
+    rubric_names = (pass_fail_rubrics or []) + (score_rubrics or [])
 
     # get current client which will be NullClient if never lai.init() is never called
     client = Client()
@@ -855,7 +850,7 @@ def create_experiment(
             client.agent_id = agent_id
 
     # create experiment
-    experiment_id = client.create_experiment(experiment_name=experiment_name, rubric_names=rubrics_names, description=description, tags=tags)
+    experiment_id = client.create_experiment(experiment_name=experiment_name, rubric_names=rubric_names, description=description, tags=tags)
     logger.info(f"Created experiment with ID: {experiment_id}") 
 
     return experiment_id
