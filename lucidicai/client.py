@@ -31,7 +31,7 @@ class Client:
         api_key: str,
         agent_id: str,
     ):
-        self.base_url = "https://analytics.lucidic.ai/api" if not (os.getenv("LUCIDIC_DEBUG", 'False') == 'True') else "http://localhost:8000/api"
+        self.base_url = "https://app.lucidic.ai/api" if not (os.getenv("LUCIDIC_DEBUG", 'False') == 'True') else "http://localhost:8000/api"
         self.initialized = False
         self.session = None
         self.previous_sessions = LRUCache(500)  # For LRU cache of previously initialized sessions
