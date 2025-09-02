@@ -765,6 +765,7 @@ def _signal_handler(signum, frame):
         
         # 3. THIRD: Shutdown TracerProvider after EventQueue
         if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            logger.debug(f"[Signal] Shutting down TracerProvider on signal {signum}")
             try:
                 client._tracer_provider.shutdown()
             except Exception:
@@ -776,6 +777,7 @@ def _signal_handler(signum, frame):
     except Exception:
         pass
     
+    logger.debug(f"[Signal] Auto-ending session on signal {signum}")
     _auto_end_session()
     # Re-raise the signal for default handling
     signal.signal(signum, signal.SIG_DFL)
