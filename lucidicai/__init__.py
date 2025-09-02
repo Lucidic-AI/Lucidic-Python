@@ -393,7 +393,8 @@ def end_session(
     session_eval: Optional[float] = None,
     session_eval_reason: Optional[str] = None,
     is_successful: Optional[bool] = None,
-    is_successful_reason: Optional[str] = None
+    is_successful_reason: Optional[str] = None,
+    wait_for_flush: bool = True
 ) -> None:
     """
     End the current session.
@@ -403,6 +404,8 @@ def end_session(
         session_eval_reason: Session evaluation reason.
         is_successful: Whether the session was successful.
         is_successful_reason: Session success reason.
+        wait_for_flush: Whether to block until event queue is empty (default True).
+                 Set to False during signal handling to prevent hangs.
     """
     client = Client()
     # Prefer context-bound session id
@@ -450,7 +453,23 @@ def end_session(
         try:
             if hasattr(client, '_event_queue'):
                 logger.debug("[Session] Flushing event queue...")
-                client._event_queue.force_flush(timeout_seconds=5.0)
+                client._event_queue.force_flush(timeout_seconds=10.0)
+                
+                # Wait for queue to be completely empty (only if blocking)
+                if wait_for_flush:
+                    import time
+                    wait_start = time.time()
+                    max_wait = 30.0  # seconds - longer timeout for blob uploads
+                    while not client._event_queue.is_empty():
+                        if time.time() - wait_start > max_wait:
+                            logger.warning(f"[Session] EventQueue not empty after {max_wait}s timeout")
+                            break
+                        time.sleep(0.1)
+                    
+                    if client._event_queue.is_empty():
+                        logger.debug("[Session] EventQueue confirmed empty")
+                else:
+                    logger.debug("[Session] Non-blocking mode - skipping wait for empty queue")
         except Exception as e:
             logger.debug(f"[Session] Failed to flush event queue: {e}")
         
@@ -479,6 +498,40 @@ def end_session(
         return
 
     # Otherwise, end the specified session id without clearing global state
+    # First flush telemetry and event queue for non-global sessions too
+    try:
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            logger.debug(f"[Session] Flushing OpenTelemetry spans for session {target_sid[:8]}...")
+            success = client._tracer_provider.force_flush(timeout_millis=10000)
+            if not success:
+                logger.warning("[Session] OpenTelemetry flush timed out")
+    except Exception as e:
+        logger.debug(f"[Session] Failed to flush telemetry spans: {e}")
+    
+    # Flush and wait for event queue to empty
+    try:
+        if hasattr(client, '_event_queue'):
+            logger.debug(f"[Session] Flushing event queue for session {target_sid[:8]}...")
+            client._event_queue.force_flush(timeout_seconds=10.0)
+            
+            # Wait for queue to be completely empty (only if blocking)
+            if wait_for_flush:
+                import time
+                wait_start = time.time()
+                max_wait = 30.0  # seconds - longer timeout for blob uploads
+                while not client._event_queue.is_empty():
+                    if time.time() - wait_start > max_wait:
+                        logger.warning(f"[Session] EventQueue not empty after {max_wait}s timeout")
+                        break
+                    time.sleep(0.1)
+                
+                if client._event_queue.is_empty():
+                    logger.debug(f"[Session] EventQueue confirmed empty for session {target_sid[:8]}")
+            else:
+                logger.debug(f"[Session] Non-blocking mode - skipping wait for session {target_sid[:8]}")
+    except Exception as e:
+        logger.debug(f"[Session] Failed to flush event queue: {e}")
+    
     # CRITICAL: Mark session as inactive FIRST for ALL sessions
     client.mark_session_inactive(target_sid)
     
@@ -559,7 +612,9 @@ def _auto_end_session():
                     logger.debug("[Shutdown] Flushing event queue before session end")
                 client._event_queue.force_flush(timeout_seconds=5.0)
             
-            end_session()
+            # Use non-blocking mode during shutdown to prevent hangs
+            # The actual wait for queue empty happens in _cleanup_singleton_on_exit
+            end_session(wait_for_flush=False)
                 
     except Exception as e:
         logger.debug(f"Error during auto-end session: {e}")
