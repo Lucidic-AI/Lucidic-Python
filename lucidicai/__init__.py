@@ -459,7 +459,7 @@ def end_session(
                 if wait_for_flush:
                     import time
                     wait_start = time.time()
-                    max_wait = 30.0  # seconds - longer timeout for blob uploads
+                    max_wait = 10.0  # seconds - timeout for blob uploads
                     while not client._event_queue.is_empty():
                         if time.time() - wait_start > max_wait:
                             logger.warning(f"[Session] EventQueue not empty after {max_wait}s timeout")
@@ -518,7 +518,7 @@ def end_session(
             if wait_for_flush:
                 import time
                 wait_start = time.time()
-                max_wait = 30.0  # seconds - longer timeout for blob uploads
+                max_wait = 10.0  # seconds - timeout for blob uploads
                 while not client._event_queue.is_empty():
                     if time.time() - wait_start > max_wait:
                         logger.warning(f"[Session] EventQueue not empty after {max_wait}s timeout")
@@ -793,7 +793,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 def create_experiment(
     experiment_name: str,
-    pass_fail_rubrics: Optional[list],
+    pass_fail_rubrics: Optional[list] = None,
     score_rubrics: Optional[list] = None,
     description: Optional[str] = None,
     tags: Optional[list] = None,
