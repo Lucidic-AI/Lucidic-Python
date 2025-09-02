@@ -7,27 +7,16 @@ import traceback
 import threading
 from typing import List, Literal, Optional
 
+from dotenv import load_dotenv
+
 from .client import Client
 from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotInitializedError, PromptError
 from .event import Event
 from .session import Session
-from .step import Step
-
-# Import OpenTelemetry-based handlers
-from .telemetry.otel_handlers import (
-    OTelOpenAIHandler,
-    OTelAnthropicHandler,
-    OTelLangChainHandler,
-    OTelPydanticAIHandler,
-    OTelOpenAIAgentsHandler,
-    OTelLiteLLMHandler
-)
-
-# Import telemetry manager
-from .telemetry.otel_init import LucidicTelemetry
+from .singleton import clear_singletons
 
 # Import decorators
-from .decorators import step, event
+from .decorators import event
 from .context import (
     set_active_session,
     bind_session,
@@ -114,13 +103,13 @@ def _post_fatal_event(exit_code: int, description: str, extra: Optional[dict] = 
             except Exception:
                 pass
 
-        event_id = session.create_event(
-            description=_mask_and_truncate(description),
-            result=f"process exited with code {exit_code}",
-            function_name="__process_exit__",
-            arguments=arguments,
+        # Create a single immutable event describing the crash
+        session.create_event(
+            type="error_traceback",
+            error=_mask_and_truncate(description),
+            traceback="",
+            metadata={"exit_code": exit_code, **({} if not extra else extra)},
         )
-        session.update_event(event_id=event_id, is_finished=True)
     except Exception:
         # Never raise during shutdown
         pass
@@ -146,31 +135,50 @@ def _install_crash_handlers() -> None:
             "exception_message": str(exc),
             "thread_name": threading.current_thread().name,
         })
+        
+        # Follow proper shutdown sequence to prevent broken pipes
         try:
-            # Prevent auto_end double work
             client = Client()
+            
+            # 1. Flush OpenTelemetry spans first
+            if hasattr(client, '_tracer_provider'):
+                try:
+                    client._tracer_provider.force_flush(timeout_millis=5000)
+                except Exception:
+                    pass
+            
+            # 2. Flush and shutdown EventQueue (with active sessions cleared)
+            if hasattr(client, "_event_queue"):
+                try:
+                    # Clear active sessions to allow shutdown
+                    client._event_queue._active_sessions.clear()
+                    client._event_queue.force_flush()
+                    client._event_queue.shutdown(timeout=5.0)
+                except Exception:
+                    pass
+            
+            # 3. Shutdown TracerProvider after EventQueue
+            if hasattr(client, '_tracer_provider'):
+                try:
+                    client._tracer_provider.shutdown()
+                except Exception:
+                    pass
+            
+            # 4. Mark client as shutting down to prevent new requests
+            client._shutdown = True
+            
+            # 5. Prevent auto_end double work
             try:
                 client.auto_end = False
             except Exception:
                 pass
-            # End session explicitly as unsuccessful
+            
+            # 6. End session explicitly as unsuccessful
             end_session()
+            
         except Exception:
             pass
-        # Best-effort force flush and shutdown telemetry
-        try:
-            telemetry = LucidicTelemetry()
-            if telemetry.is_initialized():
-                try:
-                    telemetry.force_flush()
-                except Exception:
-                    pass
-                try:
-                    telemetry.uninstrument_all()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        
         # Chain to original to preserve default printing/behavior
         try:
             _original_sys_excepthook(exc_type, exc, tb)
@@ -187,7 +195,20 @@ def _install_crash_handlers() -> None:
         def _thread_hook(args):
             try:
                 if args.thread is threading.main_thread():
+                    # For main thread exceptions, use full shutdown sequence
                     _sys_hook(args.exc_type, args.exc_value, args.exc_traceback)
+                else:
+                    # For non-main threads, just flush spans without full shutdown
+                    try:
+                        client = Client()
+                        # Flush any pending spans from this thread
+                        if hasattr(client, '_tracer_provider'):
+                            client._tracer_provider.force_flush(timeout_millis=1000)
+                        # Force flush events but don't shutdown
+                        if hasattr(client, "_event_queue"):
+                            client._event_queue.force_flush()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
@@ -199,83 +220,12 @@ def _install_crash_handlers() -> None:
 
     _crash_handlers_installed = True
 
-def _setup_providers(client: Client, providers: List[ProviderType]) -> None:
-    """Set up providers for the client, avoiding duplication
-    
-    Args:
-        client: The Lucidic client instance
-        providers: List of provider types to set up
-    """
-    # Track which providers have been set up to avoid duplication
-    setup_providers = set()
-    
-    # Initialize telemetry if using OpenTelemetry
-    if providers:
-        telemetry = LucidicTelemetry()
-        if not telemetry.is_initialized():
-            telemetry.initialize(agent_id=client.agent_id)
-    
-    for provider in providers:
-        if provider in setup_providers:
-            continue
-            
-        if provider == "openai":
-            client.set_provider(OTelOpenAIHandler())
-            setup_providers.add("openai")
-        elif provider == "anthropic":
-            client.set_provider(OTelAnthropicHandler())
-            setup_providers.add("anthropic")
-        elif provider == "langchain":
-            client.set_provider(OTelLangChainHandler())
-            logger.info("For LangChain, make sure to create a handler and attach it to your top-level Agent class.")
-            setup_providers.add("langchain")
-        elif provider == "pydantic_ai":
-            client.set_provider(OTelPydanticAIHandler())
-            setup_providers.add("pydantic_ai")
-        elif provider == "openai_agents":
-            try:
-                client.set_provider(OTelOpenAIAgentsHandler())
-                setup_providers.add("openai_agents")
-            except Exception as e:
-                logger.error(f"Failed to set up OpenAI Agents provider: {e}")
-                raise
-        elif provider == "litellm":
-            client.set_provider(OTelLiteLLMHandler())
-            setup_providers.add("litellm")
-        elif provider in ("bedrock", "aws_bedrock", "amazon_bedrock"):
-            from .telemetry.otel_handlers import OTelBedrockHandler
-            client.set_provider(OTelBedrockHandler())
-            setup_providers.add("bedrock")
-        elif provider in ("google", "google_generativeai"):
-            from .telemetry.otel_handlers import OTelGoogleGenerativeAIHandler
-            client.set_provider(OTelGoogleGenerativeAIHandler())
-            setup_providers.add("google")
-        elif provider in ("vertexai", "vertex_ai"):
-            from .telemetry.otel_handlers import OTelVertexAIHandler
-            client.set_provider(OTelVertexAIHandler())
-            setup_providers.add("vertexai")
-        elif provider == "cohere":
-            from .telemetry.otel_handlers import OTelCohereHandler
-            client.set_provider(OTelCohereHandler())
-            setup_providers.add("cohere")
-        elif provider == "groq":
-            from .telemetry.otel_handlers import OTelGroqHandler
-            client.set_provider(OTelGroqHandler())
-            setup_providers.add("groq")
-
 __all__ = [
-    'Client',
     'Session',
-    'Step',
     'Event',
     'init',
-    'continue_session',
-    'create_step',
-    'end_step',
-    'update_step',
+    'create_experiment',
     'create_event',
-    'update_event',
-    'end_event',
     'end_session',
     'get_prompt',
     'get_session',
@@ -284,7 +234,6 @@ __all__ = [
     'LucidicNotInitializedError',
     'PromptError',
     'InvalidOperationError',
-    'step',
     'event',
     'set_active_session',
     'bind_session',
@@ -305,7 +254,6 @@ def init(
     task: Optional[str] = None,
     providers: Optional[List[ProviderType]] = [],
     production_monitoring: Optional[bool] = False,
-    mass_sim_id: Optional[str] = None,
     experiment_id: Optional[str] = None,
     rubrics: Optional[list] = None,
     tags: Optional[list] = None,
@@ -323,7 +271,6 @@ def init(
         agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
         task: Task description.
         providers: List of provider types ("openai", "anthropic", "langchain", "pydantic_ai").
-        mass_sim_id: Optional mass simulation ID, if session is to be part of a mass simulation.
         experiment_id: Optional experiment ID, if session is to be part of an experiment.
         rubrics: Optional rubrics for evaluation, list of strings.
         tags: Optional tags for the session, list of strings.
@@ -334,6 +281,11 @@ def init(
         InvalidOperationError: If the client is already initialized.
         APIKeyVerificationError: If the API key is invalid.
     """
+
+    load_dotenv()
+
+    if os.getenv("LUCIDIC_DEBUG", "False").lower() == "true":
+        logger.setLevel(logging.DEBUG)
     
     # get current client which will be NullClient if never lai is never initialized
     client = Client()
@@ -363,10 +315,13 @@ def init(
         auto_end = os.getenv("LUCIDIC_AUTO_END", "True").lower() == "true"
     
     # Set up providers
-    _setup_providers(client, providers)
+    # Use the client's singleton telemetry initialization
+    if providers:
+        success = client.initialize_telemetry(providers)
+        if not success:
+            logger.warning("[Telemetry] Failed to initialize telemetry for some providers")
     real_session_id = client.init_session(
         session_name=session_name,
-        mass_sim_id=mass_sim_id,
         task=task,
         rubrics=rubrics,
         tags=tags,
@@ -388,57 +343,17 @@ def init(
     try:
         if capture_uncaught:
             _install_crash_handlers()
+            # Also install error event handler for uncaught exceptions
+            try:
+                from .errors import install_error_handler
+                install_error_handler()
+            except Exception:
+                pass
     except Exception:
         pass
     
     logger.info("Session initialized successfully")
     return real_session_id
-
-
-def continue_session(
-    session_id: str,
-    api_key: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    providers: Optional[List[ProviderType]] = [],
-    masking_function = None,
-    auto_end: Optional[bool] = True,
-):
-    if api_key is None:
-        api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if api_key is None:
-            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
-    if agent_id is None:
-        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-        if agent_id is None:
-            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-    
-    client = Client()
-    if client.session:
-        raise InvalidOperationError("[Lucidic] Session already in progress. Please call lai.end_session() or lai.reset_sdk() first.")
-    # if not yet initialized or still the NullClient -> create a real client when init is called
-    if not getattr(client, 'initialized', False):
-        client = Client(api_key=api_key, agent_id=agent_id)
-    
-    # Handle auto_end with environment variable support
-    if auto_end is None:
-        auto_end = os.getenv("LUCIDIC_AUTO_END", "True").lower() == "true"
-    
-    # Set up providers
-    _setup_providers(client, providers)
-    session_id = client.continue_session(session_id=session_id)
-    if masking_function:
-        client.masking_function = masking_function
-    
-    # Set the auto_end flag on the client
-    client.auto_end = auto_end
-    
-    logger.info(f"Session {session_id} continuing...")
-    # Bind this session id to the current execution context for async-safety
-    try:
-        set_active_session(session_id)
-    except Exception:
-        pass
-    return session_id  # For consistency
 
 
 def update_session(
@@ -501,49 +416,129 @@ def end_session(
     if not target_sid:
         return
 
-    # If ending the globally active session, keep existing cleanup behavior
+    # If ending the globally active session, perform cleanup
     if client.session and client.session.session_id == target_sid:
-        # Wait for any pending LiteLLM callbacks before ending session
-        for provider in client.providers:
-            if hasattr(provider, '_callback') and hasattr(provider._callback, 'wait_for_pending_callbacks'):
-                logger.info("Waiting for LiteLLM callbacks to complete before ending session...")
-                provider._callback.wait_for_pending_callbacks(timeout=5.0)
-        client.session.update_session(is_finished=True, **locals())
-        client.clear()
+        # Best-effort: wait for LiteLLM callbacks to flush before ending
+        try:
+            import litellm  
+            cbs = getattr(litellm, 'callbacks', None)
+            if cbs:
+                for cb in cbs:
+                    try:
+                        if hasattr(cb, 'wait_for_pending_callbacks'):
+                            cb.wait_for_pending_callbacks(timeout=1)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # CRITICAL: Flush OpenTelemetry spans FIRST (blocking)
+        # This ensures all spans are converted to events before we flush the event queue
+        try:
+            if hasattr(client, '_tracer_provider') and client._tracer_provider:
+                logger.debug("[Session] Flushing OpenTelemetry spans before session end...")
+                # Force flush with generous timeout to ensure all spans are exported
+                # The BatchSpanProcessor now exports every 100ms, so this should be quick
+                success = client._tracer_provider.force_flush(timeout_millis=10000)  # 10 second timeout
+                if not success:
+                    logger.warning("[Session] OpenTelemetry flush timed out - some spans may be lost")
+                else:
+                    logger.debug("[Session] OpenTelemetry spans flushed successfully")
+        except Exception as e:
+            logger.debug(f"[Session] Failed to flush telemetry spans: {e}")
+        
+        # THEN flush event queue (which now contains events from flushed spans)
+        try:
+            if hasattr(client, '_event_queue'):
+                logger.debug("[Session] Flushing event queue...")
+                client._event_queue.force_flush(timeout_seconds=5.0)
+        except Exception as e:
+            logger.debug(f"[Session] Failed to flush event queue: {e}")
+        
+        # Mark session as inactive FIRST (prevents race conditions)
+        client.mark_session_inactive(target_sid)
+        
+        # Send only expected fields to update endpoint
+        update_kwargs = {
+            "is_finished": True,
+            "session_eval": session_eval,
+            "session_eval_reason": session_eval_reason,
+            "is_successful": is_successful,
+            "is_successful_reason": is_successful_reason,
+        }
+        try:
+            client.session.update_session(**update_kwargs)
+        except Exception as e:
+            logger.warning(f"[Session] Failed to update session: {e}")
+        
+        # Clear only the global session reference, not the singleton
+        # This preserves the client and event queue for other threads
+        client.session = None
+        logger.debug(f"[Session] Ended global session {target_sid}")
+        # DO NOT shutdown event queue - other threads may be using it
+        # DO NOT call client.clear() - preserve singleton for other threads
         return
 
     # Otherwise, end the specified session id without clearing global state
+    # CRITICAL: Mark session as inactive FIRST for ALL sessions
+    client.mark_session_inactive(target_sid)
+    
     temp = Session(agent_id=client.agent_id, session_id=target_sid)
-    temp.update_session(is_finished=True, **locals())
-
-
-def reset_sdk() -> None:
-    """
-    DEPRECATED: Reset the SDK.
-    """
-    return
-
-    client = Client()
-    if not client.initialized:
-        return
-    
-    # Shutdown OpenTelemetry if it was initialized
-    telemetry = LucidicTelemetry()
-    if telemetry.is_initialized():
-        telemetry.uninstrument_all()
-    
-    client.clear()
-
-
-def _cleanup_telemetry():
-    """Cleanup function for OpenTelemetry shutdown"""
+    update_kwargs = {
+        "is_finished": True,
+        "session_eval": session_eval,
+        "session_eval_reason": session_eval_reason,
+        "is_successful": is_successful,
+        "is_successful_reason": is_successful_reason,
+    }
     try:
-        telemetry = LucidicTelemetry()
-        if telemetry.is_initialized():
-            telemetry.uninstrument_all()
-            logger.info("OpenTelemetry instrumentation cleaned up")
+        temp.update_session(**update_kwargs)
     except Exception as e:
-        logger.error(f"Error during telemetry cleanup: {e}")
+        logger.warning(f"[Session] Failed to update session: {e}")
+
+
+def flush(timeout_seconds: float = 2.0) -> bool:
+    """
+    Manually flush all pending telemetry data.
+    
+    Flushes both OpenTelemetry spans and queued events to ensure
+    all telemetry data is sent to the backend. This is called
+    automatically on process exit but can be called manually
+    for explicit control.
+    
+    Args:
+        timeout_seconds: Maximum time to wait for flush
+        
+    Returns:
+        True if all flushes succeeded, False otherwise
+        
+    Example:
+        ```python
+        import lucidicai as lai
+        
+        # ... your code using Lucidic ...
+        
+        # Manually flush before critical operation
+        lai.flush()
+        ```
+    """
+    try:
+        client = Client()
+        success = True
+        
+        # Flush OpenTelemetry spans first
+        if hasattr(client, 'flush_telemetry'):
+            span_success = client.flush_telemetry(timeout_seconds)
+            success = success and span_success
+        
+        # Then flush event queue
+        if hasattr(client, '_event_queue'):
+            client._event_queue.force_flush(timeout_seconds)
+            
+        logger.debug(f"[Flush] Manual flush completed (success={success})")
+        return success
+    except Exception as e:
+        logger.error(f"Failed to flush telemetry: {e}")
+        return False
 
 
 def _auto_end_session():
@@ -553,13 +548,127 @@ def _auto_end_session():
         if hasattr(client, 'auto_end') and client.auto_end and client.session and not client.session.is_finished:
             logger.info("Auto-ending active session on exit")
             client.auto_end = False  # To avoid repeating auto-end on exit
+            
+            # Flush telemetry
+            if hasattr(client, '_tracer_provider'):
+                client._tracer_provider.force_flush(timeout_millis=5000)
+
+            # Force flush event queue before ending session
+            if hasattr(client, '_event_queue'):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("[Shutdown] Flushing event queue before session end")
+                client._event_queue.force_flush(timeout_seconds=5.0)
+            
             end_session()
+                
     except Exception as e:
         logger.debug(f"Error during auto-end session: {e}")
 
 
+def _cleanup_singleton_on_exit():
+    """
+    Clean up singleton resources only on process exit.
+    
+    CRITICAL ORDER:
+    1. Flush OpenTelemetry spans (blocking) - ensures spans become events
+    2. Flush EventQueue - sends all events including those from spans
+    3. Close HTTP session - graceful TCP FIN prevents broken pipes
+    4. Clear singletons - final cleanup
+    
+    This order is essential to prevent lost events and broken connections.
+    """
+    try:
+        client = Client()
+        
+        # 1. FIRST: Flush OpenTelemetry spans (blocking until exported)
+        # This is the critical fix - we must flush spans before events
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            try:
+                # Small delay to ensure spans have reached the processor
+                import time
+                time.sleep(0.1)  # 100ms to let spans reach BatchSpanProcessor
+                
+                logger.debug("[Exit] Flushing OpenTelemetry spans...")
+                # force_flush() blocks until all spans are exported or timeout
+                success = client._tracer_provider.force_flush(timeout_millis=3000)
+                if success:
+                    logger.debug("[Exit] OpenTelemetry spans flushed successfully")
+                else:
+                    logger.warning("[Exit] OpenTelemetry flush timed out - some spans may be lost")
+                
+                # DON'T shutdown TracerProvider yet - wait until after EventQueue
+                # This prevents losing spans that are still being processed
+            except Exception as e:
+                logger.debug(f"[Exit] Telemetry cleanup error: {e}")
+        
+        # 2. SECOND: Flush and shutdown EventQueue
+        # Now it contains all events from the flushed spans
+        if hasattr(client, '_event_queue'):
+            try:
+                logger.debug("[Exit] Flushing event queue...")
+                client._event_queue.force_flush(timeout_seconds=2.0)
+                
+                # Wait for queue to be completely empty before proceeding
+                import time
+                max_wait = 5.0  # seconds
+                start_time = time.time()
+                while not client._event_queue.is_empty():
+                    if time.time() - start_time > max_wait:
+                        logger.warning("[Exit] EventQueue not empty after timeout")
+                        break
+                    time.sleep(0.01)  # Small sleep to avoid busy waiting
+                
+                if client._event_queue.is_empty():
+                    logger.debug("[Exit] EventQueue is empty, proceeding with shutdown")
+                
+                # Clear any stale active sessions (threads may have died without cleanup)
+                if hasattr(client, '_active_sessions'):
+                    with client._active_sessions_lock:
+                        if client._active_sessions:
+                            logger.debug(f"[Exit] Clearing {len(client._active_sessions)} remaining active sessions")
+                            client._active_sessions.clear()
+                
+                # Now shutdown EventQueue
+                client._event_queue.shutdown()
+                logger.debug("[Exit] Event queue shutdown complete")
+            except Exception as e:
+                logger.debug(f"[Exit] Event queue cleanup error: {e}")
+        
+        # 3. THIRD: Shutdown TracerProvider after EventQueue is done
+        # This ensures all spans can be exported before shutdown
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            try:
+                logger.debug("[Exit] Shutting down TracerProvider...")
+                client._tracer_provider.shutdown()
+                logger.debug("[Exit] TracerProvider shutdown complete")
+            except Exception as e:
+                logger.debug(f"[Exit] TracerProvider shutdown error: {e}")
+        
+        # 4. FOURTH: Close HTTP session ONLY after everything else
+        # This prevents broken pipes by ensuring all events are sent first
+        if hasattr(client, 'request_session'):
+            try:
+                # Mark client as shutting down to prevent new requests
+                client._shutdown = True
+                logger.debug("[Exit] Closing HTTP session (queue empty, worker stopped)")
+                client.request_session.close()
+                logger.debug("[Exit] HTTP session closed gracefully")
+            except Exception as e:
+                logger.debug(f"[Exit] HTTP session cleanup error: {e}")
+        
+        # 5. FINALLY: Clear singletons
+        # Safe to destroy now that all data is flushed
+        clear_singletons()
+        logger.debug("[Exit] Singleton cleanup complete")
+        
+    except Exception as e:
+        # Silent fail on exit to avoid disrupting process termination
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[Exit] Cleanup error: {e}")
+
+
 def _signal_handler(signum, frame):
-    """Handle interruption signals"""
+    """Handle interruption signals with better queue flushing."""
     # Best-effort final event for signal exits
     try:
         try:
@@ -574,245 +683,137 @@ def _signal_handler(signum, frame):
         _post_fatal_event(128 + signum, desc, {"signal": name, "signum": signum})
     except Exception:
         pass
+    
+    # Proper shutdown sequence matching atexit handler
+    try:
+        client = Client()
+        
+        # 1. FIRST: Flush OpenTelemetry spans
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            try:
+                logger.debug(f"[Signal] Flushing OpenTelemetry spans on signal {signum}")
+                client._tracer_provider.force_flush(timeout_millis=2000)  # Shorter timeout for signals
+            except Exception:
+                pass
+        
+        # 2. SECOND: Flush and shutdown EventQueue
+        if hasattr(client, "_event_queue"):
+            logger.debug(f"[Signal] Flushing event queue on signal {signum}")
+            client._event_queue.force_flush(timeout_seconds=2.0)
+            
+            # Clear active sessions to allow shutdown
+            if hasattr(client, '_active_sessions'):
+                with client._active_sessions_lock:
+                    client._active_sessions.clear()
+            
+            client._event_queue.shutdown()
+        
+        # 3. THIRD: Shutdown TracerProvider after EventQueue
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            try:
+                client._tracer_provider.shutdown()
+            except Exception:
+                pass
+        
+        # 4. Mark client as shutting down
+        client._shutdown = True
+        
+    except Exception:
+        pass
+    
     _auto_end_session()
-    _cleanup_telemetry()
     # Re-raise the signal for default handling
     signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
 
 
-# Register cleanup functions (auto-end runs first due to LIFO order)
-atexit.register(_cleanup_telemetry)
-atexit.register(_auto_end_session)
+# Register cleanup functions
+atexit.register(_cleanup_singleton_on_exit)  # Clean up singleton resources on exit
+atexit.register(_auto_end_session)  # Auto-end session if enabled
 
 # Register signal handlers for graceful shutdown
 signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
-def create_mass_sim(
-    mass_sim_name: str,
-    total_num_sessions: int,
+def create_experiment(
+    experiment_name: str,
+    pass_fail_rubrics: list,
+    score_rubrics: Optional[list] = None,
+    description: Optional[str] = None,
+    tags: Optional[list] = None,
     api_key: Optional[str] = None,
     agent_id: Optional[str] = None,
-    task: Optional[str] = None,
-    tags: Optional[list] = None
 ) -> str:
     """
-    Create a new mass simulation.
-    
-    Args:
-        mass_sim_name: Name of the mass simulation.
-        total_num_sessions: Total intended number of sessions. More sessions can be added later.
-        api_key: API key for authentication. If not provided, will use the LUCIDIC_API_KEY environment variable.
-        agent_id: Agent ID. If not provided, will use the LUCIDIC_AGENT_ID environment variable.
+    Create a new experiment for grouping and analyzing sessions.
+                                                                                                   
+    Args:                                                                                      
+        experiment_name: Name of the experiment (required)      
+        pass_fail_rubrics: List of pass/fail rubric names to associate (required)                        
+        description: Description of the experiment                                             
         task: Task description.
-        tags: Tags for the mass simulation.
-    
-    Returns:
-        mass_sim_id: ID of the created mass simulation. Pass this to lai.init() to create a new session in the mass sim.
+        tags: List of tags for categorization                                                  
+        score_rubrics: List of score rubric names to associate                                 
+        api_key: API key (uses env if not provided)                                            
+        agent_id: Agent ID (uses env if not provided)                                          
+                                                                                                
+    Returns:                                                                                   
+        experiment_id: UUID of the created experiment                                          
+                                                                                                
+    Raises:                                                                                    
+        APIKeyVerificationError: If API key is invalid or missing
+        InvalidOperationError: If experiment creation fails
+        ValueError: If name is empty or no rubrics provided
     """
+
+    # validation
+    if not experiment_name:
+        raise ValueError("Experiment name is required")
+    if not pass_fail_rubrics:
+        raise ValueError("Pass/fail rubrics are required")
+
     if api_key is None:
         api_key = os.getenv("LUCIDIC_API_KEY", None)
         if api_key is None:
-            raise APIKeyVerificationError("Make sure to either pass your API key into lai.init() or set the LUCIDIC_API_KEY environment variable.")
+            raise APIKeyVerificationError("Make sure to either pass your API key into create_experiment() or set the LUCIDIC_API_KEY environment variable.")
     if agent_id is None:
         agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
         if agent_id is None:
-            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into lai.init() or set the LUCIDIC_AGENT_ID environment variable.")
-    try:
-        client = Client()
-    except LucidicNotInitializedError:
-        client = Client( # TODO: fail hard if incorrect API key or agent ID provided and wrong, fail silently if not provided
-            api_key=api_key,
-            agent_id=agent_id,
-        )
-    mass_sim_id = client.init_mass_sim(mass_sim_name=mass_sim_name, total_num_sims=total_num_sessions, task=task, tags=tags)  # TODO: change total_num_sims to total_num_sessions everywhere
-    logger.info(f"Created mass simulation with ID: {mass_sim_id}")
-    return mass_sim_id
+            raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into create_experiment() or set the LUCIDIC_AGENT_ID environment variable.")
 
+    # combine rubrics into single list
+    rubrics_names = pass_fail_rubrics + (score_rubrics or [])
 
-def create_step(
-    state: Optional[str] = None, 
-    action: Optional[str] = None, 
-    goal: Optional[str] = None,
-    eval_score: Optional[float] = None,
-    eval_description: Optional[str] = None,
-    screenshot: Optional[str] = None,
-    screenshot_path: Optional[str] = None
-) -> None:
-    """
-    Create a new step. Previous step must be finished to create a new step.
-    
-    Args:
-        state: State description.
-        action: Action description.
-        goal: Goal description.
-        eval_score: Evaluation score.
-        eval_description: Evaluation description.
-        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
-        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
-    """
+    if not rubrics_names: # should never happen since we already validated that pass_fail_rubrics is not empty
+        raise ValueError("No rubrics provided")
+
+    # get current client which will be NullClient if never lai.init() is never called
     client = Client()
-    if not client.session:
-        return
-    return client.session.create_step(**locals())
+    # if not yet initialized or still the NullClient -> create a real client when init is called
+    if not getattr(client, 'initialized', False):
+        client = Client(api_key=api_key, agent_id=agent_id)
+    else:
+        # Already initialized, this is a re-init
+        if api_key is not None and agent_id is not None and (api_key != client.api_key or agent_id != client.agent_id):
+            client.set_api_key(api_key)
+            client.agent_id = agent_id
 
+    # create experiment
+    experiment_id = client.create_experiment(experiment_name=experiment_name, rubric_names=rubrics_names, description=description, tags=tags)
+    logger.info(f"Created experiment with ID: {experiment_id}") 
 
-def update_step(
-    step_id: Optional[str] = None,
-    state: Optional[str] = None, 
-    action: Optional[str] = None, 
-    goal: Optional[str] = None,
-    eval_score: Optional[float] = None,
-    eval_description: Optional[str] = None,
-    screenshot: Optional[str] = None,
-    screenshot_path: Optional[str] = None
-) -> None:
-    """
-    Update the current step.
-    
-    Args:
-        step_id: ID of the step to update.
-        state: State description.
-        action: Action description.
-        goal: Goal description.
-        eval_score: Evaluation score.
-        eval_description: Evaluation description.
-        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
-        screenshot_path: Screenshot path. Provide either screenshot or screenshot_path.
-    """
-    client = Client()
-    if not client.session:
-        return
-    if not client.session.active_step:
-        raise InvalidOperationError("No active step to update")
-    client.session.update_step(**locals())
-
-
-def end_step(
-    step_id: Optional[str] = None,
-    state: Optional[str] = None, 
-    action: Optional[str] = None, 
-    goal: Optional[str] = None,
-    eval_score: Optional[float] = None,
-    eval_description: Optional[str] = None,
-    screenshot: Optional[str] = None,
-    screenshot_path: Optional[str] = None
-) -> None:
-    """
-    End the current step.
-    
-    Args:
-        step_id: ID of the step to end.
-        state: State description.
-        action: Action description.
-        goal: Goal description.
-        eval_score: Evaluation score.
-        eval_description: Evaluation description.
-        screenshot: Screenshot encoded in base64. Provide either screenshot or screenshot_path.
-        screenshot_path: Screenshot path.
-    """
-    client = Client()
-    if not client.session:
-        return
-    
-    if not client.session.active_step and step_id is None:
-        raise InvalidOperationError("No active step to end")
-    
-    # Filter out None values from locals
-    params = locals()
-    kwargs = {k: v for k, v in params.items() if v is not None and k not in ['client', 'params']}
-    kwargs['is_finished'] = True
-    
-    client.session.update_step(**kwargs)
+    return experiment_id
 
 
 def create_event(
-    step_id: Optional[str] = None,
-    description: Optional[str] = None,
-    result: Optional[str] = None,
-    cost_added: Optional[float] = None, 
-    model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None,
-    function_name: Optional[str] = None,
-    arguments: Optional[dict] = None,
+    type: str = "generic",
+    **kwargs
 ) -> str:
-    """
-    Create a new event in the current step. Current step must not be finished.
-    
-    Args:
-        description: Description of the event.
-        result: Result of the event.
-        cost_added: Cost added by the event.
-        model: Model used for the event.
-        screenshots: List of screenshots encoded in base64.
-        function_name: Name of the function that created the event.
-        arguments: Arguments of the function that created the event.
-    """
-
     client = Client()
     if not client.session:
         return
-    return client.session.create_event(**locals())
-
-
-def update_event(
-    event_id: Optional[str] = None,
-    description: Optional[str] = None,
-    result: Optional[str] = None,
-    cost_added: Optional[float] = None, 
-    model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None,
-    function_name: Optional[str] = None,
-    arguments: Optional[dict] = None,
-) -> None:
-    """
-    Update the event with the given ID in the current step.
-    
-    Args:
-        event_id: ID of the event to update.
-        description: Description of the event.
-        result: Result of the event.
-        cost_added: Cost added by the event.
-        model: Model used for the event.
-        screenshots: List of screenshots encoded in base64.
-        function_name: Name of the function that created the event.
-        arguments: Arguments of the function that created the event.
-    """
-    client = Client()
-    if not client.session:
-        return
-    client.session.update_event(**locals())
-
-
-def end_event(
-    event_id: Optional[str] = None,
-    description: Optional[str] = None,
-    result: Optional[str] = None,
-    cost_added: Optional[float] = None, 
-    model: Optional[str] = None,
-    screenshots: Optional[List[str]] = None,
-    function_name: Optional[str] = None,
-    arguments: Optional[dict] = None,
-) -> None:
-    """
-    End the latest event in the current step.
-    
-    Args:
-        event_id: ID of the event to end.
-        description: Description of the event.
-        result: Result of the event.
-        cost_added: Cost added by the event.
-        model: Model used for the event.
-        screenshots: List of screenshots encoded in base64.
-        function_name: Name of the function that created the event.
-        arguments: Arguments of the function that created the event.
-    """
-    client = Client()
-    if not client.session:
-        return
-    client.session.update_event(is_finished=True, **locals())
+    return client.session.create_event(type=type, **kwargs)
 
 
 def get_prompt(

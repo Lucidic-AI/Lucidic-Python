@@ -9,11 +9,9 @@ import aiohttp
 # Load environment variables
 load_dotenv()
 
-# Example of async step decorator
-@lai.step(
-    state="Fetching data from multiple sources",
-    action="Aggregate external API data",
-    goal="Compile comprehensive market analysis"
+# Example of async event decorator
+@lai.event(
+    description="Fetching data from multiple sources: Aggregate external API data (Compile comprehensive market analysis)"
 )
 async def fetch_market_data(symbols: list[str]) -> dict:
     """Fetch market data from multiple sources concurrently."""
@@ -107,10 +105,8 @@ async def generate_market_analysis(market_data: dict) -> str:
 
 
 # Main async workflow
-@lai.step(
-    state="Running complete market analysis workflow",
-    action="Fetch data and generate insights",
-    goal="Provide comprehensive market report"
+@lai.event(
+    description="Running complete market analysis workflow: Fetch data and generate insights (Provide comprehensive market report)"
 )
 async def complete_market_analysis(symbols: list[str]) -> dict:
     """Complete workflow for market analysis."""

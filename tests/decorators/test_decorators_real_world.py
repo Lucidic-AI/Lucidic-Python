@@ -13,10 +13,8 @@ load_dotenv()
 openai_client = OpenAI()
 
 
-@lai.step(
-    state="Document processing pipeline started",
-    action="Extract and analyze document content",
-    goal="Generate structured insights from documents"
+@lai.event(
+    description="Document processing pipeline started: Extract and analyze content (Generate structured insights)"
 )
 def process_document_batch(documents: List[Dict[str, str]]) -> Dict[str, Any]:
     """Process a batch of documents through an AI pipeline."""
@@ -38,10 +36,8 @@ def process_document_batch(documents: List[Dict[str, str]]) -> Dict[str, Any]:
     }
 
 
-@lai.step(
-    state="Processing individual document",
-    action="Extract key information",
-    goal="Create structured document summary"
+@lai.event(
+    description="Processing individual document: Extract key information (Create structured summary)"
 )
 def process_single_document(document: Dict[str, str]) -> Dict[str, Any]:
     """Process a single document through multiple AI-powered steps."""

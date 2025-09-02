@@ -9,12 +9,8 @@ load_dotenv()
 # Initialize Lucidic
 lai.init(session_name="Minimal Decorator Example", providers=[])
 
-# Simple step decorator example
-@lai.step(
-    state="Starting calculation",
-    action="Perform math operation",
-    goal="Get result"
-)
+# Simple event decorator example (single immutable event)
+@lai.event(description="Starting calculation: Perform math operation (Get result)")
 def calculate(x: int, y: int) -> int:
     """Simple calculation wrapped in a step."""
     print(f"Calculating {x} + {y}")
@@ -26,8 +22,8 @@ def double(n: int) -> int:
     """Double a number - tracked as an event."""
     return n * 2
 
-# Using both decorators together
-@lai.step(state="Processing", action="Transform data")
+# Using event with nested events together
+@lai.event(description="Processing: Transform data")
 def process_data(value: int) -> dict:
     """Process data with nested event tracking."""
     

@@ -16,6 +16,7 @@ except ImportError:
 
 from lucidicai.client import Client
 from lucidicai.model_pricing import calculate_cost
+from lucidicai.context import current_parent_event_id
 
 logger = logging.getLogger("Lucidic")
 DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
@@ -25,7 +26,7 @@ class LucidicLiteLLMCallback(CustomLogger):
     """
     Custom callback for LiteLLM that bridges to Lucidic's event system.
     
-    This callback integrates LiteLLM's logging with Lucidic's session/step/event hierarchy,
+    This callback integrates LiteLLM's logging with Lucidic's session/event hierarchy,
     enabling automatic tracking of all LiteLLM-supported providers.
     """
     
@@ -102,7 +103,7 @@ class LucidicLiteLLMCallback(CustomLogger):
                 traceback.print_exc()
     
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
-        """Called on successful LLM completion"""
+        """Called on successful LLM completion -> create typed LLM_GENERATION event"""
         # Generate unique callback ID
         callback_id = f"success_{id(kwargs)}_{start_time}"
         self._register_callback(callback_id)
@@ -141,33 +142,30 @@ class LucidicLiteLLMCallback(CustomLogger):
             # Extract any images from multimodal requests
             images = self._extract_images_from_messages(messages)
             
-            # Create event
-            event_kwargs = {
-                "description": description,
-                "result": result,
-                "model": f"{provider}/{model}" if "/" not in model else model,
-                "is_finished": True
-            }
-            
-            if cost is not None:
-                event_kwargs["cost_added"] = cost
-                
-            if images:
-                event_kwargs["screenshots"] = images
-                
-            # Add metadata
-            metadata = {
-                "provider": provider,
-                "duration_ms": (end_time - start_time) * 1000,
-                "litellm": True
-            }
-            if usage:
-                metadata["usage"] = usage
-                
-            event_kwargs["metadata"] = metadata
-            
-            # Create the event
-            client.session.create_event(**event_kwargs)
+            # Create LLM_GENERATION typed event
+            parent_id = None
+            try:
+                parent_id = current_parent_event_id.get(None)
+            except Exception:
+                parent_id = None
+
+            # occurred_at/duration from datetimes
+            occ_dt = start_time if isinstance(start_time, datetime) else None
+            duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
+
+            client.create_event(
+                type="llm_generation",
+                provider=provider,
+                model=model,
+                messages=messages,
+                output=result,
+                input_tokens=(usage or {}).get("prompt_tokens", 0),
+                output_tokens=(usage or {}).get("completion_tokens", 0),
+                cost=cost,
+                parent_event_id=parent_id,
+                occurred_at=occ_dt,
+                duration=duration_secs,
+            )
             
             if DEBUG:
                 logger.info(f"LiteLLM Bridge: Created event for {model} completion")
@@ -207,21 +205,24 @@ class LucidicLiteLLMCallback(CustomLogger):
             # Format error
             error_msg = str(response_obj) if response_obj else "Unknown error"
             
-            # Create failed event
-            event_kwargs = {
-                "description": description,
-                "result": f"Error: {error_msg}",
-                "model": f"{provider}/{model}" if "/" not in model else model,
-                "is_finished": True,
-                "metadata": {
-                    "provider": provider,
-                    "duration_ms": (end_time - start_time) * 1000,
-                    "litellm": True,
-                    "error": True
-                }
-            }
-            
-            client.session.create_event(**event_kwargs)
+            # Create error typed event under current parent if any
+            parent_id = None
+            try:
+                parent_id = current_parent_event_id.get(None)
+            except Exception:
+                parent_id = None
+            occ_dt = start_time if isinstance(start_time, datetime) else None
+            duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
+
+            client.create_event(
+                type="error_traceback",
+                error=error_msg,
+                traceback="",
+                parent_event_id=parent_id,
+                occurred_at=occ_dt,
+                duration=duration_secs,
+                metadata={"provider": provider, "litellm": True}
+            )
             
             if DEBUG:
                 logger.info(f"LiteLLM Bridge: Created error event for {model}")
@@ -367,3 +368,37 @@ class LucidicLiteLLMCallback(CustomLogger):
                                     images.append(url)
                                     
         return images
+
+
+def setup_litellm_callback():
+    """Registers the LucidicLiteLLMCallback with LiteLLM if available.
+    
+    This function ensures only one instance of the callback is registered,
+    preventing duplicates across multiple SDK initializations.
+    """
+    try:
+        import litellm
+    except ImportError:
+        logger.info("[LiteLLM] litellm not installed, skipping callback setup")
+        return
+    
+    # Initialize callbacks list if needed
+    if not hasattr(litellm, 'callbacks'):
+        litellm.callbacks = []
+    elif litellm.callbacks is None:
+        litellm.callbacks = []
+    
+    # Check for existing registration to prevent duplicates
+    for existing in litellm.callbacks:
+        if isinstance(existing, LucidicLiteLLMCallback):
+            if DEBUG:
+                logger.debug("[LiteLLM] Callback already registered")
+            return
+    
+    # Register new callback
+    try:
+        cb = LucidicLiteLLMCallback()
+        litellm.callbacks.append(cb)
+        logger.info("[LiteLLM] Registered Lucidic callback for event tracking")
+    except Exception as e:
+        logger.error(f"[LiteLLM] Failed to register callback: {e}")

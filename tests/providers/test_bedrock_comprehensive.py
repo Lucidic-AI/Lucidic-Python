@@ -25,7 +25,7 @@ class TestBedrockComprehensive(unittest.TestCase):
             raise unittest.SkipTest("boto3 not installed")
 
         lai.init(session_name="Bedrock Unit Tests", providers=["bedrock"], auto_end=False)
-        lai.create_step(state="Testing Bedrock", action="Run unit tests", goal="Validate functionality")
+        # Steps removed in new SDK – no-op
 
     def test_bedrock_invoke_model(self):
         try:

@@ -53,12 +53,7 @@ class TestOpenAIComprehensive(unittest.TestCase):
             providers=["openai"]
         )
         
-        # Create test step
-        lai.create_step(
-            state="Testing OpenAI SDK",
-            action="Run unit tests",
-            goal="Validate all OpenAI functionality"
-        )
+        # Steps removed in new SDK – no-op
         
         cls.sync_client = OpenAI(api_key=OPENAI_API_KEY)
         # Note: async_client is now created inside each async test method
@@ -66,8 +61,7 @@ class TestOpenAIComprehensive(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         """Tear down test class"""
-        # lai.end_step()
-        # lai.end_session()
+        # Session end handled per-test where needed
     
     def test_chat_completion_sync(self):
         """Test synchronous chat completion tracks correct information"""
