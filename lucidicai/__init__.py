@@ -135,24 +135,50 @@ def _install_crash_handlers() -> None:
             "exception_message": str(exc),
             "thread_name": threading.current_thread().name,
         })
-        # Best-effort flush event queue before shutting down
+        
+        # Follow proper shutdown sequence to prevent broken pipes
         try:
             client = Client()
+            
+            # 1. Flush OpenTelemetry spans first
+            if hasattr(client, '_tracer_provider'):
+                try:
+                    client._tracer_provider.force_flush(timeout_millis=5000)
+                except Exception:
+                    pass
+            
+            # 2. Flush and shutdown EventQueue (with active sessions cleared)
             if hasattr(client, "_event_queue"):
-                client._event_queue.force_flush()
-        except Exception:
-            pass
-        try:
-            # Prevent auto_end double work
-            client = Client()
+                try:
+                    # Clear active sessions to allow shutdown
+                    client._event_queue._active_sessions.clear()
+                    client._event_queue.force_flush()
+                    client._event_queue.shutdown(timeout=5.0)
+                except Exception:
+                    pass
+            
+            # 3. Shutdown TracerProvider after EventQueue
+            if hasattr(client, '_tracer_provider'):
+                try:
+                    client._tracer_provider.shutdown()
+                except Exception:
+                    pass
+            
+            # 4. Mark client as shutting down to prevent new requests
+            client._shutdown = True
+            
+            # 5. Prevent auto_end double work
             try:
                 client.auto_end = False
             except Exception:
                 pass
-            # End session explicitly as unsuccessful
+            
+            # 6. End session explicitly as unsuccessful
             end_session()
+            
         except Exception:
             pass
+        
         # Chain to original to preserve default printing/behavior
         try:
             _original_sys_excepthook(exc_type, exc, tb)
@@ -169,7 +195,20 @@ def _install_crash_handlers() -> None:
         def _thread_hook(args):
             try:
                 if args.thread is threading.main_thread():
+                    # For main thread exceptions, use full shutdown sequence
                     _sys_hook(args.exc_type, args.exc_value, args.exc_traceback)
+                else:
+                    # For non-main threads, just flush spans without full shutdown
+                    try:
+                        client = Client()
+                        # Flush any pending spans from this thread
+                        if hasattr(client, '_tracer_provider'):
+                            client._tracer_provider.force_flush(timeout_millis=1000)
+                        # Force flush events but don't shutdown
+                        if hasattr(client, "_event_queue"):
+                            client._event_queue.force_flush()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
@@ -645,14 +684,40 @@ def _signal_handler(signum, frame):
     except Exception:
         pass
     
-    # Enhanced queue flushing
+    # Proper shutdown sequence matching atexit handler
     try:
         client = Client()
+        
+        # 1. FIRST: Flush OpenTelemetry spans
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            try:
+                logger.debug(f"[Signal] Flushing OpenTelemetry spans on signal {signum}")
+                client._tracer_provider.force_flush(timeout_millis=2000)  # Shorter timeout for signals
+            except Exception:
+                pass
+        
+        # 2. SECOND: Flush and shutdown EventQueue
         if hasattr(client, "_event_queue"):
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"[Signal] Flushing event queue on signal {signum}")
-            client._event_queue.force_flush(timeout_seconds=3.0)
+            logger.debug(f"[Signal] Flushing event queue on signal {signum}")
+            client._event_queue.force_flush(timeout_seconds=2.0)
+            
+            # Clear active sessions to allow shutdown
+            if hasattr(client, '_active_sessions'):
+                with client._active_sessions_lock:
+                    client._active_sessions.clear()
+            
             client._event_queue.shutdown()
+        
+        # 3. THIRD: Shutdown TracerProvider after EventQueue
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            try:
+                client._tracer_provider.shutdown()
+            except Exception:
+                pass
+        
+        # 4. Mark client as shutting down
+        client._shutdown = True
+        
     except Exception:
         pass
     
