@@ -393,7 +393,8 @@ def end_session(
     session_eval: Optional[float] = None,
     session_eval_reason: Optional[str] = None,
     is_successful: Optional[bool] = None,
-    is_successful_reason: Optional[str] = None
+    is_successful_reason: Optional[str] = None,
+    wait_for_flush: bool = True
 ) -> None:
     """
     End the current session.
@@ -403,6 +404,8 @@ def end_session(
         session_eval_reason: Session evaluation reason.
         is_successful: Whether the session was successful.
         is_successful_reason: Session success reason.
+        wait_for_flush: Whether to block until event queue is empty (default True).
+                 Set to False during signal handling to prevent hangs.
     """
     client = Client()
     # Prefer context-bound session id
@@ -450,7 +453,23 @@ def end_session(
         try:
             if hasattr(client, '_event_queue'):
                 logger.debug("[Session] Flushing event queue...")
-                client._event_queue.force_flush(timeout_seconds=5.0)
+                client._event_queue.force_flush(timeout_seconds=10.0)
+                
+                # Wait for queue to be completely empty (only if blocking)
+                if wait_for_flush:
+                    import time
+                    wait_start = time.time()
+                    max_wait = 10.0  # seconds - timeout for blob uploads
+                    while not client._event_queue.is_empty():
+                        if time.time() - wait_start > max_wait:
+                            logger.warning(f"[Session] EventQueue not empty after {max_wait}s timeout")
+                            break
+                        time.sleep(0.1)
+                    
+                    if client._event_queue.is_empty():
+                        logger.debug("[Session] EventQueue confirmed empty")
+                else:
+                    logger.debug("[Session] Non-blocking mode - skipping wait for empty queue")
         except Exception as e:
             logger.debug(f"[Session] Failed to flush event queue: {e}")
         
@@ -479,6 +498,40 @@ def end_session(
         return
 
     # Otherwise, end the specified session id without clearing global state
+    # First flush telemetry and event queue for non-global sessions too
+    try:
+        if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            logger.debug(f"[Session] Flushing OpenTelemetry spans for session {target_sid[:8]}...")
+            success = client._tracer_provider.force_flush(timeout_millis=10000)
+            if not success:
+                logger.warning("[Session] OpenTelemetry flush timed out")
+    except Exception as e:
+        logger.debug(f"[Session] Failed to flush telemetry spans: {e}")
+    
+    # Flush and wait for event queue to empty
+    try:
+        if hasattr(client, '_event_queue'):
+            logger.debug(f"[Session] Flushing event queue for session {target_sid[:8]}...")
+            client._event_queue.force_flush(timeout_seconds=10.0)
+            
+            # Wait for queue to be completely empty (only if blocking)
+            if wait_for_flush:
+                import time
+                wait_start = time.time()
+                max_wait = 10.0  # seconds - timeout for blob uploads
+                while not client._event_queue.is_empty():
+                    if time.time() - wait_start > max_wait:
+                        logger.warning(f"[Session] EventQueue not empty after {max_wait}s timeout")
+                        break
+                    time.sleep(0.1)
+                
+                if client._event_queue.is_empty():
+                    logger.debug(f"[Session] EventQueue confirmed empty for session {target_sid[:8]}")
+            else:
+                logger.debug(f"[Session] Non-blocking mode - skipping wait for session {target_sid[:8]}")
+    except Exception as e:
+        logger.debug(f"[Session] Failed to flush event queue: {e}")
+    
     # CRITICAL: Mark session as inactive FIRST for ALL sessions
     client.mark_session_inactive(target_sid)
     
@@ -559,7 +612,9 @@ def _auto_end_session():
                     logger.debug("[Shutdown] Flushing event queue before session end")
                 client._event_queue.force_flush(timeout_seconds=5.0)
             
-            end_session()
+            # Use non-blocking mode during shutdown to prevent hangs
+            # The actual wait for queue empty happens in _cleanup_singleton_on_exit
+            end_session(wait_for_flush=False)
                 
     except Exception as e:
         logger.debug(f"Error during auto-end session: {e}")
@@ -710,6 +765,7 @@ def _signal_handler(signum, frame):
         
         # 3. THIRD: Shutdown TracerProvider after EventQueue
         if hasattr(client, '_tracer_provider') and client._tracer_provider:
+            logger.debug(f"[Signal] Shutting down TracerProvider on signal {signum}")
             try:
                 client._tracer_provider.shutdown()
             except Exception:
@@ -721,6 +777,7 @@ def _signal_handler(signum, frame):
     except Exception:
         pass
     
+    logger.debug(f"[Signal] Auto-ending session on signal {signum}")
     _auto_end_session()
     # Re-raise the signal for default handling
     signal.signal(signum, signal.SIG_DFL)
@@ -738,7 +795,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 def create_experiment(
     experiment_name: str,
-    pass_fail_rubrics: list,
+    pass_fail_rubrics: Optional[list] = None,
     score_rubrics: Optional[list] = None,
     description: Optional[str] = None,
     tags: Optional[list] = None,
@@ -750,7 +807,7 @@ def create_experiment(
                                                                                                    
     Args:                                                                                      
         experiment_name: Name of the experiment (required)      
-        pass_fail_rubrics: List of pass/fail rubric names to associate (required)                        
+        pass_fail_rubrics: List of pass/fail rubric names to associate                        
         description: Description of the experiment                                             
         task: Task description.
         tags: List of tags for categorization                                                  
@@ -764,14 +821,12 @@ def create_experiment(
     Raises:                                                                                    
         APIKeyVerificationError: If API key is invalid or missing
         InvalidOperationError: If experiment creation fails
-        ValueError: If name is empty or no rubrics provided
+        ValueError: If name is empty
     """
 
     # validation
     if not experiment_name:
         raise ValueError("Experiment name is required")
-    if not pass_fail_rubrics:
-        raise ValueError("Pass/fail rubrics are required")
 
     if api_key is None:
         api_key = os.getenv("LUCIDIC_API_KEY", None)
@@ -783,10 +838,7 @@ def create_experiment(
             raise APIKeyVerificationError("Lucidic agent ID not specified. Make sure to either pass your agent ID into create_experiment() or set the LUCIDIC_AGENT_ID environment variable.")
 
     # combine rubrics into single list
-    rubrics_names = pass_fail_rubrics + (score_rubrics or [])
-
-    if not rubrics_names: # should never happen since we already validated that pass_fail_rubrics is not empty
-        raise ValueError("No rubrics provided")
+    rubric_names = (pass_fail_rubrics or []) + (score_rubrics or [])
 
     # get current client which will be NullClient if never lai.init() is never called
     client = Client()
@@ -800,7 +852,7 @@ def create_experiment(
             client.agent_id = agent_id
 
     # create experiment
-    experiment_id = client.create_experiment(experiment_name=experiment_name, rubric_names=rubrics_names, description=description, tags=tags)
+    experiment_id = client.create_experiment(experiment_name=experiment_name, rubric_names=rubric_names, description=description, tags=tags)
     logger.info(f"Created experiment with ID: {experiment_id}") 
 
     return experiment_id
