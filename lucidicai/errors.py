@@ -23,6 +23,12 @@ class InvalidOperationError(Exception):
         super().__init__(f"An invalid Lucidic operation was attempted: {message}")
 
 
+class FeatureFlagError(Exception):
+    """Exception for feature flag fetch failures"""
+    def __init__(self, message: str):
+        super().__init__(f"Failed to fetch feature flag: {message}")
+
+
 def install_error_handler():
     """Install global handler to create ERROR_TRACEBACK events for uncaught exceptions."""
     from .client import Client

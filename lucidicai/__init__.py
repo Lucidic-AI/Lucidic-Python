@@ -29,6 +29,16 @@ from .context import (
     run_in_session,
 )
 from .dataset import get_dataset, get_dataset_items
+from .feature_flag import (
+    get_feature_flag,
+    get_bool_flag,
+    get_int_flag,
+    get_float_flag,
+    get_string_flag,
+    get_json_flag,
+    clear_feature_flag_cache,
+    FeatureFlagError
+)
 
 ProviderType = Literal[
     "openai",
@@ -232,6 +242,14 @@ __all__ = [
     'get_session',
     'get_dataset',
     'get_dataset_items',
+    'get_feature_flag',
+    'get_bool_flag',
+    'get_int_flag',
+    'get_float_flag',
+    'get_string_flag',
+    'get_json_flag',
+    'clear_feature_flag_cache',
+    'FeatureFlagError',
     'ProviderType',
     'APIKeyVerificationError',
     'LucidicNotInitializedError',
