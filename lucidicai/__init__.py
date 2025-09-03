@@ -28,6 +28,7 @@ from .context import (
     run_session,
     run_in_session,
 )
+from .dataset import get_dataset, get_dataset_items
 
 ProviderType = Literal[
     "openai",
@@ -229,6 +230,8 @@ __all__ = [
     'end_session',
     'get_prompt',
     'get_session',
+    'get_dataset',
+    'get_dataset_items',
     'ProviderType',
     'APIKeyVerificationError',
     'LucidicNotInitializedError',
@@ -257,6 +260,7 @@ def init(
     experiment_id: Optional[str] = None,
     rubrics: Optional[list] = None,
     tags: Optional[list] = None,
+    dataset_item_id: Optional[str] = None,
     masking_function = None,
     auto_end: Optional[bool] = True,
     capture_uncaught: Optional[bool] = True,
@@ -274,6 +278,7 @@ def init(
         experiment_id: Optional experiment ID, if session is to be part of an experiment.
         rubrics: Optional rubrics for evaluation, list of strings.
         tags: Optional tags for the session, list of strings.
+        dataset_item_id: Optional dataset item ID to link session to a dataset item.
         masking_function: Optional function to mask sensitive data.
         auto_end: If True, automatically end the session on process exit. Defaults to True.
     
@@ -328,6 +333,7 @@ def init(
         production_monitoring=production_monitoring,
         session_id=session_id,
         experiment_id=experiment_id,
+        dataset_item_id=dataset_item_id,
     )
     if masking_function:
         client.masking_function = masking_function
