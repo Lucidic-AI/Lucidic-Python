@@ -98,6 +98,7 @@ class Client:
         production_monitoring: Optional[bool] = False,
         session_id: Optional[str] = None,
         experiment_id: Optional[str] = None,
+        dataset_item_id: Optional[str] = None,
     ) -> None:
         if session_id:
             # Check if it's a known session ID, maybe custom and maybe real
@@ -122,7 +123,9 @@ class Client:
             "experiment_id": experiment_id,
             "rubrics": rubrics,
             "tags": tags,
-            "session_id": session_id
+            "session_id": session_id,
+            "dataset_item_id": dataset_item_id,
+            "production_monitoring": production_monitoring
         }
         data = self.make_request('initsession', 'POST', request_data)
         real_session_id = data["session_id"]
