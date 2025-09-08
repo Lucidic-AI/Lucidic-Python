@@ -134,6 +134,9 @@ def get_feature_flag(
             defaults={"max_retries": 3}
         )
     """
+
+    return # no op for now
+
     load_dotenv()
     
     # Determine if single or batch
@@ -259,6 +262,7 @@ def get_bool_flag(flag_name: str, default: Optional[bool] = None, **kwargs) -> b
         FeatureFlagError: If fetch fails and no default provided
         TypeError: If flag value is not a boolean
     """
+    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     if not isinstance(value, bool):
         if default is not None:
@@ -276,6 +280,7 @@ def get_int_flag(flag_name: str, default: Optional[int] = None, **kwargs) -> int
         FeatureFlagError: If fetch fails and no default provided
         TypeError: If flag value is not an integer
     """
+    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     if not isinstance(value, int) or isinstance(value, bool):  # bool is subclass of int
         if default is not None:
@@ -293,6 +298,7 @@ def get_float_flag(flag_name: str, default: Optional[float] = None, **kwargs) ->
         FeatureFlagError: If fetch fails and no default provided
         TypeError: If flag value is not a float
     """
+    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         if default is not None:
@@ -310,6 +316,7 @@ def get_string_flag(flag_name: str, default: Optional[str] = None, **kwargs) -> 
         FeatureFlagError: If fetch fails and no default provided
         TypeError: If flag value is not a string
     """
+    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     if not isinstance(value, str):
         if default is not None:
@@ -326,6 +333,7 @@ def get_json_flag(flag_name: str, default: Optional[dict] = None, **kwargs) -> d
     Raises:
         FeatureFlagError: If fetch fails and no default provided
     """
+    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     return value
 

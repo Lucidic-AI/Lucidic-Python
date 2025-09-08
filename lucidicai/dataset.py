@@ -37,6 +37,7 @@ def get_dataset(
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
         ValueError: If dataset_id is not provided.
     """
+    return # no op for now
     load_dotenv()
     
     # Validation
@@ -108,5 +109,6 @@ def get_dataset_items(
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
         ValueError: If dataset_id is not provided.
     """
+    return # no op for now
     dataset = get_dataset(dataset_id, api_key, agent_id)
     return dataset.get('items', [])
