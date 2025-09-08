@@ -124,7 +124,8 @@ class Client:
             "rubrics": rubrics,
             "tags": tags,
             "session_id": session_id,
-            "dataset_item_id": dataset_item_id
+            "dataset_item_id": dataset_item_id,
+            "production_monitoring": production_monitoring
         }
         data = self.make_request('initsession', 'POST', request_data)
         real_session_id = data["session_id"]
