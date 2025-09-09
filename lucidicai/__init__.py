@@ -14,6 +14,13 @@ from .errors import APIKeyVerificationError, InvalidOperationError, LucidicNotIn
 from .event import Event
 from .session import Session
 from .singleton import clear_singletons
+from .error_safety import safe_execute, get_default_return, install_error_handler
+
+# Install error handler at module load time
+try:
+    install_error_handler()
+except Exception:
+    pass
 
 # Import decorators
 from .decorators import event
@@ -267,6 +274,7 @@ __all__ = [
 ]
 
 
+@safe_execute(return_default=lambda: get_default_return('init'), critical=True)
 def init(
     session_name: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -369,7 +377,7 @@ def init(
             _install_crash_handlers()
             # Also install error event handler for uncaught exceptions
             try:
-                from .errors import install_error_handler
+                from .error_safety import install_error_handler
                 install_error_handler()
             except Exception:
                 pass
@@ -380,6 +388,7 @@ def init(
     return real_session_id
 
 
+@safe_execute(return_default=None)
 def update_session(
     task: Optional[str] = None,
     session_eval: Optional[float] = None,
@@ -413,6 +422,7 @@ def update_session(
     session.update_session(**locals())
 
 
+@safe_execute(return_default=None, critical=True)
 def end_session(
     session_eval: Optional[float] = None,
     session_eval_reason: Optional[str] = None,
@@ -573,6 +583,7 @@ def end_session(
         logger.warning(f"[Session] Failed to update session: {e}")
 
 
+@safe_execute(return_default=False)
 def flush(timeout_seconds: float = 2.0) -> bool:
     """
     Manually flush all pending telemetry data.
@@ -817,6 +828,7 @@ signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
+@safe_execute(return_default=lambda: get_default_return('create_experiment'))
 def create_experiment(
     experiment_name: str,
     pass_fail_rubrics: Optional[list] = None,
@@ -882,6 +894,7 @@ def create_experiment(
     return experiment_id
 
 
+@safe_execute(return_default=lambda: get_default_return('create_event'))
 def create_event(
     type: str = "generic",
     **kwargs
@@ -892,6 +905,7 @@ def create_event(
     return client.session.create_event(type=type, **kwargs)
 
 
+@safe_execute(return_default="")
 def get_prompt(
     prompt_name: str, 
     variables: Optional[dict] = None,
@@ -925,6 +939,7 @@ def get_prompt(
     return prompt
 
 
+@safe_execute(return_default=None)
 def get_session():
     """Get the current session object
     

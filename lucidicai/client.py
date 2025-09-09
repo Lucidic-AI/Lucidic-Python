@@ -17,7 +17,19 @@ from .singleton import singleton, clear_singletons
 from .lru import LRUCache
 from .event import Event
 from .event_queue import EventQueue
+from .error_safety import safe_execute
 import uuid
+
+# Check if parallel processing is enabled
+USE_PARALLEL_QUEUE = os.getenv("LUCIDIC_PARALLEL_EVENTS", "true").lower() == "true"
+if USE_PARALLEL_QUEUE:
+    try:
+        from .event_queue_parallel import ParallelEventQueue
+        EventQueueClass = ParallelEventQueue
+    except ImportError:
+        EventQueueClass = EventQueue
+else:
+    EventQueueClass = EventQueue
 
 NETWORK_RETRIES = 3
 
@@ -41,6 +53,11 @@ class Client:
         self.masking_function = None
         self.auto_end = False  # Default to False until explicitly set during init
         self._shutdown = False  # Flag to prevent requests after shutdown
+        
+        # Enhanced connection pooling configuration
+        pool_connections = int(os.getenv("LUCIDIC_CONNECTION_POOL_SIZE", 20))
+        pool_maxsize = int(os.getenv("LUCIDIC_CONNECTION_POOL_MAXSIZE", 100))
+        
         self.request_session = requests.Session()
         retry_cfg = Retry(
             total=3,                     # 3 attempts in total
@@ -48,12 +65,20 @@ class Client:
             status_forcelist=[502, 503, 504],
             allowed_methods=["GET", "POST", "PUT", "DELETE"],
         )
-        adapter = HTTPAdapter(max_retries=retry_cfg, pool_connections=20, pool_maxsize=100)
+        adapter = HTTPAdapter(
+            max_retries=retry_cfg, 
+            pool_connections=pool_connections, 
+            pool_maxsize=pool_maxsize
+        )
         self.request_session.mount("https://", adapter)
+        self.request_session.mount("http://", adapter)  # Also mount for http (debug mode)
         self.set_api_key(api_key)
         self.prompts = dict()
         # Initialize event queue (non-blocking event delivery)
-        self._event_queue = EventQueue(self)
+        # Use parallel queue if enabled
+        self._event_queue = EventQueueClass(self)
+        if USE_PARALLEL_QUEUE and hasattr(self._event_queue, 'max_parallel_sends'):
+            logger.info(f"[Client] Using ParallelEventQueue with {self._event_queue.max_parallel_sends} workers")
         
         # Track telemetry state to prevent re-initialization
         # These are process-wide singletons for telemetry
@@ -66,6 +91,7 @@ class Client:
         self._active_sessions_lock = threading.Lock()
         self._active_sessions = set()  # Set of active session IDs
 
+    @safe_execute(return_default=None)
     def set_api_key(self, api_key: str):
         self.api_key = api_key
         self.request_session.headers.update({"Authorization": f"Api-Key {self.api_key}", "User-Agent": "lucidic-sdk/1.1"})
@@ -89,6 +115,7 @@ class Client:
         """Deprecated: manual provider overrides removed (no-op)."""
         return
 
+    @safe_execute(return_default=lambda: str(uuid.uuid4()))
     def init_session(
         self,
         session_name: str,
@@ -99,7 +126,7 @@ class Client:
         session_id: Optional[str] = None,
         experiment_id: Optional[str] = None,
         dataset_item_id: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         if session_id:
             # Check if it's a known session ID, maybe custom and maybe real
             if session_id in self.custom_session_id_translations:
@@ -319,6 +346,7 @@ class Client:
         }
         return payload
 
+    @safe_execute(return_default=lambda: str(uuid.uuid4()))
     def create_event(self, type: str = "generic", **kwargs) -> str:
         """Create a typed event (non-blocking) and return client-side UUID.
 
