@@ -12,9 +12,10 @@ from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import StatusCode
 from opentelemetry.semconv_ai import SpanAttributes
 
-from lucidicai.client import Client
-from lucidicai.context import current_session_id, current_parent_event_id
-from lucidicai.model_pricing import calculate_cost
+from ..sdk.event import create_event
+from ..sdk.init import get_session_id
+from ..context import current_session_id, current_parent_event_id
+from ..model_pricing import calculate_cost
 from .extract import detect_is_llm_span, extract_images, extract_prompts, extract_completions, extract_model
 
 logger = logging.getLogger("Lucidic")
@@ -29,11 +30,10 @@ class LucidicSpanExporter(SpanExporter):
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
-            client = Client()
             if DEBUG and spans:
                 logger.debug(f"[LucidicSpanExporter] Processing {len(spans)} spans")
             for span in spans:
-                self._process_span(span, client)
+                self._process_span(span)
             if DEBUG and spans:
                 logger.debug(f"[LucidicSpanExporter] Successfully exported {len(spans)} spans")
             return SpanExportResult.SUCCESS
@@ -41,7 +41,7 @@ class LucidicSpanExporter(SpanExporter):
             logger.error(f"Failed to export spans: {e}")
             return SpanExportResult.FAILURE
 
-    def _process_span(self, span: ReadableSpan, client: Client) -> None:
+    def _process_span(self, span: ReadableSpan) -> None:
         """Convert a single LLM span into a typed, immutable event."""
         try:
             if not detect_is_llm_span(span):
@@ -56,8 +56,8 @@ class LucidicSpanExporter(SpanExporter):
                     target_session_id = current_session_id.get(None)
                 except Exception:
                     target_session_id = None
-            if not target_session_id and getattr(client, 'session', None) and getattr(client.session, 'session_id', None):
-                target_session_id = client.session.session_id
+            if not target_session_id:
+                target_session_id = get_session_id()
             if not target_session_id:
                 return
 
@@ -85,11 +85,17 @@ class LucidicSpanExporter(SpanExporter):
             cost = self._calculate_cost(attributes)
             images = extract_images(attributes)
 
-            # Create immutable event via non-blocking queue
-            event_id = client.create_event(
+            # Set context for parent if needed
+            from ..context import current_parent_event_id as parent_context
+            if parent_id:
+                token = parent_context.set(parent_id)
+            else:
+                token = None
+            
+            try:
+                # Create immutable event via non-blocking queue
+                event_id = create_event(
                 type="llm_generation",
-                session_id=target_session_id,
-                parent_event_id=parent_id,
                 occurred_at=occurred_at,
                 duration=duration_seconds,
                 provider=provider,
@@ -102,6 +108,10 @@ class LucidicSpanExporter(SpanExporter):
                 cost=cost,
                 raw={"images": images} if images else None,
             )
+            finally:
+                # Reset parent context
+                if token:
+                    parent_context.reset(token)
             
             if DEBUG:
                 logger.debug(f"[LucidicSpanExporter] Created LLM event {event_id} for session {target_session_id[:8]}...")
@@ -110,7 +120,7 @@ class LucidicSpanExporter(SpanExporter):
             logger.error(f"Failed to process span {span.name}: {e}")
     
     
-    def _create_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], client: Client) -> Optional[str]:
+    def _create_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any]) -> Optional[str]:
         """Create a Lucidic event from span start"""
         try:
             # Extract description from prompts/messages
@@ -132,8 +142,7 @@ class LucidicSpanExporter(SpanExporter):
                 except Exception:
                     target_session_id = None
             if not target_session_id:
-                if getattr(client, 'session', None) and getattr(client.session, 'session_id', None):
-                    target_session_id = client.session.session_id
+                target_session_id = get_session_id()
             if not target_session_id:
                 return None
 
@@ -147,13 +156,13 @@ class LucidicSpanExporter(SpanExporter):
             if images:
                 event_kwargs['screenshots'] = images
                 
-            return client.create_event_for_session(target_session_id, **event_kwargs)
+            return create_event(**event_kwargs)
             
         except Exception as e:
             logger.error(f"Failed to create event from span: {e}")
             return None
     
-    def _update_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], event_id: str, client: Client) -> None:
+    def _update_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], event_id: str) -> None:
         """Deprecated: events are immutable; no updates performed."""
         return
     

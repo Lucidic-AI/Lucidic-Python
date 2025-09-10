@@ -8,7 +8,8 @@ import uuid
 from typing import Any, Callable, Optional, TypeVar
 from collections.abc import Iterable
 
-from .client import Client
+from .sdk.event import create_event
+from .sdk.init import get_session_id
 from .errors import LucidicNotInitializedError
 from .context import current_parent_event_id, event_context, event_context_async
 
@@ -36,11 +37,8 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
     def decorator(func: F) -> F:
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
-            try:
-                client = Client()
-                if not client.session:
-                    return func(*args, **kwargs)
-            except (LucidicNotInitializedError, AttributeError):
+            session_id = get_session_id()
+            if not session_id:
                 return func(*args, **kwargs)
 
             # Build arguments snapshot
@@ -73,14 +71,13 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                     else:
                         return_val = _serialize(result)
                     
-                    client.create_event(
+                    create_event(
                         type="function_call",
-                        event_id=pre_event_id,
+                        event_id=pre_event_id,  # Use the pre-generated ID
                         function_name=func.__name__,
                         arguments=args_dict,
                         return_value=return_val,
                         error=str(error) if error else None,
-                        parent_event_id=parent_id,
                         duration=(datetime.now().astimezone() - start_time).total_seconds(),
                         **decorator_kwargs
                     )
@@ -89,11 +86,8 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
-            try:
-                client = Client()
-                if not client.session:
-                    return await func(*args, **kwargs)
-            except (LucidicNotInitializedError, AttributeError):
+            session_id = get_session_id()
+            if not session_id:
                 return await func(*args, **kwargs)
 
             sig = inspect.signature(func)
@@ -125,14 +119,13 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                     else:
                         return_val = _serialize(result)
                     
-                    client.create_event(
+                    create_event(
                         type="function_call",
-                        event_id=pre_event_id,
+                        event_id=pre_event_id,  # Use the pre-generated ID
                         function_name=func.__name__,
                         arguments=args_dict,
                         return_value=return_val,
                         error=str(error) if error else None,
-                        parent_event_id=parent_id,
                         duration=(datetime.now().astimezone() - start_time).total_seconds(),
                         **decorator_kwargs
                     )

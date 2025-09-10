@@ -4,7 +4,7 @@ import time
 from typing import Union, List, Dict, Any, Optional, overload, Tuple, Literal
 from dotenv import load_dotenv
 
-from .client import Client
+from .sdk.init import get_http
 from .errors import APIKeyVerificationError, FeatureFlagError
 
 logger = logging.getLogger("Lucidic")
@@ -185,20 +185,17 @@ def get_feature_flag(
                     "Lucidic agent ID not specified. Make sure to either pass your agent ID or set the LUCIDIC_AGENT_ID environment variable."
                 )
         
-        # Get client
-        client = Client()
-        if not getattr(client, 'initialized', False):
-            client = Client(api_key=api_key, agent_id=agent_id)
-        else:
-            if api_key != client.api_key or agent_id != client.agent_id:
-                client.set_api_key(api_key)
-                client.agent_id = agent_id
+        # Get HTTP client
+        http = get_http()
+        if not http:
+            from .sdk.init import init
+            init(api_key=api_key, agent_id=agent_id)
+            http = get_http()
         
         try:
             # Make batch API call
-            response = client.make_request(
+            response = http.post(
                 'getfeatureflags',
-                'POST',
                 {'flag_names': uncached_flags}
             )
             

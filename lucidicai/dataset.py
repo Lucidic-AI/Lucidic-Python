@@ -3,7 +3,6 @@ import logging
 from typing import Optional, Dict, List, Any
 from dotenv import load_dotenv
 
-from .client import Client
 from .errors import APIKeyVerificationError
 
 logger = logging.getLogger("Lucidic")
@@ -59,23 +58,19 @@ def get_dataset(
                 "Lucidic agent ID not specified. Make sure to either pass your agent ID into get_dataset() or set the LUCIDIC_AGENT_ID environment variable."
             )
     
-    # Get current client or create a new one
-    client = Client()
-    # If not yet initialized or still the NullClient -> create a real client
-    if not getattr(client, 'initialized', False):
-        client = Client(api_key=api_key, agent_id=agent_id)
-    else:
-        # Already initialized, check if we need to update credentials
-        if api_key is not None and agent_id is not None and (api_key != client.api_key or agent_id != client.agent_id):
-            client.set_api_key(api_key)
-            client.agent_id = agent_id
+    # Get HTTP client
+    from .sdk.init import get_http
+    from .core.config import SDKConfig
+    from .api.client import HttpClient
+    
+    http = get_http()
+    if not http:
+        # Create a new HTTP client if needed
+        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
+        http = HttpClient(config)
     
     # Make request to get dataset
-    response = client.make_request(
-        'getdataset',
-        'GET',
-        {'dataset_id': dataset_id}
-    )
+    response = http.get('getdataset', {'dataset_id': dataset_id})
     
     logger.info(f"Retrieved dataset {dataset_id} with {response.get('num_items', 0)} items")
     return response

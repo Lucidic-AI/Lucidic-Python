@@ -14,7 +14,8 @@ except ImportError:
         def __init__(self, **kwargs):
             pass
 
-from lucidicai.client import Client
+from lucidicai.sdk.event import create_event
+from lucidicai.sdk.init import get_session_id
 from lucidicai.model_pricing import calculate_cost
 from lucidicai.context import current_parent_event_id
 
@@ -76,16 +77,12 @@ class LucidicLiteLLMCallback(CustomLogger):
     def log_pre_api_call(self, model, messages, kwargs):
         """Called before the LLM API call"""
         try:
-            client = Client()
-            if not client.session:
+            session_id = get_session_id()
+            if not session_id:
                 return
                 
             # Extract description from messages
             description = self._format_messages(messages)
-            
-            # Apply masking if configured
-            if hasattr(client, 'mask') and callable(client.mask):
-                description = client.mask(description)
                 
             # Store pre-call info for later use
             call_id = kwargs.get("litellm_call_id", str(time.time())) if kwargs else str(time.time())
@@ -109,8 +106,8 @@ class LucidicLiteLLMCallback(CustomLogger):
         self._register_callback(callback_id)
         
         try:
-            client = Client()
-            if not client.session:
+            session_id = get_session_id()
+            if not session_id:
                 self._complete_callback(callback_id)
                 return
                 
@@ -129,10 +126,6 @@ class LucidicLiteLLMCallback(CustomLogger):
             # Extract response content
             result = self._extract_response_content(response_obj)
             
-            # Apply masking to result if configured
-            if hasattr(client, 'mask') and callable(client.mask):
-                result = client.mask(result)
-            
             # Calculate cost if usage info is available
             usage = self._extract_usage(response_obj)
             cost = None
@@ -142,7 +135,7 @@ class LucidicLiteLLMCallback(CustomLogger):
             # Extract any images from multimodal requests
             images = self._extract_images_from_messages(messages)
             
-            # Create LLM_GENERATION typed event
+            # Get parent event ID from context
             parent_id = None
             try:
                 parent_id = current_parent_event_id.get(None)
@@ -153,7 +146,8 @@ class LucidicLiteLLMCallback(CustomLogger):
             occ_dt = start_time if isinstance(start_time, datetime) else None
             duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
 
-            client.create_event(
+            # Create event with correct field names
+            create_event(
                 type="llm_generation",
                 provider=provider,
                 model=model,
@@ -162,7 +156,7 @@ class LucidicLiteLLMCallback(CustomLogger):
                 input_tokens=(usage or {}).get("prompt_tokens", 0),
                 output_tokens=(usage or {}).get("completion_tokens", 0),
                 cost=cost,
-                parent_event_id=parent_id,
+                parent_event_id=parent_id,  # This will be normalized by EventBuilder
                 occurred_at=occ_dt,
                 duration=duration_secs,
             )
@@ -185,8 +179,8 @@ class LucidicLiteLLMCallback(CustomLogger):
         self._register_callback(callback_id)
         
         try:
-            client = Client()
-            if not client.session:
+            session_id = get_session_id()
+            if not session_id:
                 self._complete_callback(callback_id)
                 return
                 
@@ -214,11 +208,11 @@ class LucidicLiteLLMCallback(CustomLogger):
             occ_dt = start_time if isinstance(start_time, datetime) else None
             duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
 
-            client.create_event(
+            create_event(
                 type="error_traceback",
                 error=error_msg,
                 traceback="",
-                parent_event_id=parent_id,
+                parent_event_id=parent_id,  # This will be normalized by EventBuilder
                 occurred_at=occ_dt,
                 duration=duration_secs,
                 metadata={"provider": provider, "litellm": True}
