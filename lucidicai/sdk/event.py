@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from ..context import current_parent_event_id
+from .context import current_parent_event_id
 from ..core.config import get_config
 from .event_builder import EventBuilder
 

@@ -16,7 +16,7 @@ import asyncio
 from typing import List, Dict, Any
 
 import lucidicai as lai
-from lucidicai.decorators import event
+from lucidicai.sdk.decorators import event
 
 
 class TestNestedDecorators:

@@ -4,8 +4,8 @@ import time
 from typing import Union, List, Dict, Any, Optional, overload, Tuple, Literal
 from dotenv import load_dotenv
 
-from .sdk.init import get_http
-from .errors import APIKeyVerificationError, FeatureFlagError
+from ..init import get_http
+from ...core.errors import APIKeyVerificationError, FeatureFlagError
 
 logger = logging.getLogger("Lucidic")
 
@@ -188,7 +188,7 @@ def get_feature_flag(
         # Get HTTP client
         http = get_http()
         if not http:
-            from .sdk.init import init
+            from ..init import init
             init(api_key=api_key, agent_id=agent_id)
             http = get_http()
         

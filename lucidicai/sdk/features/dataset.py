@@ -3,7 +3,7 @@ import logging
 from typing import Optional, Dict, List, Any
 from dotenv import load_dotenv
 
-from .errors import APIKeyVerificationError
+from ...core.errors import APIKeyVerificationError
 
 logger = logging.getLogger("Lucidic")
 
@@ -59,9 +59,9 @@ def get_dataset(
             )
     
     # Get HTTP client
-    from .sdk.init import get_http
-    from .core.config import SDKConfig
-    from .api.client import HttpClient
+    from ..init import get_http
+    from ...core.config import SDKConfig
+    from ...api.client import HttpClient
     
     http = get_http()
     if not http:

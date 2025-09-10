@@ -24,7 +24,7 @@ class ContextCaptureProcessor(SpanProcessor):
         """Called when a span is started - capture context here."""
         try:
             # Import here to avoid circular imports
-            from lucidicai.context import current_session_id, current_parent_event_id
+            from lucidicai.sdk.context import current_session_id, current_parent_event_id
             
             # Capture session ID from context
             session_id = None

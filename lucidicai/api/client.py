@@ -13,7 +13,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
 from ..core.config import SDKConfig, get_config
-from ..errors import APIKeyVerificationError
+from ..core.errors import APIKeyVerificationError
 
 logger = logging.getLogger("Lucidic")
 

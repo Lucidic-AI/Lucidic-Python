@@ -8,9 +8,9 @@ import uuid
 from typing import Any, Callable, Optional, TypeVar
 from collections.abc import Iterable
 
-from .sdk.event import create_event
-from .sdk.init import get_session_id
-from .errors import LucidicNotInitializedError
+from .event import create_event
+from .init import get_session_id
+from ..core.errors import LucidicNotInitializedError
 from .context import current_parent_event_id, event_context, event_context_async
 
 logger = logging.getLogger("Lucidic")

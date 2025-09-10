@@ -16,8 +16,8 @@ except ImportError:
 
 from lucidicai.sdk.event import create_event
 from lucidicai.sdk.init import get_session_id
-from lucidicai.model_pricing import calculate_cost
-from lucidicai.context import current_parent_event_id
+from lucidicai.telemetry.utils.model_pricing import calculate_cost
+from lucidicai.sdk.context import current_parent_event_id
 
 logger = logging.getLogger("Lucidic")
 DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"

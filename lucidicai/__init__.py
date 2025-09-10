@@ -22,7 +22,7 @@ from .sdk.event import (
 )
 
 # Context management exports
-from .context import (
+from .sdk.context import (
     set_active_session,
     clear_active_session,
     bind_session,
@@ -36,10 +36,10 @@ from .context import (
 )
 
 # Decorators
-from .decorators import event, event as step  # step is deprecated alias
+from .sdk.decorators import event, event as step  # step is deprecated alias
 
 # Error types
-from .errors import (
+from .core.errors import (
     LucidicError,
     LucidicNotInitializedError,
     APIKeyVerificationError,
@@ -200,18 +200,18 @@ def _get_prompt(
 
 def _get_dataset(dataset_id, api_key=None, agent_id=None):
     """Get a dataset by ID."""
-    from .dataset import get_dataset as __get_dataset
+    from .sdk.features.dataset import get_dataset as __get_dataset
     return __get_dataset(dataset_id, api_key, agent_id)
 
 
 def _get_dataset_items(dataset_id, api_key=None, agent_id=None):
     """Get dataset items."""
-    from .dataset import get_dataset_items as __get_dataset_items
+    from .sdk.features.dataset import get_dataset_items as __get_dataset_items
     return __get_dataset_items(dataset_id, api_key, agent_id)
 
 
 # Feature flags
-from .feature_flag import (
+from .sdk.features.feature_flag import (
     get_feature_flag,
     get_bool_flag,
     get_int_flag,

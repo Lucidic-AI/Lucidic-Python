@@ -11,7 +11,7 @@ from ..api.resources.event import EventResource
 from ..api.resources.session import SessionResource
 from ..core.config import SDKConfig, get_config, set_config
 from ..utils.queue import EventQueue
-from ..context import set_active_session, current_session_id
+from .context import set_active_session, current_session_id
 from .error_boundary import register_cleanup_handler
 from .shutdown_manager import get_shutdown_manager, SessionState
 from ..telemetry.telemetry_init import instrument_providers
