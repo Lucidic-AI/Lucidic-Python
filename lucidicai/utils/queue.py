@@ -40,8 +40,7 @@ class EventQueue:
         self._flush_event = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._sent_ids: Set[str] = set()
-        self._deferred_queue: List[Dict[str, Any]] = []
-        self._deferred_lock = threading.Lock()
+        # Removed deferred queue - no longer needed since backend handles any order
         
         # Thread pool for parallel processing
         self._executor = ThreadPoolExecutor(
@@ -81,7 +80,7 @@ class EventQueue:
     def force_flush(self, timeout_seconds: float = 5.0) -> None:
         """Flush current queue synchronously (best-effort)."""
         with self._flush_lock:
-            debug(f"[EventQueue] Force flush requested, queue size: {self._queue.qsize()}, deferred: {len(self._deferred_queue)}")
+            debug(f"[EventQueue] Force flush requested, queue size: {self._queue.qsize()}")
             
             # Signal the worker to flush immediately
             self._flush_event.set()
@@ -91,7 +90,14 @@ class EventQueue:
             last_size = -1
             stable_count = 0
             
+            debug(f"[EventQueue] Force flush: entering wait loop, timeout={timeout_seconds}s")
+            iterations = 0
+            start_time = time.time()
             while time.time() < end_time:
+                iterations += 1
+                if iterations % 20 == 1:  # Log every second (20 * 0.05s)
+                    debug(f"[EventQueue] Force flush: iteration {iterations}, time left: {end_time - time.time():.1f}s")
+                
                 current_size = self._queue.qsize()
                 
                 with self._processing_lock:
@@ -103,6 +109,7 @@ class EventQueue:
                         debug("[EventQueue] Force flush complete")
                         return
                     stable_count += 1
+                    debug(f"[EventQueue] Force flush: queue empty, stable_count={stable_count}")
                 else:
                     stable_count = 0
                 
@@ -117,15 +124,21 @@ class EventQueue:
                 
                 self._flush_event.set()
                 time.sleep(0.05)
+                
+                # Safety check to prevent infinite loop
+                if time.time() - start_time > timeout_seconds + 1:
+                    warning(f"[EventQueue] Force flush: exceeded timeout by >1s, breaking")
+                    break
+            
+            debug(f"[EventQueue] Force flush: exited wait loop after {time.time() - start_time:.1f}s")
 
     def is_empty(self) -> bool:
         """Check if queue is completely empty."""
         with self._processing_lock:
             queue_empty = self._queue.empty()
             not_processing = self._processing_count == 0
-        with self._deferred_lock:
-            deferred_empty = len(self._deferred_queue) == 0
-        return queue_empty and not_processing and deferred_empty
+        # No deferred queue to check anymore
+        return queue_empty and not_processing
 
     def shutdown(self, timeout: float = 5.0) -> None:
         """Shutdown the event queue."""
@@ -230,13 +243,9 @@ class EventQueue:
         """Process batch with parallel sending."""
         debug(f"[EventQueue] Processing batch of {len(batch)} events")
         
-        # Add deferred events
-        with self._deferred_lock:
-            if self._deferred_queue:
-                batch.extend(self._deferred_queue)
-                self._deferred_queue.clear()
+        # No need to handle deferred events - we don't defer anymore
         
-        # Group by dependencies
+        # Group for parallel processing
         dependency_groups = self._group_by_dependencies(batch)
         
         # Process each group in parallel
@@ -263,34 +272,22 @@ class EventQueue:
                         self._retry_event(event)
 
     def _group_by_dependencies(self, events: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-        """Group events by dependency levels for parallel processing."""
-        groups = []
-        remaining = list(events)
-        processed_ids = set(self._sent_ids)
+        """Group events for parallel processing.
         
-        while remaining:
-            current_group = []
-            next_remaining = []
-            
-            for event in remaining:
-                parent_id = event.get("client_parent_event_id")
-                if not parent_id or parent_id in processed_ids:
-                    current_group.append(event)
-                    if event_id := event.get("client_event_id"):
-                        processed_ids.add(event_id)
-                else:
-                    next_remaining.append(event)
-            
-            if current_group:
-                groups.append(current_group)
-                remaining = next_remaining
-            elif remaining:
-                # Circular dependency or orphaned events
-                warning(f"[EventQueue] Found {len(remaining)} events with unresolved dependencies, processing anyway")
-                groups.append(remaining)
-                break
+        Since the backend handles events in any order using client-side event IDs,
+        we don't need to check dependencies. Just return all events in one group
+        for maximum parallel processing.
+        """
+        if not events:
+            return []
         
-        return groups
+        # Mark all event IDs as sent for tracking
+        for event in events:
+            if event_id := event.get("client_event_id"):
+                self._sent_ids.add(event_id)
+        
+        # Return all events in a single group for parallel processing
+        return [events]
 
     def _send_event_safe(self, event_request: Dict[str, Any]) -> bool:
         """Send event with error suppression if configured."""
@@ -305,15 +302,7 @@ class EventQueue:
 
     def _send_event(self, event_request: Dict[str, Any]) -> bool:
         """Send a single event to the backend."""
-        # Check parent dependency
-        parent_id = event_request.get("client_parent_event_id")
-        if parent_id and parent_id not in self._sent_ids:
-            # Defer if parent not sent yet
-            if event_request.get("defer_count", 0) < 5:
-                event_request["defer_count"] = event_request.get("defer_count", 0) + 1
-                with self._deferred_lock:
-                    self._deferred_queue.append(event_request)
-                return True
+        # No dependency checking needed - backend handles events in any order
         
         # Check for blob offloading
         payload = event_request.get("payload", {})

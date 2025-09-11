@@ -18,6 +18,7 @@ from .sdk.init import (
 
 from .sdk.event import (
     create_event as _create_event,
+    create_error_event as _create_error_event,
     flush as _flush,
 )
 
@@ -237,6 +238,7 @@ init = wrap_sdk_function(_init, "init")
 get_session_id = wrap_sdk_function(_get_session_id, "init")
 clear_state = wrap_sdk_function(_clear_state, "init")
 create_event = wrap_sdk_function(_create_event, "event")
+create_error_event = wrap_sdk_function(_create_error_event, "event")
 flush = wrap_sdk_function(_flush, "event")
 
 # Wrap session functions
@@ -260,6 +262,7 @@ __all__ = [
     'end_session',
     'get_session',
     'create_event',
+    'create_error_event',
     'flush',
     
     # Decorators

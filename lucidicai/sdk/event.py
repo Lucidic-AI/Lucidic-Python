@@ -1,7 +1,7 @@
 """SDK event creation and management."""
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from .context import current_parent_event_id
 from ..core.config import get_config
@@ -66,6 +66,42 @@ def create_event(
     
     return client_event_id
 
+
+
+def create_error_event(
+    error: Union[str, Exception],
+    parent_event_id: Optional[str] = None,
+    **kwargs
+) -> str:
+    """Create an error traceback event.
+    
+    This is a convenience function for creating error events with proper
+    traceback information.
+    
+    Args:
+        error: The error message or exception object
+        parent_event_id: Optional parent event ID for nesting
+        **kwargs: Additional event parameters
+        
+    Returns:
+        Event ID of the created error event
+    """
+    import traceback
+    
+    if isinstance(error, Exception):
+        error_str = str(error)
+        traceback_str = traceback.format_exc()
+    else:
+        error_str = str(error)
+        traceback_str = kwargs.pop('traceback', '')
+    
+    return create_event(
+        type="error_traceback",
+        error=error_str,
+        traceback=traceback_str,
+        parent_event_id=parent_event_id,
+        **kwargs
+    )
 
 
 def flush(timeout_seconds: float = 2.0) -> bool:

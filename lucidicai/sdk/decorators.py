@@ -77,6 +77,19 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                             "error": str(error),
                             "error_type": type(error).__name__
                         }
+                        
+                        # Create a separate error_traceback event for the exception
+                        import traceback
+                        try:
+                            create_event(
+                                type="error_traceback",
+                                error=str(error),
+                                traceback=traceback.format_exc(),
+                                parent_event_id=pre_event_id  # Parent is the function that threw the error
+                            )
+                            debug(f"[Decorator] Created error_traceback event for {func.__name__}")
+                        except Exception as e:
+                            debug(f"[Decorator] Failed to create error_traceback event: {e}")
                     else:
                         return_val = _serialize(result)
                     
@@ -90,8 +103,9 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                         duration=(datetime.now().astimezone() - start_time).total_seconds(),
                         **decorator_kwargs
                     )
-                except Exception:
-                    pass
+                    debug(f"[Decorator] Created function_call event for {func.__name__}")
+                except Exception as e:
+                    log_error(f"[Decorator] Failed to create function_call event: {e}")
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -136,6 +150,19 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                             "error": str(error),
                             "error_type": type(error).__name__
                         }
+                        
+                        # Create a separate error_traceback event for the exception
+                        import traceback
+                        try:
+                            create_event(
+                                type="error_traceback",
+                                error=str(error),
+                                traceback=traceback.format_exc(),
+                                parent_event_id=pre_event_id  # Parent is the function that threw the error
+                            )
+                            debug(f"[Decorator] Created error_traceback event for {func.__name__}")
+                        except Exception as e:
+                            debug(f"[Decorator] Failed to create error_traceback event: {e}")
                     else:
                         return_val = _serialize(result)
                     
@@ -149,8 +176,9 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                         duration=(datetime.now().astimezone() - start_time).total_seconds(),
                         **decorator_kwargs
                     )
-                except Exception:
-                    pass
+                    debug(f"[Decorator] Created function_call event for {func.__name__}")
+                except Exception as e:
+                    log_error(f"[Decorator] Failed to create function_call event: {e}")
 
         if inspect.iscoroutinefunction(func):
             return async_wrapper  # type: ignore

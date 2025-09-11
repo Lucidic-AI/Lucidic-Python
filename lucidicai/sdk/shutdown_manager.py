@@ -127,6 +127,23 @@ class ShutdownManager:
         # log the exception
         error(f"[ShutdownManager] Uncaught exception: {exc_type.__name__}: {exc_value}")
         
+        # Create an error event for the uncaught exception
+        try:
+            from ..sdk.event import create_event
+            import traceback
+            
+            error_message = f"{exc_type.__name__}: {exc_value}"
+            traceback_str = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            
+            create_event(
+                type="error_traceback",
+                error=error_message,
+                traceback=traceback_str
+            )
+            debug(f"[ShutdownManager] Created error_traceback event for uncaught exception")
+        except Exception as e:
+            debug(f"[ShutdownManager] Failed to create error_traceback event: {e}")
+        
         # perform shutdown
         self._handle_shutdown("uncaught_exception")
         
@@ -170,10 +187,11 @@ class ShutdownManager:
             
             # wait for shutdown with timeout
             if not self.shutdown_complete.wait(timeout=30):
-                warning("[ShutdownManager] Shutdown timeout after 10s")
+                warning("[ShutdownManager] Shutdown timeout after 30s")
     
     def _perform_shutdown(self) -> None:
         """Perform the actual shutdown of all sessions."""
+        debug("[ShutdownManager] _perform_shutdown thread started")
         try:
             sessions_to_end = []
             
@@ -183,6 +201,8 @@ class ShutdownManager:
                     if state.auto_end and not state.is_shutting_down:
                         state.is_shutting_down = True
                         sessions_to_end.append((session_id, state))
+            
+            debug(f"[ShutdownManager] Found {len(sessions_to_end)} sessions to end")
             
             # end all sessions
             for session_id, state in sessions_to_end:
@@ -209,7 +229,12 @@ class ShutdownManager:
             
             info("[ShutdownManager] Shutdown complete")
             
+        except Exception as e:
+            error(f"[ShutdownManager] Unexpected error in _perform_shutdown: {e}")
+            import traceback
+            error(f"[ShutdownManager] Traceback: {traceback.format_exc()}")
         finally:
+            debug("[ShutdownManager] Setting shutdown_complete event")
             self.shutdown_complete.set()
     
     def _end_session(self, session_id: str, state: SessionState) -> None:
@@ -233,31 +258,26 @@ class ShutdownManager:
         except ImportError:
             pass  # SDK not initialized
         
-        # flush event queue if present
+        # Skip event queue flush during shutdown to avoid hanging
+        # The queue worker is a daemon thread and will flush on its own
         if state.event_queue:
-            try:
-                debug(f"[ShutdownManager] Flushing event queue for session {truncate_id(session_id)}")
-                # call flush method if it exists
-                if hasattr(state.event_queue, 'flush'):
-                    state.event_queue.flush(timeout_seconds=5.0)
-                elif hasattr(state.event_queue, 'force_flush'):
-                    state.event_queue.force_flush()
-                debug(f"[ShutdownManager] Event queue flushed for session {truncate_id(session_id)}")
-            except Exception as e:
-                error(f"[ShutdownManager] Error flushing events: {e}")
+            debug(f"[ShutdownManager] Skipping event queue flush during shutdown for session {truncate_id(session_id)}")
         
         # end session via API if http client present
         if state.http_client and session_id:
             try:
                 debug(f"[ShutdownManager] Ending session {truncate_id(session_id)} via API")
-                # use the client's session resource
-                if hasattr(state.http_client, 'sessions'):
-                    state.http_client.sessions.end_session(
+                debug(f"[ShutdownManager] http_client type: {type(state.http_client)}, keys: {state.http_client.keys() if isinstance(state.http_client, dict) else 'not a dict'}")
+                # state.http_client is a resources dict with 'sessions' key
+                if isinstance(state.http_client, dict) and 'sessions' in state.http_client:
+                    state.http_client['sessions'].end_session(
                         session_id,
                         is_successful=False,
-                        is_successful_reason="Process shutdown"
+                        session_eval_reason="Process shutdown"
                     )
                     debug(f"[ShutdownManager] Session {truncate_id(session_id)} ended via API")
+                else:
+                    debug(f"[ShutdownManager] Cannot end session - http_client not properly configured")
             except Exception as e:
                 error(f"[ShutdownManager] Error ending session via API: {e}")
         
