@@ -143,7 +143,7 @@ class LucidicLiteLLMCallback(CustomLogger):
                 parent_id = None
 
             # occurred_at/duration from datetimes
-            occ_dt = start_time if isinstance(start_time, datetime) else None
+            occ_dt = start_time.isoformat() if isinstance(start_time, datetime) else None
             duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
 
             # Create event with correct field names
@@ -205,7 +205,7 @@ class LucidicLiteLLMCallback(CustomLogger):
                 parent_id = current_parent_event_id.get(None)
             except Exception:
                 parent_id = None
-            occ_dt = start_time if isinstance(start_time, datetime) else None
+            occ_dt = start_time.isoformat() if isinstance(start_time, datetime) else None
             duration_secs = (end_time - start_time).total_seconds() if isinstance(start_time, datetime) and isinstance(end_time, datetime) else None
 
             create_event(

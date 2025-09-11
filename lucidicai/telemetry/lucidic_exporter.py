@@ -4,7 +4,6 @@ Converts completed spans into immutable typed LLM events via Client.create_event
 which enqueues non-blocking delivery through the EventQueue.
 """
 import json
-import logging
 from typing import Sequence, Optional, Dict, Any, List
 from datetime import datetime, timezone
 from opentelemetry.sdk.trace import ReadableSpan
@@ -14,15 +13,10 @@ from opentelemetry.semconv_ai import SpanAttributes
 
 from ..sdk.event import create_event
 from ..sdk.init import get_session_id
-from ..context import current_session_id, current_parent_event_id
-from ..model_pricing import calculate_cost
+from ..sdk.context import current_session_id, current_parent_event_id
+from ..telemetry.utils.model_pricing import calculate_cost
 from .extract import detect_is_llm_span, extract_images, extract_prompts, extract_completions, extract_model
-
-logger = logging.getLogger("Lucidic")
-import os
-
-DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
-VERBOSE = os.getenv("LUCIDIC_VERBOSE", "False") == "True"
+from ..utils.logger import debug, info, warning, error, verbose, truncate_id
 
 
 class LucidicSpanExporter(SpanExporter):
@@ -30,22 +24,25 @@ class LucidicSpanExporter(SpanExporter):
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
-            if DEBUG and spans:
-                logger.debug(f"[LucidicSpanExporter] Processing {len(spans)} spans")
+            if spans:
+                debug(f"[Telemetry] Processing {len(spans)} OpenTelemetry spans")
             for span in spans:
                 self._process_span(span)
-            if DEBUG and spans:
-                logger.debug(f"[LucidicSpanExporter] Successfully exported {len(spans)} spans")
+            if spans:
+                debug(f"[Telemetry] Successfully exported {len(spans)} spans")
             return SpanExportResult.SUCCESS
         except Exception as e:
-            logger.error(f"Failed to export spans: {e}")
+            error(f"[Telemetry] Failed to export spans: {e}")
             return SpanExportResult.FAILURE
 
     def _process_span(self, span: ReadableSpan) -> None:
         """Convert a single LLM span into a typed, immutable event."""
         try:
             if not detect_is_llm_span(span):
+                verbose(f"[Telemetry] Skipping non-LLM span: {span.name}")
                 return
+            
+            debug(f"[Telemetry] Processing LLM span: {span.name}")
 
             attributes = dict(span.attributes or {})
 
@@ -59,19 +56,27 @@ class LucidicSpanExporter(SpanExporter):
             if not target_session_id:
                 target_session_id = get_session_id()
             if not target_session_id:
+                debug(f"[Telemetry] No session ID for span {span.name}, skipping")
                 return
 
             # Parent nesting - get from span attributes (captured at span creation)
             parent_id = attributes.get('lucidic.parent_event_id')
+            debug(f"[Telemetry] Span {span.name} has parent_id from attributes: {truncate_id(parent_id)}")
             if not parent_id:
                 # Fallback to trying context (may work if same thread)
                 try:
                     parent_id = current_parent_event_id.get(None)
+                    if parent_id:
+                        debug(f"[Telemetry] Got parent_id from context for span {span.name}: {truncate_id(parent_id)}")
                 except Exception:
                     parent_id = None
+            
+            if not parent_id:
+                debug(f"[Telemetry] No parent_id available for span {span.name}")
 
             # Timing
-            occurred_at = datetime.fromtimestamp(span.start_time / 1_000_000_000, tz=timezone.utc) if span.start_time else datetime.now(tz=timezone.utc)
+            occurred_at_dt = datetime.fromtimestamp(span.start_time / 1_000_000_000, tz=timezone.utc) if span.start_time else datetime.now(tz=timezone.utc)
+            occurred_at = occurred_at_dt.isoformat()  # Convert to ISO string for JSON serialization
             duration_seconds = ((span.end_time - span.start_time) / 1_000_000_000) if (span.start_time and span.end_time) else None
 
             # Typed fields using extract utilities
@@ -86,7 +91,7 @@ class LucidicSpanExporter(SpanExporter):
             images = extract_images(attributes)
 
             # Set context for parent if needed
-            from ..context import current_parent_event_id as parent_context
+            from ..sdk.context import current_parent_event_id as parent_context
             if parent_id:
                 token = parent_context.set(parent_id)
             else:
@@ -94,6 +99,7 @@ class LucidicSpanExporter(SpanExporter):
             
             try:
                 # Create immutable event via non-blocking queue
+                debug(f"[Telemetry] Creating LLM event with parent_id: {truncate_id(parent_id)}")
                 event_id = create_event(
                 type="llm_generation",
                 occurred_at=occurred_at,
@@ -107,17 +113,17 @@ class LucidicSpanExporter(SpanExporter):
                 output_tokens=output_tokens,
                 cost=cost,
                 raw={"images": images} if images else None,
+                parent_event_id=parent_id,  # Pass the parent_id explicitly
             )
             finally:
                 # Reset parent context
                 if token:
                     parent_context.reset(token)
             
-            if DEBUG:
-                logger.debug(f"[LucidicSpanExporter] Created LLM event {event_id} for session {target_session_id[:8]}...")
+            debug(f"[Telemetry] Created LLM event {truncate_id(event_id)} from span {span.name} for session {truncate_id(target_session_id)}")
 
         except Exception as e:
-            logger.error(f"Failed to process span {span.name}: {e}")
+            error(f"[Telemetry] Failed to process span {span.name}: {e}")
     
     
     def _create_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any]) -> Optional[str]:
@@ -144,6 +150,7 @@ class LucidicSpanExporter(SpanExporter):
             if not target_session_id:
                 target_session_id = get_session_id()
             if not target_session_id:
+                debug(f"[Telemetry] No session ID for span {span.name}, skipping")
                 return None
 
             # Create event
@@ -159,7 +166,7 @@ class LucidicSpanExporter(SpanExporter):
             return create_event(**event_kwargs)
             
         except Exception as e:
-            logger.error(f"Failed to create event from span: {e}")
+            error(f"[Telemetry] Failed to create event from span: {e}")
             return None
     
     def _update_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], event_id: str) -> None:
@@ -172,8 +179,7 @@ class LucidicSpanExporter(SpanExporter):
         prompts = attributes.get(SpanAttributes.LLM_PROMPTS) or \
                  attributes.get('gen_ai.prompt')
         
-        if VERBOSE:
-            logger.info(f"[SpaneExporter -- DEBUG] Extracting Description attributes: {attributes}, prompts: {prompts}")
+        verbose(f"[Telemetry] Extracting description from attributes: {attributes}, prompts: {prompts}")
 
         if prompts:
             if isinstance(prompts, list) and prompts:

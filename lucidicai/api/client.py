@@ -4,7 +4,6 @@ This module contains only the HTTP client logic, separated from
 session management and other concerns.
 """
 import json
-import logging
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
@@ -14,8 +13,7 @@ from urllib3.util import Retry
 
 from ..core.config import SDKConfig, get_config
 from ..core.errors import APIKeyVerificationError
-
-logger = logging.getLogger("Lucidic")
+from ..utils.logger import debug, info, warning, error, mask_sensitive, truncate_data
 
 
 class HttpClient:
@@ -75,11 +73,13 @@ class HttpClient:
     
     def _verify_api_key(self) -> None:
         """Verify the API key with the backend."""
+        debug("[HTTP] Verifying API key")
         try:
             response = self.get("verifyapikey")
             # Backend returns 200 OK for valid key, check if we got a response
             if response is None:
                 raise APIKeyVerificationError("No response from API")
+            info("[HTTP] API key verified successfully")
         except APIKeyVerificationError:
             raise
         except requests.RequestException as e:
@@ -168,12 +168,12 @@ class HttpClient:
         """
         url = f"{self.base_url}/{endpoint}"
         
-        if self.config.debug:
-            logger.debug(f"[HTTP] {method} {url}")
-            if params:
-                logger.debug(f"[HTTP] Params: {params}")
-            if json:
-                logger.debug(f"[HTTP] Body: {json}")
+        # Log request details
+        debug(f"[HTTP] {method} {url}")
+        if params:
+            debug(f"[HTTP] Query params: {mask_sensitive(params)}")
+        if json:
+            debug(f"[HTTP] Request body: {truncate_data(mask_sensitive(json))}")
         
         response = self.session.request(
             method=method,
@@ -193,8 +193,7 @@ class HttpClient:
             except:
                 error_msg = response.text
             
-            if self.config.debug:
-                logger.error(f"[HTTP] Error {response.status_code}: {error_msg}")
+            error(f"[HTTP] Error {response.status_code}: {error_msg}")
         
         response.raise_for_status()
         
@@ -209,8 +208,7 @@ class HttpClient:
                 # Return text if not JSON
                 data = {"response": response.text}
         
-        if self.config.debug:
-            logger.debug(f"[HTTP] Response: {data}")
+        debug(f"[HTTP] Response ({response.status_code}): {truncate_data(data)}")
         
         return data
     

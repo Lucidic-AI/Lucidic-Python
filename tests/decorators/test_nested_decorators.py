@@ -14,6 +14,10 @@ import time
 import json
 import asyncio
 from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 import lucidicai as lai
 from lucidicai.sdk.decorators import event
@@ -28,23 +32,27 @@ class TestNestedDecorators:
         self.created_events = []
         
         # Initialize SDK with real backend
-        lai.init(
+        session_id = lai.init(
             session_name='Test Nested Decorators',
             providers=['openai']
         )
         
         # Hook into the event queue to track events
-        client = lai.client.Client()
-        original_queue_event = client._event_queue.queue_event
+        from lucidicai.sdk.init import get_event_queue
+        event_queue = get_event_queue()
         
-        def track_and_queue(event_request):
-            """Track events as they're queued."""
-            self.created_events.append(event_request)
-            return original_queue_event(event_request)
+        if event_queue:
+            original_queue_event = event_queue.queue_event
+            
+            def track_and_queue(event_request):
+                """Track events as they're queued."""
+                self.created_events.append(event_request)
+                return original_queue_event(event_request)
+            
+            event_queue.queue_event = track_and_queue
+            self.event_queue = event_queue
         
-        client._event_queue.queue_event = track_and_queue
-        self.client = client
-        print(f"\033[94mSession initialized: {client.session.session_id}\033[0m")
+        print(f"\033[94mSession initialized: {session_id}\033[0m")
     
     def test_complex_nested_workflow(self):
         """Test a complex workflow with multiple levels of nesting and OpenAI calls."""
@@ -432,8 +440,8 @@ class TestNestedDecorators:
     def cleanup(self):
         """Clean up after tests."""
         # Force flush the event queue
-        if hasattr(self.client, '_event_queue'):
-            self.client._event_queue.force_flush(timeout_seconds=2.0)
+        if hasattr(self, 'event_queue'):
+            self.event_queue.force_flush(timeout_seconds=2.0)
         
         # End the session
         lai.end_session()

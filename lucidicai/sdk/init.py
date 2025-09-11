@@ -2,7 +2,6 @@
 
 This module handles SDK initialization, separating concerns from the main __init__.py
 """
-import logging
 import uuid
 from typing import List, Optional
 
@@ -11,13 +10,12 @@ from ..api.resources.event import EventResource
 from ..api.resources.session import SessionResource
 from ..core.config import SDKConfig, get_config, set_config
 from ..utils.queue import EventQueue
+from ..utils.logger import debug, info, warning, error, truncate_id
 from .context import set_active_session, current_session_id
 from .error_boundary import register_cleanup_handler
 from .shutdown_manager import get_shutdown_manager, SessionState
 from ..telemetry.telemetry_init import instrument_providers
 from opentelemetry.sdk.trace import TracerProvider
-
-logger = logging.getLogger("Lucidic")
 
 
 class SDKState:
@@ -32,6 +30,18 @@ class SDKState:
     
     def reset(self):
         """Reset SDK state."""
+        # Shutdown telemetry first to ensure all spans are exported
+        if self.tracer_provider:
+            try:
+                # Force flush all pending spans with 5 second timeout
+                debug("[SDK] Flushing OpenTelemetry spans...")
+                self.tracer_provider.force_flush(timeout_millis=5000)
+                # Shutdown the tracer provider and all processors
+                self.tracer_provider.shutdown()
+                debug("[SDK] TracerProvider shutdown complete")
+            except Exception as e:
+                error(f"[SDK] Error shutting down TracerProvider: {e}")
+        
         if self.event_queue:
             self.event_queue.shutdown()
         if self.http:
@@ -113,6 +123,7 @@ def init(
     
     # Initialize HTTP client
     if not _sdk_state.http:
+        debug("[SDK] Initializing HTTP client")
         _sdk_state.http = HttpClient(config)
     
     # Initialize resources
@@ -124,6 +135,7 @@ def init(
     
     # Initialize event queue
     if not _sdk_state.event_queue:
+        debug("[SDK] Initializing event queue")
         # Create a mock client object for backward compatibility
         # The queue needs a client with make_request method
         class ClientAdapter:
@@ -134,6 +146,7 @@ def init(
         
         # Register cleanup handler
         register_cleanup_handler(lambda: _sdk_state.event_queue.force_flush())
+        debug("[SDK] Event queue initialized and cleanup handler registered")
     
     # Create or retrieve session
     if session_id:
@@ -164,6 +177,7 @@ def init(
     if production_monitoring:
         session_params['production_monitoring'] = production_monitoring
     
+    debug(f"[SDK] Creating session with params: {session_params}")
     session_resource = _sdk_state.resources['sessions']
     session_data = session_resource.create_session(session_params)
     
@@ -171,10 +185,13 @@ def init(
     real_session_id = session_data.get('session_id', real_session_id)
     _sdk_state.session_id = real_session_id
     
+    info(f"[SDK] Session created: {truncate_id(real_session_id)} (name: {session_name or 'Unnamed Session'})")
+    
     # Set active session in context
     set_active_session(real_session_id)
     
     # Register session with shutdown manager
+    debug(f"[SDK] Registering session with shutdown manager (auto_end={auto_end})")
     shutdown_manager = get_shutdown_manager()
     session_state = SessionState(
         session_id=real_session_id,
@@ -186,9 +203,8 @@ def init(
     
     # Initialize telemetry if providers specified
     if providers:
+        debug(f"[SDK] Initializing telemetry for providers: {providers}")
         _initialize_telemetry(providers)
-    
-    logger.info(f"SDK initialized with session {real_session_id[:8]}...")
     
     return real_session_id
 
@@ -222,7 +238,7 @@ def _initialize_telemetry(providers: List[str]) -> None:
     # Instrument providers
     instrument_providers(providers, _sdk_state.tracer_provider, {})
     
-    logger.info(f"Telemetry initialized for providers: {providers}")
+    info(f"[Telemetry] Initialized for providers: {providers}")
 
 
 def get_session_id() -> Optional[str]:
@@ -248,5 +264,6 @@ def get_resources() -> dict:
 def clear_state() -> None:
     """Clear SDK state (for testing)."""
     global _sdk_state
+    debug("[SDK] Clearing SDK state")
     _sdk_state.reset()
     _sdk_state = SDKState()

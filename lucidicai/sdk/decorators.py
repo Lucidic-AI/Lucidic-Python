@@ -2,7 +2,6 @@
 import functools
 import inspect
 import json
-import logging
 from datetime import datetime
 import uuid
 from typing import Any, Callable, Optional, TypeVar
@@ -12,8 +11,7 @@ from .event import create_event
 from .init import get_session_id
 from ..core.errors import LucidicNotInitializedError
 from .context import current_parent_event_id, event_context, event_context_async
-
-logger = logging.getLogger("Lucidic")
+from ..utils.logger import debug, error as log_error, verbose, truncate_id
 
 F = TypeVar('F', bound=Callable[..., Any])
 
@@ -49,16 +47,27 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
 
             parent_id = current_parent_event_id.get(None)
             pre_event_id = str(uuid.uuid4())
+            debug(f"[Decorator] Starting {func.__name__} with event ID {truncate_id(pre_event_id)}, parent: {truncate_id(parent_id)}")
             start_time = datetime.now().astimezone()
             result = None
             error: Optional[BaseException] = None
 
             try:
                 with event_context(pre_event_id):
-                    result = func(*args, **kwargs)
+                    # Also inject into OpenTelemetry context for instrumentors
+                    from ..telemetry.context_bridge import inject_lucidic_context
+                    from opentelemetry import context as otel_context
+                    
+                    otel_ctx = inject_lucidic_context()
+                    token = otel_context.attach(otel_ctx)
+                    try:
+                        result = func(*args, **kwargs)
+                    finally:
+                        otel_context.detach(token)
                 return result
             except Exception as e:
                 error = e
+                log_error(f"[Decorator] {func.__name__} raised exception: {e}")
                 raise
             finally:
                 try:
@@ -97,16 +106,27 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
 
             parent_id = current_parent_event_id.get(None)
             pre_event_id = str(uuid.uuid4())
+            debug(f"[Decorator] Starting {func.__name__} with event ID {truncate_id(pre_event_id)}, parent: {truncate_id(parent_id)}")
             start_time = datetime.now().astimezone()
             result = None
             error: Optional[BaseException] = None
 
             try:
                 async with event_context_async(pre_event_id):
-                    result = await func(*args, **kwargs)
+                    # Also inject into OpenTelemetry context for instrumentors
+                    from ..telemetry.context_bridge import inject_lucidic_context
+                    from opentelemetry import context as otel_context
+                    
+                    otel_ctx = inject_lucidic_context()
+                    token = otel_context.attach(otel_ctx)
+                    try:
+                        result = await func(*args, **kwargs)
+                    finally:
+                        otel_context.detach(token)
                 return result
             except Exception as e:
                 error = e
+                log_error(f"[Decorator] {func.__name__} raised exception: {e}")
                 raise
             finally:
                 try:

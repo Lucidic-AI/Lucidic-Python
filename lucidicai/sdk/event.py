@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 from .context import current_parent_event_id
 from ..core.config import get_config
 from .event_builder import EventBuilder
+from ..utils.logger import debug, truncate_id
 
 
 def create_event(
@@ -30,6 +31,7 @@ def create_event(
     session_id = get_session_id()
     if not session_id:
         # No active session, return dummy ID
+        debug("[Event] No active session, returning dummy event ID")
         return str(uuid.uuid4())
     
     # Get parent event ID from context
@@ -55,6 +57,8 @@ def create_event(
     # Use EventBuilder to create normalized event request
     event_request = EventBuilder.build(params)
     
+    debug(f"[Event] Creating {type} event {truncate_id(client_event_id)} (parent: {truncate_id(parent_event_id)}, session: {truncate_id(session_id)})")
+    
     # Queue event for async sending
     event_queue = get_event_queue()
     if event_queue:
@@ -76,6 +80,7 @@ def flush(timeout_seconds: float = 2.0) -> bool:
     from ..sdk.init import get_event_queue
     event_queue = get_event_queue()
     if event_queue:
+        debug(f"[Event] Forcing flush with {timeout_seconds}s timeout")
         event_queue.force_flush(timeout_seconds)
         return True
     return False

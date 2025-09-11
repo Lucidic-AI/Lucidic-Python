@@ -6,7 +6,6 @@ in parallel while respecting parent-child dependencies.
 import gzip
 import io
 import json
-import logging
 import queue
 import threading
 import time
@@ -16,8 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..core.config import get_config
-
-logger = logging.getLogger("Lucidic")
+from ..utils.logger import debug, info, warning, error, truncate_id, truncate_data
 
 
 class EventQueue:
@@ -59,8 +57,7 @@ class EventQueue:
         # Start background worker
         self._start_worker()
         
-        if self.config.debug:
-            logger.debug(f"[EventQueue] Initialized with {self.max_workers} parallel workers")
+        debug(f"[EventQueue] Initialized with {self.max_workers} parallel workers, batch size: {self.flush_at_count}, flush interval: {self.flush_interval_ms}ms")
 
     def queue_event(self, event_request: Dict[str, Any]) -> None:
         """Enqueue an event for background processing."""
@@ -70,23 +67,21 @@ class EventQueue:
         try:
             self._queue.put(event_request, block=True, timeout=0.001)
             
-            if self.config.debug:
-                event_id = event_request.get('client_event_id', 'unknown')
-                logger.debug(f"[EventQueue] Queued event {event_id}, queue size: {self._queue.qsize()}")
+            event_id = event_request.get('client_event_id', 'unknown')
+            parent_id = event_request.get('client_parent_event_id')
+            debug(f"[EventQueue] Queued event {truncate_id(event_id)} (parent: {truncate_id(parent_id)}), queue size: {self._queue.qsize()}")
             
             # Wake worker if batch large enough
             if self._queue.qsize() >= self.flush_at_count:
                 self._flush_event.set()
                 
         except queue.Full:
-            if self.config.debug:
-                logger.debug(f"[EventQueue] Queue at max size {self.max_queue_size}, dropping event")
+            warning(f"[EventQueue] Queue at max size {self.max_queue_size}, dropping event")
 
     def force_flush(self, timeout_seconds: float = 5.0) -> None:
         """Flush current queue synchronously (best-effort)."""
         with self._flush_lock:
-            if self.config.debug:
-                logger.debug(f"[EventQueue] Force flush requested, queue size: {self._queue.qsize()}")
+            debug(f"[EventQueue] Force flush requested, queue size: {self._queue.qsize()}, deferred: {len(self._deferred_queue)}")
             
             # Signal the worker to flush immediately
             self._flush_event.set()
@@ -105,8 +100,7 @@ class EventQueue:
                 # Check if we're done
                 if current_size == 0 and processing == 0:
                     if stable_count >= 2:
-                        if self.config.debug:
-                            logger.debug("[EventQueue] Force flush complete")
+                        debug("[EventQueue] Force flush complete")
                         return
                     stable_count += 1
                 else:
@@ -135,8 +129,7 @@ class EventQueue:
 
     def shutdown(self, timeout: float = 5.0) -> None:
         """Shutdown the event queue."""
-        if self.config.debug:
-            logger.debug(f"[EventQueue] Shutdown requested")
+        info(f"[EventQueue] Shutting down with {self._queue.qsize()} events in queue")
         
         # Flush remaining events
         self.force_flush(timeout_seconds=timeout)
@@ -182,8 +175,7 @@ class EventQueue:
                 try:
                     self._process_batch(batch)
                 except Exception as e:
-                    if self.config.debug:
-                        logger.debug(f"[EventQueue] Batch processing error: {e}")
+                    error(f"[EventQueue] Batch processing error: {e}")
                 finally:
                     with self._processing_lock:
                         self._processing_count = 0
@@ -236,8 +228,7 @@ class EventQueue:
 
     def _process_batch(self, batch: List[Dict[str, Any]]) -> None:
         """Process batch with parallel sending."""
-        if self.config.debug:
-            logger.debug(f"[EventQueue] Processing batch of {len(batch)} events")
+        debug(f"[EventQueue] Processing batch of {len(batch)} events")
         
         # Add deferred events
         with self._deferred_lock:
@@ -250,8 +241,7 @@ class EventQueue:
         
         # Process each group in parallel
         for group_index, group in enumerate(dependency_groups):
-            if self.config.debug:
-                logger.debug(f"[EventQueue] Processing group {group_index + 1}/{len(dependency_groups)} with {len(group)} events")
+            debug(f"[EventQueue] Processing dependency group {group_index + 1}/{len(dependency_groups)} with {len(group)} events in parallel")
             
             # Submit all events in group for parallel processing
             futures_to_event = {}
@@ -268,8 +258,7 @@ class EventQueue:
                         if event_id := event.get("client_event_id"):
                             self._sent_ids.add(event_id)
                 except Exception as e:
-                    if self.config.debug:
-                        logger.debug(f"[EventQueue] Failed to send event: {e}")
+                    debug(f"[EventQueue] Failed to send event: {e}")
                     if self.retry_failed:
                         self._retry_event(event)
 
@@ -297,8 +286,7 @@ class EventQueue:
                 remaining = next_remaining
             elif remaining:
                 # Circular dependency or orphaned events
-                if self.config.debug:
-                    logger.debug(f"[EventQueue] Found {len(remaining)} events with unresolved dependencies")
+                warning(f"[EventQueue] Found {len(remaining)} events with unresolved dependencies, processing anyway")
                 groups.append(remaining)
                 break
         
@@ -310,8 +298,7 @@ class EventQueue:
             try:
                 return self._send_event(event_request)
             except Exception as e:
-                if self.config.debug:
-                    logger.debug(f"[EventQueue] Suppressed send error: {e}")
+                warning(f"[EventQueue] Suppressed send error: {e}")
                 return False
         else:
             return self._send_event(event_request)
@@ -333,6 +320,10 @@ class EventQueue:
         raw_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         should_offload = len(raw_bytes) > self.blob_threshold
         
+        if should_offload:
+            event_id = event_request.get('client_event_id', 'unknown')
+            debug(f"[EventQueue] Event {truncate_id(event_id)} needs blob storage ({len(raw_bytes)} bytes > {self.blob_threshold} threshold)")
+        
         send_body: Dict[str, Any] = dict(event_request)
         if should_offload:
             send_body["needs_blob"] = True
@@ -350,15 +341,15 @@ class EventQueue:
                 if blob_url:
                     compressed = self._compress_json(payload)
                     self._upload_blob(blob_url, compressed)
+                    debug(f"[EventQueue] Blob uploaded for event {truncate_id(event_request.get('client_event_id'))}")
                 else:
-                    logger.error("[EventQueue] No blob_url received for large payload")
+                    error("[EventQueue] No blob_url received for large payload")
                     return False
             
             return True
             
         except Exception as e:
-            if self.config.debug:
-                logger.debug(f"[EventQueue] Failed to send event: {e}")
+            debug(f"[EventQueue] Failed to send event {truncate_id(event_request.get('client_event_id'))}: {e}")
             return False
 
     def _retry_event(self, event: Dict[str, Any]) -> None:

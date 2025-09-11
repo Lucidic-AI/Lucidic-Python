@@ -56,8 +56,8 @@ class EventQueueConfig:
         """Load event queue configuration from environment variables"""
         return cls(
             max_queue_size=int(os.getenv("LUCIDIC_MAX_QUEUE_SIZE", "100000")),
-            flush_interval_ms=int(os.getenv("LUCIDIC_FLUSH_INTERVAL", "100")),
-            flush_at_count=int(os.getenv("LUCIDIC_FLUSH_AT", "100")),
+            flush_interval_ms=int(os.getenv("LUCIDIC_FLUSH_INTERVAL", "1000")),
+            flush_at_count=int(os.getenv("LUCIDIC_FLUSH_AT", "50")),
             blob_threshold=int(os.getenv("LUCIDIC_BLOB_THRESHOLD", "65536")),
             daemon_mode=os.getenv("LUCIDIC_DAEMON_QUEUE", "true").lower() == "true",
             max_parallel_workers=int(os.getenv("LUCIDIC_MAX_PARALLEL", "10")),

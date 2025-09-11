@@ -4,7 +4,6 @@ Coordinates shutdown across all active sessions, ensuring proper cleanup
 on process exit. Inspired by TypeScript SDK's shutdown-manager.ts.
 """
 import atexit
-import logging
 import signal
 import sys
 import threading
@@ -12,7 +11,7 @@ import time
 from typing import Dict, Optional, Set, Callable
 from dataclasses import dataclass
 
-logger = logging.getLogger("Lucidic")
+from ..utils.logger import debug, info, warning, error, truncate_id
 
 
 @dataclass
@@ -55,7 +54,7 @@ class ShutdownManager:
         self.listeners_registered = False
         self._session_lock = threading.Lock()
         
-        logger.debug("[ShutdownManager] Initialized")
+        debug("[ShutdownManager] Initialized")
     
     def register_session(self, session_id: str, state: SessionState) -> None:
         """Register a new active session.
@@ -65,7 +64,7 @@ class ShutdownManager:
             state: Session state information
         """
         with self._session_lock:
-            logger.debug(f"[ShutdownManager] Registering session {session_id}")
+            debug(f"[ShutdownManager] Registering session {truncate_id(session_id)}, auto_end={state.auto_end}")
             self.active_sessions[session_id] = state
             
             # ensure listeners are registered
@@ -78,7 +77,7 @@ class ShutdownManager:
             session_id: Session identifier
         """
         with self._session_lock:
-            logger.debug(f"[ShutdownManager] Unregistering session {session_id}")
+            debug(f"[ShutdownManager] Unregistering session {truncate_id(session_id)}")
             self.active_sessions.pop(session_id, None)
     
     def get_active_session_count(self) -> int:
@@ -104,7 +103,7 @@ class ShutdownManager:
             return
             
         self.listeners_registered = True
-        logger.debug("[ShutdownManager] Registering global shutdown listeners")
+        debug("[ShutdownManager] Registering global shutdown listeners (atexit, SIGINT, SIGTERM, uncaught exceptions)")
         
         # register atexit handler for normal termination
         atexit.register(self._handle_exit)
@@ -118,7 +117,7 @@ class ShutdownManager:
     
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
-        logger.info(f"[ShutdownManager] Received signal {signum}")
+        info(f"[ShutdownManager] Received signal {signum}, initiating graceful shutdown")
         self._handle_shutdown(f"signal_{signum}")
         # exit after cleanup
         sys.exit(0)
@@ -126,7 +125,7 @@ class ShutdownManager:
     def _exception_handler(self, exc_type, exc_value, exc_traceback):
         """Handle uncaught exceptions."""
         # log the exception
-        logger.error(f"[ShutdownManager] Uncaught exception: {exc_type.__name__}: {exc_value}")
+        error(f"[ShutdownManager] Uncaught exception: {exc_type.__name__}: {exc_value}")
         
         # perform shutdown
         self._handle_shutdown("uncaught_exception")
@@ -136,7 +135,7 @@ class ShutdownManager:
     
     def _handle_exit(self):
         """Handle normal process exit."""
-        logger.debug("[ShutdownManager] Normal exit triggered")
+        debug("[ShutdownManager] Normal process exit triggered (atexit)")
         self._handle_shutdown("atexit")
     
     def _handle_shutdown(self, trigger: str) -> None:
@@ -146,7 +145,7 @@ class ShutdownManager:
             trigger: What triggered the shutdown
         """
         if self.is_shutting_down:
-            logger.debug(f"[ShutdownManager] Already shutting down, ignoring {trigger}")
+            debug(f"[ShutdownManager] Already shutting down, ignoring {trigger}")
             return
         
         self.is_shutting_down = True
@@ -154,11 +153,11 @@ class ShutdownManager:
         with self._session_lock:
             session_count = len(self.active_sessions)
             if session_count == 0:
-                logger.debug("[ShutdownManager] No active sessions to clean up")
+                debug("[ShutdownManager] No active sessions to clean up")
                 self.shutdown_complete.set()
                 return
                 
-            logger.info(f"[ShutdownManager] Shutdown initiated by {trigger}, ending {session_count} active sessions")
+            info(f"[ShutdownManager] Shutdown initiated by {trigger}, ending {session_count} active session(s)")
             
             # perform shutdown in separate thread to avoid deadlocks
             import threading
@@ -170,8 +169,8 @@ class ShutdownManager:
             shutdown_thread.start()
             
             # wait for shutdown with timeout
-            if not self.shutdown_complete.wait(timeout=10):
-                logger.warning("[ShutdownManager] Shutdown timeout after 10s")
+            if not self.shutdown_complete.wait(timeout=30):
+                warning("[ShutdownManager] Shutdown timeout after 10s")
     
     def _perform_shutdown(self) -> None:
         """Perform the actual shutdown of all sessions."""
@@ -188,12 +187,27 @@ class ShutdownManager:
             # end all sessions
             for session_id, state in sessions_to_end:
                 try:
-                    logger.info(f"[ShutdownManager] Ending session {session_id}")
+                    debug(f"[ShutdownManager] Ending session {truncate_id(session_id)}")
                     self._end_session(session_id, state)
                 except Exception as e:
-                    logger.debug(f"[ShutdownManager] Error ending session {session_id}: {e}")
+                    error(f"[ShutdownManager] Error ending session {truncate_id(session_id)}: {e}")
             
-            logger.info("[ShutdownManager] Shutdown complete")
+            # Final telemetry shutdown after all sessions are ended
+            try:
+                from ..sdk.init import _sdk_state
+                if hasattr(_sdk_state, 'tracer_provider') and _sdk_state.tracer_provider:
+                    debug("[ShutdownManager] Final OpenTelemetry shutdown")
+                    try:
+                        # Final flush and shutdown with longer timeout
+                        _sdk_state.tracer_provider.force_flush(timeout_millis=5000)
+                        _sdk_state.tracer_provider.shutdown()
+                        debug("[ShutdownManager] OpenTelemetry shutdown complete")
+                    except Exception as e:
+                        error(f"[ShutdownManager] Error in final telemetry shutdown: {e}")
+            except ImportError:
+                pass  # SDK not initialized
+            
+            info("[ShutdownManager] Shutdown complete")
             
         finally:
             self.shutdown_complete.set()
@@ -205,22 +219,37 @@ class ShutdownManager:
             session_id: Session identifier
             state: Session state
         """
+        # Flush OpenTelemetry spans first (before event queue)
+        try:
+            # Get the global tracer provider if it exists
+            from ..sdk.init import _sdk_state
+            if hasattr(_sdk_state, 'tracer_provider') and _sdk_state.tracer_provider:
+                debug(f"[ShutdownManager] Flushing OpenTelemetry spans for session {truncate_id(session_id)}")
+                try:
+                    # Force flush with 3 second timeout
+                    _sdk_state.tracer_provider.force_flush(timeout_millis=3000)
+                except Exception as e:
+                    error(f"[ShutdownManager] Error flushing spans: {e}")
+        except ImportError:
+            pass  # SDK not initialized
+        
         # flush event queue if present
         if state.event_queue:
             try:
-                logger.debug(f"[ShutdownManager] Flushing events for session {session_id}")
+                debug(f"[ShutdownManager] Flushing event queue for session {truncate_id(session_id)}")
                 # call flush method if it exists
                 if hasattr(state.event_queue, 'flush'):
                     state.event_queue.flush(timeout_seconds=5.0)
                 elif hasattr(state.event_queue, 'force_flush'):
                     state.event_queue.force_flush()
+                debug(f"[ShutdownManager] Event queue flushed for session {truncate_id(session_id)}")
             except Exception as e:
-                logger.debug(f"[ShutdownManager] Error flushing events: {e}")
+                error(f"[ShutdownManager] Error flushing events: {e}")
         
         # end session via API if http client present
         if state.http_client and session_id:
             try:
-                logger.debug(f"[ShutdownManager] Ending session {session_id} via API")
+                debug(f"[ShutdownManager] Ending session {truncate_id(session_id)} via API")
                 # use the client's session resource
                 if hasattr(state.http_client, 'sessions'):
                     state.http_client.sessions.end_session(
@@ -228,8 +257,9 @@ class ShutdownManager:
                         is_successful=False,
                         is_successful_reason="Process shutdown"
                     )
+                    debug(f"[ShutdownManager] Session {truncate_id(session_id)} ended via API")
             except Exception as e:
-                logger.debug(f"[ShutdownManager] Error ending session via API: {e}")
+                error(f"[ShutdownManager] Error ending session via API: {e}")
         
         # unregister the session
         self.unregister_session(session_id)
