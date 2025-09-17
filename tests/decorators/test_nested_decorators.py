@@ -455,7 +455,7 @@ class TestNestedDecorators:
             self.event_queue.force_flush(timeout_seconds=2.0)
         
         # End the session
-        # lai.end_session()
+        lai.end_session()
         print(f"\n\033[94mSession ended and events flushed\033[0m")
 
 

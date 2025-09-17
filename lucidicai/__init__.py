@@ -122,8 +122,8 @@ def _get_session():
 
 def _create_experiment(
     experiment_name,
-    pass_fail_rubrics=None,
-    score_rubrics=None,
+    LLM_boolean_evaluators=None,
+    LLM_numeric_evaluators=None,
     description=None,
     tags=None,
     api_key=None,
@@ -147,12 +147,11 @@ def _create_experiment(
     if not final_agent_id:
         raise ValueError("Agent ID is required for creating experiments")
     
-    # Combine rubrics like TypeScript SDK does
-    rubric_names = []
-    if pass_fail_rubrics:
-        rubric_names.extend(pass_fail_rubrics)
-    if score_rubrics:
-        rubric_names.extend(score_rubrics)
+    evaluator_names = []
+    if LLM_boolean_evaluators:
+        evaluator_names.extend(LLM_boolean_evaluators)
+    if LLM_numeric_evaluators:
+        evaluator_names.extend(LLM_numeric_evaluators)
     
     # Create experiment via API (matching TypeScript exactly)
     response = http.post('createexperiment', {
@@ -160,7 +159,7 @@ def _create_experiment(
         'experiment_name': experiment_name,
         'description': description or '',
         'tags': tags or [],
-        'rubric_names': rubric_names
+        'evaluator_names': evaluator_names
     })
     
     return response.get('experiment_id')

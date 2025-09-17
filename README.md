@@ -83,7 +83,7 @@ lai.init(
     auto_end=True,                          # Optional: Auto-end session on exit (default: True)
     masking_function=my_mask_func,          # Optional: Custom PII masking
     tags=["customer-support", "v1.2"],      # Optional: Session tags
-    rubrics=[...],                          # Optional: Evaluation criteria
+    evaluators=[...],                          # Optional: Evaluation criteria
     experiment_id="...",                    # Optional: Link to experiment
     capture_uncaught=True                   # Optional: Capture crash events (default: True)
 )
@@ -413,8 +413,8 @@ Create experiments to group and analyze multiple sessions:
 # Create an experiment
 experiment_id = lai.create_experiment(
     experiment_name="Prompt Optimization Test",
-    pass_fail_rubrics=["response_quality", "latency"],
-    score_rubrics=["coherence", "relevance"],
+    LLM_boolean_evaluators=["response_quality", "latency"],
+    LLM_numeric_evaluators=["coherence", "relevance"],
     description="Testing different prompt strategies",
     tags=["A/B-test", "prompts"]
 )

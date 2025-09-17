@@ -67,7 +67,7 @@ def init(
     providers: Optional[List[str]] = None,
     production_monitoring: bool = False,
     experiment_id: Optional[str] = None,
-    rubrics: Optional[List] = None,
+    evaluators: Optional[List] = None,
     tags: Optional[List] = None,
     dataset_item_id: Optional[str] = None,
     masking_function: Optional[callable] = None,
@@ -85,7 +85,7 @@ def init(
         providers: List of telemetry providers to instrument
         production_monitoring: Enable production monitoring
         experiment_id: Experiment ID to associate with session
-        rubrics: Evaluation rubrics
+        evaluators: Ealuators to use
         tags: Session tags
         dataset_item_id: Dataset item ID
         masking_function: Function to mask sensitive data
@@ -172,8 +172,8 @@ def init(
         session_params['experiment_id'] = experiment_id
     if dataset_item_id:
         session_params['dataset_item_id'] = dataset_item_id
-    if rubrics:
-        session_params['rubrics'] = rubrics
+    if evaluators:
+        session_params['evaluators'] = evaluators
     if production_monitoring:
         session_params['production_monitoring'] = production_monitoring
     
