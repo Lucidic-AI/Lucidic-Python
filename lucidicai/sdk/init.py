@@ -8,6 +8,7 @@ from typing import List, Optional
 from ..api.client import HttpClient
 from ..api.resources.event import EventResource
 from ..api.resources.session import SessionResource
+from ..api.resources.dataset import DatasetResource
 from ..core.config import SDKConfig, get_config, set_config
 from ..utils.queue import EventQueue
 from ..utils.logger import debug, info, warning, error, truncate_id
@@ -130,7 +131,8 @@ def init(
     if not _sdk_state.resources:
         _sdk_state.resources = {
             'events': EventResource(_sdk_state.http),
-            'sessions': SessionResource(_sdk_state.http)
+            'sessions': SessionResource(_sdk_state.http),
+            'datasets': DatasetResource(_sdk_state.http)
         }
     
     # Initialize event queue

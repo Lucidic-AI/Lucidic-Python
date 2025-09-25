@@ -211,6 +211,60 @@ def _get_dataset_items(dataset_id, api_key=None, agent_id=None):
     return __get_dataset_items(dataset_id, api_key, agent_id)
 
 
+def _list_datasets(api_key=None, agent_id=None):
+    """List all datasets."""
+    from .sdk.features.dataset import list_datasets as __list_datasets
+    return __list_datasets(api_key, agent_id)
+
+
+def _create_dataset(name, description=None, tags=None, suggested_flag_config=None, api_key=None, agent_id=None):
+    """Create a new dataset."""
+    from .sdk.features.dataset import create_dataset as __create_dataset
+    return __create_dataset(name, description, tags, suggested_flag_config, api_key, agent_id)
+
+
+def _update_dataset(dataset_id, name=None, description=None, tags=None, suggested_flag_config=None, api_key=None, agent_id=None):
+    """Update dataset metadata."""
+    from .sdk.features.dataset import update_dataset as __update_dataset
+    return __update_dataset(dataset_id, name, description, tags, suggested_flag_config, api_key, agent_id)
+
+
+def _delete_dataset(dataset_id, api_key=None, agent_id=None):
+    """Delete a dataset."""
+    from .sdk.features.dataset import delete_dataset as __delete_dataset
+    return __delete_dataset(dataset_id, api_key, agent_id)
+
+
+def _create_dataset_item(dataset_id, name, input_data, expected_output=None, description=None, tags=None, metadata=None, flag_overrides=None, api_key=None, agent_id=None):
+    """Create a dataset item."""
+    from .sdk.features.dataset import create_dataset_item as __create_dataset_item
+    return __create_dataset_item(dataset_id, name, input_data, expected_output, description, tags, metadata, flag_overrides, api_key, agent_id)
+
+
+def _get_dataset_item(dataset_id, item_id, api_key=None, agent_id=None):
+    """Get a specific dataset item."""
+    from .sdk.features.dataset import get_dataset_item as __get_dataset_item
+    return __get_dataset_item(dataset_id, item_id, api_key, agent_id)
+
+
+def _update_dataset_item(dataset_id, item_id, name=None, input_data=None, expected_output=None, description=None, tags=None, metadata=None, flag_overrides=None, api_key=None, agent_id=None):
+    """Update a dataset item."""
+    from .sdk.features.dataset import update_dataset_item as __update_dataset_item
+    return __update_dataset_item(dataset_id, item_id, name, input_data, expected_output, description, tags, metadata, flag_overrides, api_key, agent_id)
+
+
+def _delete_dataset_item(dataset_id, item_id, api_key=None, agent_id=None):
+    """Delete a dataset item."""
+    from .sdk.features.dataset import delete_dataset_item as __delete_dataset_item
+    return __delete_dataset_item(dataset_id, item_id, api_key, agent_id)
+
+
+def _list_dataset_item_sessions(dataset_id, item_id, api_key=None, agent_id=None):
+    """List all sessions for a dataset item."""
+    from .sdk.features.dataset import list_dataset_item_sessions as __list_dataset_item_sessions
+    return __list_dataset_item_sessions(dataset_id, item_id, api_key, agent_id)
+
+
 # Feature flags
 from .sdk.features.feature_flag import (
     get_feature_flag,
@@ -249,8 +303,21 @@ get_session = wrap_sdk_function(_get_session, "session")
 # Wrap feature functions
 create_experiment = wrap_sdk_function(_create_experiment, "experiment")
 get_prompt = wrap_sdk_function(_get_prompt, "prompt")
+
+# Dataset management - complete CRUD
+list_datasets = wrap_sdk_function(_list_datasets, "dataset")
+create_dataset = wrap_sdk_function(_create_dataset, "dataset")
 get_dataset = wrap_sdk_function(_get_dataset, "dataset")
+update_dataset = wrap_sdk_function(_update_dataset, "dataset")
+delete_dataset = wrap_sdk_function(_delete_dataset, "dataset")
+
+# Dataset item management
+create_dataset_item = wrap_sdk_function(_create_dataset_item, "dataset")
+get_dataset_item = wrap_sdk_function(_get_dataset_item, "dataset")
+update_dataset_item = wrap_sdk_function(_update_dataset_item, "dataset")
+delete_dataset_item = wrap_sdk_function(_delete_dataset_item, "dataset")
 get_dataset_items = wrap_sdk_function(_get_dataset_items, "dataset")
+list_dataset_item_sessions = wrap_sdk_function(_list_dataset_item_sessions, "dataset")
 
 # All exports
 __all__ = [
@@ -272,9 +339,20 @@ __all__ = [
     # Features
     'create_experiment',
     'get_prompt',
+
+    # Dataset management
+    'list_datasets',
+    'create_dataset',
     'get_dataset',
+    'update_dataset',
+    'delete_dataset',
+    'create_dataset_item',
+    'get_dataset_item',
+    'update_dataset_item',
+    'delete_dataset_item',
     'get_dataset_items',
-    
+    'list_dataset_item_sessions',
+
     # Feature flags
     'get_feature_flag',
     'get_bool_flag',
