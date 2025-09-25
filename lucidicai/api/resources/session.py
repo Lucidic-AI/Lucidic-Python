@@ -60,6 +60,7 @@ class SessionResource:
         self,
         session_id: str,
         is_successful: Optional[bool] = None,
+        is_successful_reason: Optional[str] = None,
         session_eval: Optional[float] = None,
         session_eval_reason: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -68,6 +69,7 @@ class SessionResource:
         Args:
             session_id: Session ID
             is_successful: Whether session was successful
+            is_successful_reason: Reason for success or failure
             session_eval: Session evaluation score
             session_eval_reason: Reason for evaluation
             
@@ -86,6 +88,9 @@ class SessionResource:
         
         if session_eval_reason is not None:
             updates["session_eval_reason"] = session_eval_reason
+
+        if is_successful_reason is not None:
+            updates["is_successful_reason"] = is_successful_reason
         
         return self.update_session(session_id, updates)
     

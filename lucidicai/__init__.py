@@ -107,6 +107,7 @@ def _end_session(
             session_id,
             is_successful=is_successful,
             session_eval=session_eval,
+            is_successful_reason=is_successful_reason,
             session_eval_reason=session_eval_reason
         )
     
