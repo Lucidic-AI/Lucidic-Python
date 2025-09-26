@@ -14,9 +14,13 @@ import time
 import json
 import asyncio
 from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 import lucidicai as lai
-from lucidicai.decorators import event
+from lucidicai.sdk.decorators import event
 
 
 class TestNestedDecorators:
@@ -28,23 +32,27 @@ class TestNestedDecorators:
         self.created_events = []
         
         # Initialize SDK with real backend
-        lai.init(
+        session_id = lai.init(
             session_name='Test Nested Decorators',
             providers=['openai']
         )
         
         # Hook into the event queue to track events
-        client = lai.client.Client()
-        original_queue_event = client._event_queue.queue_event
+        from lucidicai.sdk.init import get_event_queue
+        event_queue = get_event_queue()
         
-        def track_and_queue(event_request):
-            """Track events as they're queued."""
-            self.created_events.append(event_request)
-            return original_queue_event(event_request)
+        if event_queue:
+            original_queue_event = event_queue.queue_event
+            
+            def track_and_queue(event_request):
+                """Track events as they're queued."""
+                self.created_events.append(event_request)
+                return original_queue_event(event_request)
+            
+            event_queue.queue_event = track_and_queue
+            self.event_queue = event_queue
         
-        client._event_queue.queue_event = track_and_queue
-        self.client = client
-        print(f"\033[94mSession initialized: {client.session.session_id}\033[0m")
+        print(f"\033[94mSession initialized: {session_id}\033[0m")
     
     def test_complex_nested_workflow(self):
         """Test a complex workflow with multiple levels of nesting and OpenAI calls."""
@@ -227,10 +235,21 @@ class TestNestedDecorators:
         main_event = main_events[0]
         main_event_id = main_event['client_event_id']
         
-        # Verify error was captured - check both possible locations
-        error_text = main_event['payload'].get('misc', {}).get('error') or main_event['payload'].get('error')
-        assert error_text is not None, "Main workflow should have captured the error"
-        assert 'RuntimeError' in str(error_text), "Error should be RuntimeError"
+        # Verify error was captured - check all possible locations
+        error_text = main_event['payload'].get('error')
+        return_value = main_event['payload'].get('return_value', {})
+        
+        # Check that error was captured
+        assert error_text is not None or isinstance(return_value, dict), "Main workflow should have captured the error"
+        
+        # Check for RuntimeError - it could be in error field or in return_value.error_type
+        error_type_found = False
+        if isinstance(return_value, dict) and return_value.get('error_type') == 'RuntimeError':
+            error_type_found = True
+        elif error_text and 'RuntimeError' in str(error_text):
+            error_type_found = True
+        
+        assert error_type_found, f"Error should be RuntimeError, got error={error_text}, return_value={return_value}"
         
         # Verify nested events have correct parent
         nested_functions = ['validate_data', 'process_data', 'analyze_with_ai', 
@@ -432,8 +451,8 @@ class TestNestedDecorators:
     def cleanup(self):
         """Clean up after tests."""
         # Force flush the event queue
-        if hasattr(self.client, '_event_queue'):
-            self.client._event_queue.force_flush(timeout_seconds=2.0)
+        if hasattr(self, 'event_queue'):
+            self.event_queue.force_flush(timeout_seconds=2.0)
         
         # End the session
         lai.end_session()
@@ -450,6 +469,7 @@ if __name__ == "__main__":
     # Run all tests - let assertions fail naturally
     test.test_complex_nested_workflow()
     test.test_async_nested_decorators()
+    # raise Exception("Test error")
     test.test_mixed_sync_async_nesting()
     
     print(f"\n\033[96mTotal events created across all tests: {len(test.created_events)}\033[0m")

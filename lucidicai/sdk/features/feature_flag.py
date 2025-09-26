@@ -4,8 +4,8 @@ import time
 from typing import Union, List, Dict, Any, Optional, overload, Tuple, Literal
 from dotenv import load_dotenv
 
-from .client import Client
-from .errors import APIKeyVerificationError, FeatureFlagError
+from ..init import get_http
+from ...core.errors import APIKeyVerificationError, FeatureFlagError
 
 logger = logging.getLogger("Lucidic")
 
@@ -135,8 +135,6 @@ def get_feature_flag(
         )
     """
 
-    return # no op for now
-
     load_dotenv()
     
     # Determine if single or batch
@@ -185,50 +183,96 @@ def get_feature_flag(
                     "Lucidic agent ID not specified. Make sure to either pass your agent ID or set the LUCIDIC_AGENT_ID environment variable."
                 )
         
-        # Get client
-        client = Client()
-        if not getattr(client, 'initialized', False):
-            client = Client(api_key=api_key, agent_id=agent_id)
-        else:
-            if api_key != client.api_key or agent_id != client.agent_id:
-                client.set_api_key(api_key)
-                client.agent_id = agent_id
-        
+        # Get HTTP client
+        http = get_http()
+        if not http:
+            from ..init import init
+            init(api_key=api_key, agent_id=agent_id)
+            http = get_http()
+
+        # check for active session
+        from ..init import get_session_id
+        session_id = get_session_id()
+
         try:
-            # Make batch API call
-            response = client.make_request(
-                'getfeatureflags',
-                'POST',
-                {'flag_names': uncached_flags}
-            )
-            
-            # Process response and update cache
-            for name in uncached_flags:
-                if name in response['flags']:
-                    if response['flags'][name]['found']:
-                        value = response['flags'][name]['value']
-                        cached_results[name] = value
-                        
-                        # Cache the value
-                        if cache_ttl != 0:
-                            cache_key = f"{agent_id}:{name}"
-                            _flag_cache.set(cache_key, value, ttl=cache_ttl if cache_ttl > 0 else None)
-                    else:
-                        # Flag not found on server
-                        missing_flags.append(name)
-                        logger.warning(f"Feature flag '{name}' not found on server")
-                
+            if len(uncached_flags) == 1:
+                # Single flag evaluation
+                if session_id:
+                    # Use session-based evaluation for consistency
+                    response = http.post('evaluatefeatureflag', {
+                        'session_id': session_id,
+                        'flag_name': uncached_flags[0],
+                        'context': {},
+                        'default': defaults.get(uncached_flags[0])
+                    })
+                else:
+                    # Use stateless evaluation as fallback
+                    response = http.post('evaluatefeatureflagstateless', {
+                        'agent_id': agent_id,
+                        'flag_name': uncached_flags[0],
+                        'context': {},
+                        'default': defaults.get(uncached_flags[0])
+                    })
+
+                # Extract value from response
+                if 'value' in response:
+                    value = response['value']
+                    cached_results[uncached_flags[0]] = value
+
+                    # Cache the result
+                    if cache_ttl != 0:
+                        cache_key = f"{agent_id}:{uncached_flags[0]}"
+                        _flag_cache.set(cache_key, value, ttl=cache_ttl if cache_ttl > 0 else None)
+                elif 'error' in response:
+                    # Flag not found or error
+                    logger.warning(f"Feature flag error: {response['error']}")
+                    missing_flags.append(uncached_flags[0])
+
+            else:
+                # Batch evaluation
+                if session_id:
+                    # Use session-based batch evaluation
+                    response = http.post('evaluatebatchfeatureflags', {
+                        'session_id': session_id,
+                        'flag_names': uncached_flags,
+                        'context': {},
+                        'defaults': {k: v for k, v in defaults.items() if k in uncached_flags}
+                    })
+                else:
+                    # Use stateless batch evaluation
+                    response = http.post('evaluatebatchfeatureflagsstateless', {
+                        'agent_id': agent_id,
+                        'flag_names': uncached_flags,
+                        'context': {},
+                        'defaults': {k: v for k, v in defaults.items() if k in uncached_flags}
+                    })
+
+                # Process batch response
+                if 'flags' in response:
+                    for name in uncached_flags:
+                        flag_data = response['flags'].get(name)
+                        if flag_data and 'value' in flag_data:
+                            value = flag_data['value']
+                            cached_results[name] = value
+
+                            # Cache it
+                            if cache_ttl != 0:
+                                cache_key = f"{agent_id}:{name}"
+                                _flag_cache.set(cache_key, value, ttl=cache_ttl if cache_ttl > 0 else None)
+                        else:
+                            missing_flags.append(name)
+
         except Exception as e:
-            # Log the error
+            # HTTP client raises on errors, fall back to defaults
             logger.error(f"Failed to fetch feature flags: {e}")
-            
-            # Check if we have defaults for missing flags
+
+            # Use defaults for all uncached flags
             for name in uncached_flags:
-                if name not in cached_results:
-                    if name in defaults:
-                        cached_results[name] = defaults[name]
-                    elif is_single and not return_missing:
-                        # Single flag without default and not returning missing - raise error
+                if name in defaults:
+                    cached_results[name] = defaults[name]
+                else:
+                    missing_flags.append(name)
+                    if is_single and not return_missing:
                         raise FeatureFlagError(f"'{name}': {e}") from e
     
     # Build final result
@@ -257,12 +301,11 @@ def get_feature_flag(
 def get_bool_flag(flag_name: str, default: Optional[bool] = None, **kwargs) -> bool:
     """
     Get a boolean feature flag with type validation.
-    
+
     Raises:
         FeatureFlagError: If fetch fails and no default provided
         TypeError: If flag value is not a boolean
     """
-    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     if not isinstance(value, bool):
         if default is not None:
@@ -275,12 +318,11 @@ def get_bool_flag(flag_name: str, default: Optional[bool] = None, **kwargs) -> b
 def get_int_flag(flag_name: str, default: Optional[int] = None, **kwargs) -> int:
     """
     Get an integer feature flag with type validation.
-    
+
     Raises:
         FeatureFlagError: If fetch fails and no default provided
         TypeError: If flag value is not an integer
     """
-    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     if not isinstance(value, int) or isinstance(value, bool):  # bool is subclass of int
         if default is not None:
@@ -293,12 +335,11 @@ def get_int_flag(flag_name: str, default: Optional[int] = None, **kwargs) -> int
 def get_float_flag(flag_name: str, default: Optional[float] = None, **kwargs) -> float:
     """
     Get a float feature flag with type validation.
-    
+
     Raises:
         FeatureFlagError: If fetch fails and no default provided
         TypeError: If flag value is not a float
     """
-    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         if default is not None:
@@ -311,12 +352,11 @@ def get_float_flag(flag_name: str, default: Optional[float] = None, **kwargs) ->
 def get_string_flag(flag_name: str, default: Optional[str] = None, **kwargs) -> str:
     """
     Get a string feature flag with type validation.
-    
+
     Raises:
         FeatureFlagError: If fetch fails and no default provided
         TypeError: If flag value is not a string
     """
-    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     if not isinstance(value, str):
         if default is not None:
@@ -329,11 +369,10 @@ def get_string_flag(flag_name: str, default: Optional[str] = None, **kwargs) -> 
 def get_json_flag(flag_name: str, default: Optional[dict] = None, **kwargs) -> dict:
     """
     Get a JSON object feature flag.
-    
+
     Raises:
         FeatureFlagError: If fetch fails and no default provided
     """
-    return # no op for now
     value = get_feature_flag(flag_name, default=default if default is not None else MISSING, **kwargs)
     return value
 
