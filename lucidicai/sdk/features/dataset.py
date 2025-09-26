@@ -90,7 +90,7 @@ def get_dataset_items(
 
     Returns:
         A list of dataset items, where each item contains:
-        - dataset_item_id: The item ID
+        - datasetitem_id: The item ID
         - name: Item name
         - description: Item description
         - tags: List of tags

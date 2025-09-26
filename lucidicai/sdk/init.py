@@ -70,7 +70,7 @@ def init(
     experiment_id: Optional[str] = None,
     evaluators: Optional[List] = None,
     tags: Optional[List] = None,
-    dataset_item_id: Optional[str] = None,
+    datasetitem_id: Optional[str] = None,
     masking_function: Optional[callable] = None,
     auto_end: bool = True,
     capture_uncaught: bool = True,
@@ -88,7 +88,7 @@ def init(
         experiment_id: Experiment ID to associate with session
         evaluators: Ealuators to use
         tags: Session tags
-        dataset_item_id: Dataset item ID
+        datasetitem_id: Dataset item ID
         masking_function: Function to mask sensitive data
         auto_end: Automatically end session on exit
         capture_uncaught: Capture uncaught exceptions
@@ -172,8 +172,8 @@ def init(
         session_params['tags'] = tags
     if experiment_id:
         session_params['experiment_id'] = experiment_id
-    if dataset_item_id:
-        session_params['dataset_item_id'] = dataset_item_id
+    if datasetitem_id:
+        session_params['datasetitem_id'] = datasetitem_id
     if evaluators:
         session_params['evaluators'] = evaluators
     if production_monitoring:
