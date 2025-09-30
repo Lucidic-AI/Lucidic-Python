@@ -149,6 +149,7 @@ class LucidicLiteLLMCallback(CustomLogger):
             # Create event with correct field names
             create_event(
                 type="llm_generation",
+                session_id=session_id,  # Pass session_id explicitly
                 provider=provider,
                 model=model,
                 messages=messages,
@@ -210,6 +211,7 @@ class LucidicLiteLLMCallback(CustomLogger):
 
             create_event(
                 type="error_traceback",
+                session_id=session_id,  # Pass session_id explicitly
                 error=error_msg,
                 traceback="",
                 parent_event_id=parent_id,  # This will be normalized by EventBuilder

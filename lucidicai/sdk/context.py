@@ -48,10 +48,17 @@ def bind_session(session_id: str) -> Iterator[None]:
 @asynccontextmanager
 async def bind_session_async(session_id: str) -> AsyncIterator[None]:
     """Async context manager to temporarily bind an active session id."""
+    from .init import set_task_session, clear_task_session
+
     token = current_session_id.set(session_id)
+
+    # Also set task-local for async isolation
+    set_task_session(session_id)
+
     try:
         yield
     finally:
+        clear_task_session()
         current_session_id.reset(token)
 
 
@@ -100,7 +107,8 @@ def session(**init_params) -> Iterator[None]:
     finally:
         current_session_id.reset(token)
         try:
-            lai.end_session()
+            # Pass session_id explicitly to avoid context issues
+            lai.end_session(session_id=session_id)
         except Exception:
             # Avoid masking the original exception from the with-block
             pass
@@ -110,6 +118,7 @@ def session(**init_params) -> Iterator[None]:
 async def session_async(**init_params) -> AsyncIterator[None]:
     """Async counterpart of session(...)."""
     import lucidicai as lai  # type: ignore
+    from .init import set_task_session, clear_task_session
 
     user_auto_end = init_params.get('auto_end', None)
     init_params = dict(init_params)
@@ -120,12 +129,19 @@ async def session_async(**init_params) -> AsyncIterator[None]:
 
     session_id = lai.init(**init_params)
     token = current_session_id.set(session_id)
+
+    # Set task-local session for true isolation in async
+    set_task_session(session_id)
+
     try:
         yield
     finally:
+        # Clear task-local session first
+        clear_task_session()
         current_session_id.reset(token)
         try:
-            lai.end_session()
+            # Pass session_id explicitly to avoid context issues in async
+            lai.end_session(session_id=session_id)
         except Exception:
             pass
 

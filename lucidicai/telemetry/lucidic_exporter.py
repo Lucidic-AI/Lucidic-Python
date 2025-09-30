@@ -99,9 +99,10 @@ class LucidicSpanExporter(SpanExporter):
             
             try:
                 # Create immutable event via non-blocking queue
-                debug(f"[Telemetry] Creating LLM event with parent_id: {truncate_id(parent_id)}")
+                debug(f"[Telemetry] Creating LLM event with parent_id: {truncate_id(parent_id)}, session_id: {truncate_id(target_session_id)}")
                 event_id = create_event(
                 type="llm_generation",
+                session_id=target_session_id,  # Pass the session_id explicitly
                 occurred_at=occurred_at,
                 duration=duration_seconds,
                 provider=provider,
@@ -155,14 +156,15 @@ class LucidicSpanExporter(SpanExporter):
 
             # Create event
             event_kwargs = {
+                'session_id': target_session_id,  # Pass session_id explicitly
                 'description': description,
                 'result': "Processing...",  # Will be updated when span ends
                 'model': model
             }
-            
+
             if images:
                 event_kwargs['screenshots'] = images
-                
+
             return create_event(**event_kwargs)
             
         except Exception as e:
