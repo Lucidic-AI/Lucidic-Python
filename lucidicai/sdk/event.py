@@ -12,23 +12,27 @@ from ..utils.logger import debug, truncate_id
 def create_event(
     type: str = "generic",
     event_id: Optional[str] = None,
+    session_id: Optional[str] = None,  # accept explicit session_id
     **kwargs
 ) -> str:
     """Create a new event.
-    
+
     Args:
         type: Event type (llm_generation, function_call, error_traceback, generic)
         event_id: Optional client event ID (will generate if not provided)
+        session_id: Optional session ID (will use context if not provided)
         **kwargs: Event-specific fields
-        
+
     Returns:
         Event ID (client-generated or provided UUID)
     """
     # Import here to avoid circular dependency
     from ..sdk.init import get_session_id, get_event_queue
-    
-    # Get current session
-    session_id = get_session_id()
+
+    # Use provided session_id or fall back to context
+    if not session_id:
+        session_id = get_session_id()
+
     if not session_id:
         # No active session, return dummy ID
         debug("[Event] No active session, returning dummy event ID")

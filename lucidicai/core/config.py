@@ -19,7 +19,7 @@ class Environment(Enum):
 @dataclass
 class NetworkConfig:
     """Network and connection settings"""
-    base_url: str = "https://api.lucidic.ai/api"
+    base_url: str = "https://backend.lucidic.ai/api"
     timeout: int = 30
     max_retries: int = 3
     backoff_factor: float = 0.5
@@ -31,7 +31,7 @@ class NetworkConfig:
         """Load network configuration from environment variables"""
         debug = os.getenv("LUCIDIC_DEBUG", "False").lower() == "true"
         return cls(
-            base_url="http://localhost:8000/api" if debug else "https://api.lucidic.ai/api",
+            base_url="http://localhost:8000/api" if debug else "https://backend.lucidic.ai/api",
             timeout=int(os.getenv("LUCIDIC_TIMEOUT", "30")),
             max_retries=int(os.getenv("LUCIDIC_MAX_RETRIES", "3")),
             backoff_factor=float(os.getenv("LUCIDIC_BACKOFF_FACTOR", "0.5")),

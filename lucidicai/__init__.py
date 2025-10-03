@@ -55,12 +55,15 @@ def _update_session(
     session_eval=None,
     session_eval_reason=None,
     is_successful=None,
-    is_successful_reason=None
+    is_successful_reason=None,
+    session_id=None  # Accept explicit session_id
 ):
     """Update the current session."""
     from .sdk.init import get_resources, get_session_id
-    
-    session_id = get_session_id()
+
+    # Use provided session_id or fall back to context
+    if not session_id:
+        session_id = get_session_id()
     if not session_id:
         return
     
@@ -87,12 +90,15 @@ def _end_session(
     session_eval_reason=None,
     is_successful=None,
     is_successful_reason=None,
-    wait_for_flush=True
+    wait_for_flush=True,
+    session_id=None  # Accept explicit session_id
 ):
     """End the current session."""
     from .sdk.init import get_resources, get_session_id, get_event_queue
-    
-    session_id = get_session_id()
+
+    # Use provided session_id or fall back to context
+    if not session_id:
+        session_id = get_session_id()
     if not session_id:
         return
     

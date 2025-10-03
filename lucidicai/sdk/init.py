@@ -4,6 +4,8 @@ This module handles SDK initialization, separating concerns from the main __init
 """
 import uuid
 from typing import List, Optional
+import asyncio
+from weakref import WeakKeyDictionary
 
 from ..api.client import HttpClient
 from ..api.resources.event import EventResource
@@ -21,13 +23,15 @@ from opentelemetry.sdk.trace import TracerProvider
 
 class SDKState:
     """Container for SDK runtime state."""
-    
+
     def __init__(self):
         self.http: Optional[HttpClient] = None
         self.event_queue: Optional[EventQueue] = None
         self.session_id: Optional[str] = None
         self.tracer_provider: Optional[TracerProvider] = None
         self.resources = {}
+        # Task-local storage for async task isolation
+        self.task_sessions: WeakKeyDictionary = WeakKeyDictionary()
     
     def reset(self):
         """Reset SDK state."""
@@ -42,17 +46,18 @@ class SDKState:
                 debug("[SDK] TracerProvider shutdown complete")
             except Exception as e:
                 error(f"[SDK] Error shutting down TracerProvider: {e}")
-        
+
         if self.event_queue:
             self.event_queue.shutdown()
         if self.http:
             self.http.close()
-        
+
         self.http = None
         self.event_queue = None
         self.session_id = None
         self.tracer_provider = None
         self.resources = {}
+        self.task_sessions.clear()
 
 
 # Global SDK state
@@ -243,8 +248,47 @@ def _initialize_telemetry(providers: List[str]) -> None:
     info(f"[Telemetry] Initialized for providers: {providers}")
 
 
+def set_task_session(session_id: str) -> None:
+    """Set session ID for current async task (if in async context)."""
+    try:
+        if task := asyncio.current_task():
+            _sdk_state.task_sessions[task] = session_id
+            debug(f"[SDK] Set task-local session {truncate_id(session_id)} for task {task.get_name()}")
+    except RuntimeError:
+        # Not in async context, ignore
+        pass
+
+
+def clear_task_session() -> None:
+    """Clear session ID for current async task (if in async context)."""
+    try:
+        if task := asyncio.current_task():
+            _sdk_state.task_sessions.pop(task, None)
+            debug(f"[SDK] Cleared task-local session for task {task.get_name()}")
+    except RuntimeError:
+        # Not in async context, ignore
+        pass
+
+
 def get_session_id() -> Optional[str]:
-    """Get the current session ID."""
+    """Get the current session ID.
+
+    Priority:
+    1. Task-local session (for async tasks)
+    2. SDK state session
+    3. Context variable session
+    """
+    # First check task-local storage for async isolation
+    try:
+        if task := asyncio.current_task():
+            if task_session := _sdk_state.task_sessions.get(task):
+                debug(f"[SDK] Using task-local session {truncate_id(task_session)}")
+                return task_session
+    except RuntimeError:
+        # Not in async context
+        pass
+
+    # Fall back to SDK state or context variable
     return _sdk_state.session_id or current_session_id.get()
 
 
