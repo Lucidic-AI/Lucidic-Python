@@ -1,4 +1,4 @@
-"""Async-safe context helpers for session (and step, extensible).
+"""Async-safe and thread-safe context helpers for session (and step, extensible).
 
 This module exposes context variables and helpers to bind a Lucidic
 session to the current execution context (threads/async tasks), so
@@ -11,6 +11,7 @@ import contextvars
 from typing import Optional, Iterator, AsyncIterator, Callable, Any, Dict
 import logging
 import os
+import threading
 
 
 # Context variable for the active Lucidic session id
@@ -26,22 +27,54 @@ current_parent_event_id: contextvars.ContextVar[Optional[str]] = contextvars.Con
 
 
 def set_active_session(session_id: Optional[str]) -> None:
-    """Bind the given session id to the current execution context."""
+    """Bind the given session id to the current execution context.
+
+    Sets both contextvar and thread-local storage when in a thread.
+    """
+    from .init import set_thread_session, is_main_thread
+
     current_session_id.set(session_id)
+
+    # Also set thread-local storage if we're in a non-main thread
+    if session_id and not is_main_thread():
+        set_thread_session(session_id)
 
 
 def clear_active_session() -> None:
-    """Clear any active session binding in the current execution context."""
+    """Clear any active session binding in the current execution context.
+
+    Clears both contextvar and thread-local storage when in a thread.
+    """
+    from .init import clear_thread_session, is_main_thread
+
     current_session_id.set(None)
+
+    # Also clear thread-local storage if we're in a non-main thread
+    if not is_main_thread():
+        clear_thread_session()
 
 
 @contextmanager
 def bind_session(session_id: str) -> Iterator[None]:
-    """Context manager to temporarily bind an active session id."""
+    """Context manager to temporarily bind an active session id.
+
+    Handles both thread-local and context variable storage for proper isolation.
+    """
+    from .init import set_thread_session, clear_thread_session, is_main_thread
+
     token = current_session_id.set(session_id)
+
+    # If we're in a non-main thread, also set thread-local storage
+    thread_local_set = False
+    if not is_main_thread():
+        set_thread_session(session_id)
+        thread_local_set = True
+
     try:
         yield
     finally:
+        if thread_local_set:
+            clear_thread_session()
         current_session_id.reset(token)
 
 
@@ -88,9 +121,11 @@ def session(**init_params) -> Iterator[None]:
     Notes:
     - Ignores any provided auto_end parameter and ends the session on context exit.
     - If LUCIDIC_DEBUG is true, logs a warning about ignoring auto_end.
+    - Handles thread-local storage for proper thread isolation.
     """
     # Lazy import to avoid circular imports
     import lucidicai as lai  # type: ignore
+    from .init import set_thread_session, clear_thread_session, is_main_thread
 
     # Force auto_end to False inside a context manager to control explicit end
     user_auto_end = init_params.get('auto_end', None)
@@ -102,9 +137,18 @@ def session(**init_params) -> Iterator[None]:
 
     session_id = lai.init(**init_params)
     token = current_session_id.set(session_id)
+
+    # If we're in a non-main thread, also set thread-local storage
+    thread_local_set = False
+    if not is_main_thread():
+        set_thread_session(session_id)
+        thread_local_set = True
+
     try:
         yield
     finally:
+        if thread_local_set:
+            clear_thread_session()
         current_session_id.reset(token)
         try:
             # Pass session_id explicitly to avoid context issues
@@ -156,5 +200,32 @@ def run_in_session(session_id: str, fn: Callable[..., Any], *fn_args: Any, **fn_
     """Run a callable with a bound session id. Does not end the session."""
     with bind_session(session_id):
         return fn(*fn_args, **fn_kwargs)
+
+
+def thread_worker_with_session(session_id: str, target: Callable[..., Any], *args, **kwargs) -> Any:
+    """Wrapper for thread worker functions that ensures proper session isolation.
+
+    Use this as the target function for threads to ensure each thread gets
+    its own session context without bleeding from the parent thread.
+
+    Example:
+        thread = Thread(
+            target=thread_worker_with_session,
+            args=(session_id, actual_worker_function, arg1, arg2),
+            kwargs={'key': 'value'}
+        )
+    """
+    from .init import set_thread_session, clear_thread_session
+
+    # Set thread-local session immediately
+    set_thread_session(session_id)
+
+    try:
+        # Also bind to contextvar for compatibility
+        with bind_session(session_id):
+            return target(*args, **kwargs)
+    finally:
+        # Clean up thread-local storage
+        clear_thread_session()
 
 

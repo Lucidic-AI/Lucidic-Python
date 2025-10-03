@@ -5,6 +5,7 @@ This module handles SDK initialization, separating concerns from the main __init
 import uuid
 from typing import List, Optional
 import asyncio
+import threading
 from weakref import WeakKeyDictionary
 
 from ..api.client import HttpClient
@@ -32,7 +33,9 @@ class SDKState:
         self.resources = {}
         # Task-local storage for async task isolation
         self.task_sessions: WeakKeyDictionary = WeakKeyDictionary()
-    
+        # Thread-local storage for thread isolation
+        self.thread_local = threading.local()
+
     def reset(self):
         """Reset SDK state."""
         # Shutdown telemetry first to ensure all spans are exported
@@ -58,6 +61,9 @@ class SDKState:
         self.tracer_provider = None
         self.resources = {}
         self.task_sessions.clear()
+        # Clear thread-local storage for current thread
+        if hasattr(self.thread_local, 'session_id'):
+            delattr(self.thread_local, 'session_id')
 
 
 # Global SDK state
@@ -270,13 +276,42 @@ def clear_task_session() -> None:
         pass
 
 
+def set_thread_session(session_id: str) -> None:
+    """Set session ID for current thread.
+
+    This provides true thread-local storage that doesn't inherit from parent thread.
+    """
+    _sdk_state.thread_local.session_id = session_id
+    current_thread = threading.current_thread()
+    debug(f"[SDK] Set thread-local session {truncate_id(session_id)} for thread {current_thread.name}")
+
+
+def clear_thread_session() -> None:
+    """Clear session ID for current thread."""
+    if hasattr(_sdk_state.thread_local, 'session_id'):
+        delattr(_sdk_state.thread_local, 'session_id')
+        current_thread = threading.current_thread()
+        debug(f"[SDK] Cleared thread-local session for thread {current_thread.name}")
+
+
+def get_thread_session() -> Optional[str]:
+    """Get session ID from thread-local storage."""
+    return getattr(_sdk_state.thread_local, 'session_id', None)
+
+
+def is_main_thread() -> bool:
+    """Check if we're running in the main thread."""
+    return threading.current_thread() is threading.main_thread()
+
+
 def get_session_id() -> Optional[str]:
     """Get the current session ID.
 
     Priority:
     1. Task-local session (for async tasks)
-    2. SDK state session
-    3. Context variable session
+    2. Thread-local session (for threads) - NO FALLBACK for threads
+    3. SDK state session (for main thread)
+    4. Context variable session (fallback for main thread only)
     """
     # First check task-local storage for async isolation
     try:
@@ -288,7 +323,18 @@ def get_session_id() -> Optional[str]:
         # Not in async context
         pass
 
-    # Fall back to SDK state or context variable
+    # Check if we're in a thread
+    if not is_main_thread():
+        # For threads, ONLY use thread-local storage - no fallback!
+        # This prevents inheriting the parent thread's session
+        thread_session = get_thread_session()
+        if thread_session:
+            debug(f"[SDK] Using thread-local session {truncate_id(thread_session)}")
+        else:
+            debug(f"[SDK] Thread {threading.current_thread().name} has no thread-local session")
+        return thread_session  # Return None if not set - don't fall back!
+
+    # For main thread only: fall back to SDK state or context variable
     return _sdk_state.session_id or current_session_id.get()
 
 

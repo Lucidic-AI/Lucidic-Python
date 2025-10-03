@@ -14,6 +14,10 @@ from .sdk.init import (
     init as _init,
     get_session_id as _get_session_id,
     clear_state as _clear_state,
+    # Thread-local session management (advanced users)
+    set_thread_session,
+    clear_thread_session,
+    get_thread_session,
 )
 
 from .sdk.event import (
@@ -32,6 +36,7 @@ from .sdk.context import (
     session_async,
     run_session,
     run_in_session,
+    thread_worker_with_session,  # Thread isolation helper
     current_session_id,
     current_parent_event_id,
 )
@@ -288,7 +293,7 @@ get_error_history = error_boundary.get_error_history
 clear_error_history = error_boundary.clear_error_history
 
 # Version
-__version__ = "2.0.0"
+__version__ = "2.1.1"
 
 # Apply error boundary wrapping to all SDK functions
 from .sdk.error_boundary import wrap_sdk_function
@@ -377,8 +382,14 @@ __all__ = [
     'session_async',
     'run_session',
     'run_in_session',
+    'thread_worker_with_session',
     'current_session_id',
     'current_parent_event_id',
+
+    # Thread-local session management (advanced)
+    'set_thread_session',
+    'clear_thread_session',
+    'get_thread_session',
     
     # Error types
     'LucidicError',
