@@ -245,31 +245,38 @@ class LucidicSpanExporter(SpanExporter):
         }
 
     def _extract_prompt_tokens(self, attributes: Dict[str, Any]) -> int:
-        return (
-            attributes.get(SpanAttributes.LLM_USAGE_PROMPT_TOKENS) or
-            attributes.get('gen_ai.usage.prompt_tokens') or
-            attributes.get('gen_ai.usage.input_tokens') or 0
-        )
+        # Check each attribute and return the first non-None value
+        # Note: 0 is a valid token count, so we need to check for None explicitly
+        value = attributes.get(SpanAttributes.LLM_USAGE_PROMPT_TOKENS)
+        if value is not None:
+            return value
+        value = attributes.get('gen_ai.usage.prompt_tokens')
+        if value is not None:
+            return value
+        value = attributes.get('gen_ai.usage.input_tokens')
+        if value is not None:
+            return value
+        return 0
 
     def _extract_completion_tokens(self, attributes: Dict[str, Any]) -> int:
-        return (
-            attributes.get(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS) or
-            attributes.get('gen_ai.usage.completion_tokens') or
-            attributes.get('gen_ai.usage.output_tokens') or 0
-        )
+        # Check each attribute and return the first non-None value
+        # Note: 0 is a valid token count, so we need to check for None explicitly
+        value = attributes.get(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS)
+        if value is not None:
+            return value
+        value = attributes.get('gen_ai.usage.completion_tokens')
+        if value is not None:
+            return value
+        value = attributes.get('gen_ai.usage.output_tokens')
+        if value is not None:
+            return value
+        return 0
     
     def _calculate_cost(self, attributes: Dict[str, Any]) -> Optional[float]:
-        prompt_tokens = (
-            attributes.get(SpanAttributes.LLM_USAGE_PROMPT_TOKENS) or
-            attributes.get('gen_ai.usage.prompt_tokens') or
-            attributes.get('gen_ai.usage.input_tokens') or 0
-        )
-        completion_tokens = (
-            attributes.get(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS) or
-            attributes.get('gen_ai.usage.completion_tokens') or
-            attributes.get('gen_ai.usage.output_tokens') or 0
-        )
-        total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+        # Use the same extraction methods for consistency
+        prompt_tokens = self._extract_prompt_tokens(attributes)
+        completion_tokens = self._extract_completion_tokens(attributes)
+        total_tokens = prompt_tokens + completion_tokens
         if total_tokens > 0:
             model = (
                 attributes.get(SpanAttributes.LLM_RESPONSE_MODEL) or

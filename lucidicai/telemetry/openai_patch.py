@@ -130,21 +130,19 @@ class OpenAIResponsesPatcher:
                         span.set_attribute("gen_ai.request.response_format", text_format.__name__)
 
                     if instructions:
-                        span.set_attribute("gen_ai.request.instructions", str(instructions)[:500])
+                        # Never truncate - EventQueue handles large messages automatically
+                        span.set_attribute("gen_ai.request.instructions", str(instructions))
 
                     # Always set message attributes for proper event creation
-                    # Content capture setting only affects how much detail we include
-                    capture_full_content = self._should_capture_content()
-                    for i, msg in enumerate(messages[:5]):  # Limit to first 5 messages
+                    # The EventQueue handles large messages automatically with blob storage
+                    # so we should NEVER truncate the content
+                    for i, msg in enumerate(messages):  # Include all messages
                         if isinstance(msg, dict):
                             role = msg.get('role', 'user')
                             content = msg.get('content', '')
                             span.set_attribute(f"gen_ai.prompt.{i}.role", role)
-                            # Include full content if capture enabled, otherwise just a snippet
-                            if capture_full_content:
-                                span.set_attribute(f"gen_ai.prompt.{i}.content", str(content)[:2048])
-                            else:
-                                span.set_attribute(f"gen_ai.prompt.{i}.content", str(content)[:100] + ("..." if len(str(content)) > 100 else ""))
+                            # Always include full content - EventQueue handles large messages
+                            span.set_attribute(f"gen_ai.prompt.{i}.content", str(content))
 
                     # Call the original method
                     result = original_method(**kwargs)
@@ -188,16 +186,48 @@ class OpenAIResponsesPatcher:
             output_text = str(result.output_parsed)
 
             # Always set completion attributes so the exporter can extract them
+            # Never truncate - EventQueue handles large messages automatically
             span.set_attribute("gen_ai.completion.0.role", "assistant")
-            span.set_attribute("gen_ai.completion.0.content", output_text[:2048])
+            span.set_attribute("gen_ai.completion.0.content", output_text)
 
         # Handle usage data
         if hasattr(result, 'usage'):
             usage = result.usage
+
+            # Debug logging
+            debug(f"[OpenAI Patch] Usage object type: {type(usage)}")
+            debug(f"[OpenAI Patch] Usage attributes: {[attr for attr in dir(usage) if not attr.startswith('_')]}")
+
+            # Extract tokens with proper handling
+            prompt_tokens = None
+            completion_tokens = None
+            total_tokens = None
+
+            # Try different ways to access token data
+            if hasattr(usage, 'prompt_tokens'):
+                prompt_tokens = usage.prompt_tokens
+            elif hasattr(usage, 'input_tokens'):
+                prompt_tokens = usage.input_tokens
+
+            if hasattr(usage, 'completion_tokens'):
+                completion_tokens = usage.completion_tokens
+            elif hasattr(usage, 'output_tokens'):
+                completion_tokens = usage.output_tokens
+
+            if hasattr(usage, 'total_tokens'):
+                total_tokens = usage.total_tokens
+            elif prompt_tokens is not None and completion_tokens is not None:
+                total_tokens = prompt_tokens + completion_tokens
+
+            debug(f"[OpenAI Patch] Extracted tokens - prompt: {prompt_tokens}, completion: {completion_tokens}, total: {total_tokens}")
+
             # Set usage attributes on span
-            span.set_attribute("gen_ai.usage.prompt_tokens", getattr(usage, 'prompt_tokens', 0))
-            span.set_attribute("gen_ai.usage.completion_tokens", getattr(usage, 'completion_tokens', 0))
-            span.set_attribute("gen_ai.usage.total_tokens", getattr(usage, 'total_tokens', 0))
+            if prompt_tokens is not None:
+                span.set_attribute("gen_ai.usage.prompt_tokens", prompt_tokens)
+            if completion_tokens is not None:
+                span.set_attribute("gen_ai.usage.completion_tokens", completion_tokens)
+            if total_tokens is not None:
+                span.set_attribute("gen_ai.usage.total_tokens", total_tokens)
 
         # Set additional metadata for the exporter
         if text_format and hasattr(text_format, '__name__'):
