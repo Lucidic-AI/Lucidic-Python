@@ -55,7 +55,23 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
                 inst.instrument(tracer_provider=tracer_provider, enrich_token_usage=True)
                 _global_instrumentors["openai"] = inst
                 new_instrumentors["openai"] = inst
-                logger.info("[Telemetry] Instrumented OpenAI")
+
+                # Clean up any problematic instrumentation from standard library
+                from .openai_uninstrument import clean_openai_instrumentation
+                clean_openai_instrumentation()
+
+                # Add patch for responses.parse (not covered by standard instrumentation)
+                # This can be disabled via environment variable if needed
+                import os
+                if os.getenv('LUCIDIC_DISABLE_RESPONSES_PATCH', 'false').lower() != 'true':
+                    from .openai_patch import get_responses_patcher
+                    patcher = get_responses_patcher(tracer_provider)
+                    patcher.patch()
+                    _global_instrumentors["openai_responses_patch"] = patcher
+                else:
+                    logger.info("[Telemetry] Skipping responses.parse patch (disabled via LUCIDIC_DISABLE_RESPONSES_PATCH)")
+
+                logger.info("[Telemetry] Instrumented OpenAI (including responses.parse)")
             except Exception as e:
                 logger.error(f"Failed to instrument OpenAI: {e}")
 

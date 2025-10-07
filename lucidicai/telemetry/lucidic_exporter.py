@@ -41,10 +41,17 @@ class LucidicSpanExporter(SpanExporter):
             if not detect_is_llm_span(span):
                 verbose(f"[Telemetry] Skipping non-LLM span: {span.name}")
                 return
-            
+
             debug(f"[Telemetry] Processing LLM span: {span.name}")
 
             attributes = dict(span.attributes or {})
+
+            # Skip spans that are likely duplicates or incomplete
+            # Check if this is a responses.parse span that was already handled
+            if span.name == "openai.responses.create" and not attributes.get("lucidic.instrumented"):
+                # This might be from incorrect standard instrumentation
+                verbose(f"[Telemetry] Skipping potentially duplicate responses span without our marker")
+                return
 
             # Resolve session id
             target_session_id = attributes.get('lucidic.session_id')
@@ -84,7 +91,18 @@ class LucidicSpanExporter(SpanExporter):
             provider = self._detect_provider_name(attributes)
             messages = extract_prompts(attributes) or []
             params = self._extract_params(attributes)
-            output_text = extract_completions(span, attributes) or "Response received"
+            output_text = extract_completions(span, attributes)
+
+            # Skip spans with no meaningful output (likely incomplete or duplicate instrumentation)
+            if not output_text or output_text == "Response received":
+                # Only use "Response received" if we have other meaningful data
+                if not messages and not attributes.get("lucidic.instrumented"):
+                    verbose(f"[Telemetry] Skipping span {span.name} with no meaningful content")
+                    return
+                # Use a more descriptive default if we must
+                if not output_text:
+                    output_text = "Response received"
+
             input_tokens = self._extract_prompt_tokens(attributes)
             output_tokens = self._extract_completion_tokens(attributes)
             cost = self._calculate_cost(attributes)
