@@ -61,7 +61,6 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
                 clean_openai_instrumentation()
 
                 # Add patch for responses.parse (not covered by standard instrumentation)
-                # This can be disabled via environment variable if needed
                 import os
                 if os.getenv('LUCIDIC_DISABLE_RESPONSES_PATCH', 'false').lower() != 'true':
                     from .openai_patch import get_responses_patcher

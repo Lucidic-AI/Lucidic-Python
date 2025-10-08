@@ -130,12 +130,9 @@ class OpenAIResponsesPatcher:
                         span.set_attribute("gen_ai.request.response_format", text_format.__name__)
 
                     if instructions:
-                        # Never truncate - EventQueue handles large messages automatically
                         span.set_attribute("gen_ai.request.instructions", str(instructions))
 
                     # Always set message attributes for proper event creation
-                    # The EventQueue handles large messages automatically with blob storage
-                    # so we should NEVER truncate the content
                     for i, msg in enumerate(messages):  # Include all messages
                         if isinstance(msg, dict):
                             role = msg.get('role', 'user')
@@ -148,7 +145,6 @@ class OpenAIResponsesPatcher:
                     result = original_method(**kwargs)
 
                     # Process the response and set attributes on span
-                    # DO NOT create events here - let the exporter handle it
                     self._set_response_attributes(span, result, model, messages, start_time, text_format)
 
                     span.set_status(Status(StatusCode.OK))
@@ -160,7 +156,6 @@ class OpenAIResponsesPatcher:
                     span.record_exception(e)
 
                     # The exporter will handle creating error events from the span
-                    # Re-raise the exception
                     raise
 
         return wrapper
@@ -186,7 +181,6 @@ class OpenAIResponsesPatcher:
             output_text = str(result.output_parsed)
 
             # Always set completion attributes so the exporter can extract them
-            # Never truncate - EventQueue handles large messages automatically
             span.set_attribute("gen_ai.completion.0.role", "assistant")
             span.set_attribute("gen_ai.completion.0.content", output_text)
 
@@ -236,8 +230,6 @@ class OpenAIResponsesPatcher:
         # Set duration as attribute
         span.set_attribute("lucidic.duration_seconds", duration)
 
-        # DO NOT create events here - the exporter will handle it when processing the span
-
 
     def _should_capture_content(self) -> bool:
         """Check if message content should be captured.
@@ -245,6 +237,9 @@ class OpenAIResponsesPatcher:
         Returns:
             True if content capture is enabled
         """
+
+        return True # always capture content for now 
+        
         import os
         # check OTEL standard env var
         otel_capture = os.getenv('OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT', 'false')

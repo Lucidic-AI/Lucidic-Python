@@ -246,7 +246,6 @@ class LucidicSpanExporter(SpanExporter):
 
     def _extract_prompt_tokens(self, attributes: Dict[str, Any]) -> int:
         # Check each attribute and return the first non-None value
-        # Note: 0 is a valid token count, so we need to check for None explicitly
         value = attributes.get(SpanAttributes.LLM_USAGE_PROMPT_TOKENS)
         if value is not None:
             return value
@@ -260,7 +259,6 @@ class LucidicSpanExporter(SpanExporter):
 
     def _extract_completion_tokens(self, attributes: Dict[str, Any]) -> int:
         # Check each attribute and return the first non-None value
-        # Note: 0 is a valid token count, so we need to check for None explicitly
         value = attributes.get(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS)
         if value is not None:
             return value
@@ -273,7 +271,6 @@ class LucidicSpanExporter(SpanExporter):
         return 0
     
     def _calculate_cost(self, attributes: Dict[str, Any]) -> Optional[float]:
-        # Use the same extraction methods for consistency
         prompt_tokens = self._extract_prompt_tokens(attributes)
         completion_tokens = self._extract_completion_tokens(attributes)
         total_tokens = prompt_tokens + completion_tokens
