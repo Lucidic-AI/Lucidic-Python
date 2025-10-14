@@ -372,19 +372,51 @@ class EventQueue:
             t = (event_type or "generic").lower()
             
             if t == "llm_generation":
+
                 req = payload.get("request", {})
+                usage = payload.get("usage", {})
+                messages = req.get("messages", [])[:5]
+                output = payload.get("response", {}).get("output", {})
+                compressed_messages = []
+                for i, m in enumerate(messages):
+                    compressed_message_item = {}
+                    for k, v in messages[i].items():
+                        compressed_message_item[k] = str(v)[:200] if v else None
+                    compressed_messages.append(compressed_message_item)
                 return {
                     "request": {
-                        "model": str(req.get("model", ""))[:200],
-                        "provider": str(req.get("provider", ""))[:200],
-                        "messages": "truncated"
+                        "model": req.get("model")[:200] if req.get("model") else None,
+                        "provider": req.get("provider")[:200] if req.get("provider") else None,
+                        "messages": compressed_messages,
                     },
-                    "response": {"output": "truncated"}
+                    "usage": {
+                        k: usage.get(k) for k in ("input_tokens", "output_tokens", "cost") if k in usage
+                    },
+                    "response": {
+                        "output": str(output)[:200] if output else None,
+                    }
                 }
+
             elif t == "function_call":
+                args = payload.get("arguments")
+                truncated_args = (
+                    {k: (str(v)[:200] if v is not None else None) for k, v in args.items()}
+                    if isinstance(args, dict)
+                    else (str(args)[:200] if args is not None else None)    
+                )
                 return {
-                    "function_name": str(payload.get("function_name", ""))[:200],
-                    "arguments": "truncated"
+                    "function_name": payload.get("function_name")[:200] if payload.get("function_name") else None,
+                    "arguments": truncated_args,
+                }
+
+            elif t == "error_traceback":
+                return {
+                    "error": payload.get("error")[:200] if payload.get("error") else None,
+                }
+
+            elif t == "generic":
+                return {
+                    "details": payload.get("details")[:200] if payload.get("details") else None,
                 }
             else:
                 return {"details": "preview_unavailable"}
