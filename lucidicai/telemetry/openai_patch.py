@@ -1,12 +1,12 @@
-"""OpenAI responses.parse instrumentation patch.
+"""OpenAI responses API instrumentation patch.
 
-This module provides instrumentation for OpenAI's responses.parse API
-which is not covered by the standard opentelemetry-instrumentation-openai package.
+This module provides instrumentation for OpenAI's responses.parse and responses.create APIs
+which are not covered by the standard opentelemetry-instrumentation-openai package.
 """
 import functools
 import logging
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Dict
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, SpanKind
@@ -18,7 +18,7 @@ logger = logging.getLogger("Lucidic")
 
 
 class OpenAIResponsesPatcher:
-    """Patches OpenAI client to instrument responses.parse method."""
+    """Patches OpenAI client to instrument responses API methods."""
 
     def __init__(self, tracer_provider=None):
         """Initialize the patcher.
@@ -29,13 +29,13 @@ class OpenAIResponsesPatcher:
         self._tracer_provider = tracer_provider or trace.get_tracer_provider()
         self._tracer = self._tracer_provider.get_tracer(__name__)
         self._is_patched = False
-        self._original_parse = None
+        self._original_init = None
         self._client_refs = []  # Keep track of patched clients for cleanup
 
     def patch(self):
         """Apply the patch to OpenAI client initialization."""
         if self._is_patched:
-            debug("[OpenAI Patch] responses.parse already patched")
+            debug("[OpenAI Patch] responses API already patched")
             return
 
         try:
@@ -50,102 +50,126 @@ class OpenAIResponsesPatcher:
                 # Call original initialization
                 original_init(client_self, *args, **kwargs)
 
-                # Patch the responses.parse method on this specific instance
-                if hasattr(client_self, 'resources') and hasattr(client_self.resources, 'responses'):
-                    responses = client_self.resources.responses
-                    if hasattr(responses, 'parse'):
-                        # Store original and apply wrapper
-                        original_parse = responses.parse
-                        responses.parse = self._create_parse_wrapper(original_parse)
+                # Patch responses API methods
+                self._patch_responses_api(client_self)
 
-                        # Track this client for cleanup
-                        self._client_refs.append((responses, original_parse))
-
-                        verbose("[OpenAI Patch] Patched responses.parse on client instance")
-
-                # Also patch the direct access if available
-                if hasattr(client_self, 'responses') and hasattr(client_self.responses, 'parse'):
-                    original_parse = client_self.responses.parse
-                    client_self.responses.parse = self._create_parse_wrapper(original_parse)
-                    self._client_refs.append((client_self.responses, original_parse))
-                    verbose("[OpenAI Patch] Patched client.responses.parse")
+                # Also patch beta.chat.completions.parse if it exists
+                self._patch_beta_api(client_self)
 
             # Replace the __init__ method
             OpenAI.__init__ = patched_init
             self._original_init = original_init
             self._is_patched = True
 
-            logger.info("[OpenAI Patch] Successfully patched OpenAI client for responses.parse")
+            logger.info("[OpenAI Patch] Successfully patched OpenAI client for responses API")
 
         except ImportError:
             logger.warning("[OpenAI Patch] OpenAI library not installed, skipping patch")
         except Exception as e:
-            logger.error(f"[OpenAI Patch] Failed to patch responses.parse: {e}")
+            logger.error(f"[OpenAI Patch] Failed to patch responses API: {e}")
 
-    def _create_parse_wrapper(self, original_method: Callable) -> Callable:
-        """Create a wrapper for the responses.parse method.
+    def _patch_responses_api(self, client):
+        """Patch the responses API methods on the client."""
+        # Check for client.resources.responses (newer structure)
+        if hasattr(client, 'resources') and hasattr(client.resources, 'responses'):
+            responses = client.resources.responses
+            self._patch_responses_object(responses, "client.resources.responses")
+
+        # Check for client.responses (direct access)
+        if hasattr(client, 'responses'):
+            responses = client.responses
+            self._patch_responses_object(responses, "client.responses")
+
+    def _patch_responses_object(self, responses, location: str):
+        """Patch methods on a responses object.
 
         Args:
-            original_method: The original parse method to wrap
+            responses: The responses object to patch
+            location: String describing where this object is (for logging)
+        """
+        methods_to_patch = {
+            'parse': 'openai.responses.parse',
+            'create': 'openai.responses.create'
+        }
+
+        for method_name, span_name in methods_to_patch.items():
+            if hasattr(responses, method_name):
+                original_method = getattr(responses, method_name)
+                wrapped_method = self._create_method_wrapper(original_method, span_name)
+                setattr(responses, method_name, wrapped_method)
+
+                # Track for cleanup
+                self._client_refs.append((responses, method_name, original_method))
+
+                verbose(f"[OpenAI Patch] Patched {location}.{method_name}")
+
+    def _patch_beta_api(self, client):
+        """Patch beta.chat.completions.parse if it exists."""
+        try:
+            if (hasattr(client, 'beta') and
+                hasattr(client.beta, 'chat') and
+                hasattr(client.beta.chat, 'completions') and
+                hasattr(client.beta.chat.completions, 'parse')):
+
+                completions = client.beta.chat.completions
+                original_parse = completions.parse
+
+                # Wrap with a slightly different span name for clarity
+                wrapped_parse = self._create_method_wrapper(
+                    original_parse,
+                    'openai.beta.chat.completions.parse'
+                )
+                completions.parse = wrapped_parse
+
+                # Track for cleanup
+                self._client_refs.append((completions, 'parse', original_parse))
+
+                verbose("[OpenAI Patch] Patched beta.chat.completions.parse")
+
+        except Exception as e:
+            debug(f"[OpenAI Patch] Could not patch beta API: {e}")
+
+    def _create_method_wrapper(self, original_method: Callable, span_name: str) -> Callable:
+        """Create a wrapper for an OpenAI API method.
+
+        Args:
+            original_method: The original method to wrap
+            span_name: Name for the OpenTelemetry span
 
         Returns:
             Wrapped method with instrumentation
         """
         @functools.wraps(original_method)
-        def wrapper(**kwargs):
+        def wrapper(*args, **kwargs):
             # Create span for tracing
             with self._tracer.start_as_current_span(
-                "openai.responses.parse",
+                span_name,
                 kind=SpanKind.CLIENT
             ) as span:
                 start_time = time.time()
 
                 try:
-                    # Extract request parameters
-                    model = kwargs.get('model', 'unknown')
-                    temperature = kwargs.get('temperature', 1.0)
-                    input_param = kwargs.get('input', [])
-                    text_format = kwargs.get('text_format')
-                    instructions = kwargs.get('instructions')
-
-                    # Convert input to messages format if needed
-                    if isinstance(input_param, str):
-                        messages = [{"role": "user", "content": input_param}]
-                    elif isinstance(input_param, list):
-                        messages = input_param
-                    else:
-                        messages = []
+                    # Extract and process request parameters
+                    request_attrs = self._extract_request_attributes(span_name, args, kwargs)
 
                     # Set span attributes
                     span.set_attribute("gen_ai.system", "openai")
-                    span.set_attribute("gen_ai.request.model", model)
-                    span.set_attribute("gen_ai.request.temperature", temperature)
-                    span.set_attribute("gen_ai.operation.name", "responses.parse")
+                    span.set_attribute("gen_ai.operation.name", span_name)
 
-                    # Add a unique marker for our instrumentation
-                    span.set_attribute("lucidic.instrumented", "responses.parse")
-                    span.set_attribute("lucidic.patch.version", "1.0")
+                    # Add our instrumentation marker
+                    span.set_attribute("lucidic.instrumented", span_name)
+                    span.set_attribute("lucidic.patch.version", "2.0")
 
-                    if text_format and hasattr(text_format, '__name__'):
-                        span.set_attribute("gen_ai.request.response_format", text_format.__name__)
-
-                    if instructions:
-                        span.set_attribute("gen_ai.request.instructions", str(instructions))
-
-                    # Always set message attributes for proper event creation
-                    for i, msg in enumerate(messages):  # Include all messages
-                        if isinstance(msg, dict):
-                            role = msg.get('role', 'user')
-                            content = msg.get('content', '')
-                            span.set_attribute(f"gen_ai.prompt.{i}.role", role)
-                            # Always include full content - EventQueue handles large messages
-                            span.set_attribute(f"gen_ai.prompt.{i}.content", str(content))
+                    # Set request attributes on span
+                    for key, value in request_attrs.items():
+                        if value is not None:
+                            span.set_attribute(key, value)
 
                     # Call the original method
-                    result = original_method(**kwargs)
+                    result = original_method(*args, **kwargs)
 
-                    # Process the response and set attributes on span
-                    self._set_response_attributes(span, result, model, messages, start_time, text_format)
+                    # Process the response
+                    self._set_response_attributes(span, result, span_name, start_time)
 
                     span.set_status(Status(StatusCode.OK))
                     return result
@@ -160,27 +184,121 @@ class OpenAIResponsesPatcher:
 
         return wrapper
 
-    def _set_response_attributes(self, span, result, model: str, messages: list, start_time: float, text_format):
+    def _extract_request_attributes(self, span_name: str, args: tuple, kwargs: dict) -> Dict[str, Any]:
+        """Extract request attributes based on the API method being called.
+
+        Args:
+            span_name: Name of the span/API method
+            args: Positional arguments
+            kwargs: Keyword arguments
+
+        Returns:
+            Dictionary of span attributes to set
+        """
+        attrs = {}
+
+        # Common attributes
+        model = kwargs.get('model', 'unknown')
+        attrs['gen_ai.request.model'] = model
+
+        temperature = kwargs.get('temperature')
+        if temperature is not None:
+            attrs['gen_ai.request.temperature'] = temperature
+
+        # Method-specific handling
+        if 'responses.parse' in span_name:
+            # Handle responses.parse format
+            input_param = kwargs.get('input', [])
+            text_format = kwargs.get('text_format')
+            instructions = kwargs.get('instructions')
+
+            # Convert input to messages format
+            if isinstance(input_param, str):
+                messages = [{"role": "user", "content": input_param}]
+            elif isinstance(input_param, list):
+                messages = input_param
+            else:
+                messages = []
+
+            if text_format and hasattr(text_format, '__name__'):
+                attrs['gen_ai.request.response_format'] = text_format.__name__
+
+            if instructions:
+                # Never truncate - EventQueue handles large messages automatically
+                attrs['gen_ai.request.instructions'] = str(instructions)
+
+        elif 'responses.create' in span_name or 'completions.parse' in span_name:
+            # Handle standard chat completion format
+            messages = kwargs.get('messages', [])
+
+            # Handle response_format for structured outputs
+            response_format = kwargs.get('response_format')
+            if response_format:
+                if hasattr(response_format, '__name__'):
+                    attrs['gen_ai.request.response_format'] = response_format.__name__
+                elif isinstance(response_format, dict):
+                    attrs['gen_ai.request.response_format'] = str(response_format)
+
+        else:
+            # Fallback: try to get messages from kwargs
+            messages = kwargs.get('messages', kwargs.get('input', []))
+            if isinstance(messages, str):
+                messages = [{"role": "user", "content": messages}]
+
+        # Always set message attributes for proper event creation
+        # The EventQueue handles large messages automatically with blob storage
+        for i, msg in enumerate(messages):
+            if isinstance(msg, dict):
+                role = msg.get('role', 'user')
+                content = msg.get('content', '')
+                attrs[f'gen_ai.prompt.{i}.role'] = role
+                # Always include full content - EventQueue handles large messages
+                attrs[f'gen_ai.prompt.{i}.content'] = str(content)
+
+        return attrs
+
+    def _set_response_attributes(self, span, result, span_name: str, start_time: float):
         """Set response attributes on the span for the exporter to use.
 
         Args:
             span: OpenTelemetry span
             result: Response from OpenAI
-            model: Model name
-            messages: Input messages
+            span_name: Name of the API method
             start_time: Request start time
-            text_format: Response format (Pydantic model)
         """
         duration = time.time() - start_time
+        span.set_attribute("lucidic.duration_seconds", duration)
 
-        # Extract output
+        # Extract output based on response structure
         output_text = None
 
-        # Handle structured output response
-        if hasattr(result, 'output_parsed'):
-            output_text = str(result.output_parsed)
+        # Handle different response formats
+        if 'responses.parse' in span_name:
+            # responses.parse format
+            if hasattr(result, 'output_parsed'):
+                output_text = str(result.output_parsed)
+            elif hasattr(result, 'parsed'):
+                output_text = str(result.parsed)
 
-            # Always set completion attributes so the exporter can extract them
+        elif 'responses.create' in span_name or 'completions.parse' in span_name:
+            # Standard chat completion format
+            if hasattr(result, 'choices') and result.choices:
+                choice = result.choices[0]
+                if hasattr(choice, 'message'):
+                    msg = choice.message
+                    if hasattr(msg, 'parsed'):
+                        # Structured output
+                        output_text = str(msg.parsed)
+                    elif hasattr(msg, 'content'):
+                        # Regular content
+                        output_text = msg.content
+                elif hasattr(choice, 'text'):
+                    # Completion format
+                    output_text = choice.text
+
+        # Set completion attributes if we have output
+        if output_text:
+            # Never truncate - EventQueue handles large messages automatically
             span.set_attribute("gen_ai.completion.0.role", "assistant")
             span.set_attribute("gen_ai.completion.0.content", output_text)
 
@@ -223,54 +341,29 @@ class OpenAIResponsesPatcher:
             if total_tokens is not None:
                 span.set_attribute("gen_ai.usage.total_tokens", total_tokens)
 
-        # Set additional metadata for the exporter
-        if text_format and hasattr(text_format, '__name__'):
-            span.set_attribute("lucidic.response_format", text_format.__name__)
-
-        # Set duration as attribute
-        span.set_attribute("lucidic.duration_seconds", duration)
-
-
-    def _should_capture_content(self) -> bool:
-        """Check if message content should be captured.
-
-        Returns:
-            True if content capture is enabled
-        """
-
-        return True # always capture content for now 
-        
-        import os
-        # check OTEL standard env var
-        otel_capture = os.getenv('OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT', 'false')
-        # check Lucidic-specific env var
-        lucidic_capture = os.getenv('LUCIDIC_CAPTURE_CONTENT', 'false')
-
-        return otel_capture.lower() == 'true' or lucidic_capture.lower() == 'true'
-
     def unpatch(self):
         """Remove the patch and restore original behavior."""
         if not self._is_patched:
             return
 
         try:
-            # restore original __init__ if we have it
-            if hasattr(self, '_original_init'):
+            # Restore original __init__ if we have it
+            if self._original_init:
                 import openai
                 from openai import OpenAI
                 OpenAI.__init__ = self._original_init
 
-            # restore original parse methods on tracked clients
-            for responses_obj, original_parse in self._client_refs:
+            # Restore original methods on tracked clients
+            for obj, method_name, original_method in self._client_refs:
                 try:
-                    responses_obj.parse = original_parse
+                    setattr(obj, method_name, original_method)
                 except:
                     pass  # Client might have been garbage collected
 
             self._client_refs.clear()
             self._is_patched = False
 
-            logger.info("[OpenAI Patch] Successfully removed responses.parse patch")
+            logger.info("[OpenAI Patch] Successfully removed responses API patch")
 
         except Exception as e:
             logger.error(f"[OpenAI Patch] Failed to unpatch: {e}")

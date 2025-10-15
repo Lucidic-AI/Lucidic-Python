@@ -100,6 +100,7 @@ def _end_session(
 ):
     """End the current session."""
     from .sdk.init import get_resources, get_session_id, get_event_queue
+    from .sdk.shutdown_manager import get_shutdown_manager
 
     # Use provided session_id or fall back to context
     if not session_id:
@@ -124,6 +125,9 @@ def _end_session(
     
     # Clear session context
     clear_active_session()
+
+    # unregister from shutdown manager
+    get_shutdown_manager().unregister_session(session_id)
 
 
 def _get_session():
