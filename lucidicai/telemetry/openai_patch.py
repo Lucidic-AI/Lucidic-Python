@@ -149,6 +149,10 @@ class OpenAIResponsesPatcher:
                 start_time = time.time()
 
                 try:
+                    # Debug log for responses.create to understand the parameters
+                    if 'responses.create' in span_name:
+                        debug(f"[OpenAI Patch] responses.create called with kwargs keys: {list(kwargs.keys())}")
+
                     # Extract and process request parameters
                     request_attrs = self._extract_request_attributes(span_name, args, kwargs)
 
@@ -164,6 +168,8 @@ class OpenAIResponsesPatcher:
                     for key, value in request_attrs.items():
                         if value is not None:
                             span.set_attribute(key, value)
+                            if 'responses.create' in span_name and ('prompt' in key or 'completion' in key):
+                                debug(f"[OpenAI Patch] Set attribute {key}: {str(value)[:100]}")
 
                     # Call the original method
                     result = original_method(*args, **kwargs)
@@ -227,7 +233,24 @@ class OpenAIResponsesPatcher:
                 # Never truncate - EventQueue handles large messages automatically
                 attrs['gen_ai.request.instructions'] = str(instructions)
 
-        elif 'responses.create' in span_name or 'completions.parse' in span_name:
+        elif 'responses.create' in span_name:
+            # Handle responses.create format - it uses 'input' not 'messages'
+            input_param = kwargs.get('input', [])
+
+            # Convert input to messages format
+            if isinstance(input_param, str):
+                messages = [{"role": "user", "content": input_param}]
+            elif isinstance(input_param, list):
+                messages = input_param
+            else:
+                messages = []
+
+            # Handle text parameter for structured outputs
+            text_format = kwargs.get('text')
+            if text_format and hasattr(text_format, '__name__'):
+                attrs['gen_ai.request.response_format'] = text_format.__name__
+
+        elif 'completions.parse' in span_name:
             # Handle standard chat completion format
             messages = kwargs.get('messages', [])
 
@@ -280,7 +303,18 @@ class OpenAIResponsesPatcher:
             elif hasattr(result, 'parsed'):
                 output_text = str(result.parsed)
 
-        elif 'responses.create' in span_name or 'completions.parse' in span_name:
+        elif 'responses.create' in span_name:
+            # responses.create returns a Response object with output_text
+            if hasattr(result, 'output_text'):
+                output_text = result.output_text
+            elif hasattr(result, 'output'):
+                output_text = result.output
+            else:
+                # Log what we actually got for debugging
+                debug(f"[OpenAI Patch] responses.create result type: {type(result)}")
+                debug(f"[OpenAI Patch] responses.create result attributes: {[attr for attr in dir(result) if not attr.startswith('_')]}")
+
+        elif 'completions.parse' in span_name:
             # Standard chat completion format
             if hasattr(result, 'choices') and result.choices:
                 choice = result.choices[0]
@@ -301,6 +335,9 @@ class OpenAIResponsesPatcher:
             # Never truncate - EventQueue handles large messages automatically
             span.set_attribute("gen_ai.completion.0.role", "assistant")
             span.set_attribute("gen_ai.completion.0.content", output_text)
+            debug(f"[OpenAI Patch] Set completion: {output_text[:100]}")
+        else:
+            debug(f"[OpenAI Patch] No output_text found for {span_name}")
 
         # Handle usage data
         if hasattr(result, 'usage'):

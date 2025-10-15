@@ -353,6 +353,11 @@ def get_resources() -> dict:
     return _sdk_state.resources
 
 
+def get_tracer_provider() -> Optional[TracerProvider]:
+    """Get the tracer provider instance."""
+    return _sdk_state.tracer_provider
+
+
 def clear_state() -> None:
     """Clear SDK state (for testing)."""
     global _sdk_state

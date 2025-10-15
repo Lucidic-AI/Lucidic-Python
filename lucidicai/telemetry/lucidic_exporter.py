@@ -46,6 +46,14 @@ class LucidicSpanExporter(SpanExporter):
 
             attributes = dict(span.attributes or {})
 
+            # Debug: Check what attributes we have for responses.create
+            if span.name == "openai.responses.create":
+                debug(f"[Telemetry] responses.create span has {len(attributes)} attributes")
+                # Check for specific attributes we're interested in
+                has_prompts = any(k.startswith('gen_ai.prompt') for k in attributes.keys())
+                has_completions = any(k.startswith('gen_ai.completion') for k in attributes.keys())
+                debug(f"[Telemetry] Has prompt attrs: {has_prompts}, Has completion attrs: {has_completions}")
+
             # Skip spans that are likely duplicates or incomplete
             # Check if this is a responses.parse span that was already handled
             if span.name == "openai.responses.create" and not attributes.get("lucidic.instrumented"):
@@ -92,6 +100,11 @@ class LucidicSpanExporter(SpanExporter):
             messages = extract_prompts(attributes) or []
             params = self._extract_params(attributes)
             output_text = extract_completions(span, attributes)
+
+            # Debug for responses.create
+            if span.name == "openai.responses.create":
+                debug(f"[Telemetry] Extracted messages: {messages}")
+                debug(f"[Telemetry] Extracted output: {output_text}")
 
             # Skip spans with no meaningful output (likely incomplete or duplicate instrumentation)
             if not output_text or output_text == "Response received":
