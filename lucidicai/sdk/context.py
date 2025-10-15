@@ -151,6 +151,27 @@ def session(**init_params) -> Iterator[None]:
             clear_thread_session()
         current_session_id.reset(token)
         try:
+            # Force flush OpenTelemetry spans before ending session
+            from .init import get_tracer_provider
+            from ..utils.logger import debug, info
+            import time
+
+            tracer_provider = get_tracer_provider()
+            if tracer_provider:
+                debug(f"[Session] Force flushing OpenTelemetry spans for session {session_id}")
+                try:
+                    # Force flush with 5 second timeout to ensure all spans are exported
+                    flush_result = tracer_provider.force_flush(timeout_millis=5000)
+                    debug(f"[Session] Tracer provider force_flush returned: {flush_result}")
+
+                    # Give a small additional delay to ensure the exporter processes everything
+                    # This is necessary because force_flush on the provider flushes the processors,
+                    # but the exporter might still be processing the spans
+                    time.sleep(0.5)
+                    debug(f"[Session] Successfully flushed spans for session {session_id}")
+                except Exception as e:
+                    debug(f"[Session] Error flushing spans: {e}")
+
             # Pass session_id explicitly to avoid context issues
             lai.end_session(session_id=session_id)
         except Exception:
@@ -184,6 +205,27 @@ async def session_async(**init_params) -> AsyncIterator[None]:
         clear_task_session()
         current_session_id.reset(token)
         try:
+            # Force flush OpenTelemetry spans before ending session
+            from .init import get_tracer_provider
+            from ..utils.logger import debug, info
+            import asyncio
+
+            tracer_provider = get_tracer_provider()
+            if tracer_provider:
+                debug(f"[Session] Force flushing OpenTelemetry spans for async session {session_id}")
+                try:
+                    # Force flush with 5 second timeout to ensure all spans are exported
+                    flush_result = tracer_provider.force_flush(timeout_millis=5000)
+                    debug(f"[Session] Tracer provider force_flush returned: {flush_result}")
+
+                    # Give a small additional delay to ensure the exporter processes everything
+                    # This is necessary because force_flush on the provider flushes the processors,
+                    # but the exporter might still be processing the spans
+                    await asyncio.sleep(0.5)
+                    debug(f"[Session] Successfully flushed spans for async session {session_id}")
+                except Exception as e:
+                    debug(f"[Session] Error flushing spans: {e}")
+
             # Pass session_id explicitly to avoid context issues in async
             lai.end_session(session_id=session_id)
         except Exception:

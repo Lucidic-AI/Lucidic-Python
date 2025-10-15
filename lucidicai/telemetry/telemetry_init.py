@@ -60,7 +60,7 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
                 from .openai_uninstrument import clean_openai_instrumentation
                 clean_openai_instrumentation()
 
-                # Add patch for responses.parse (not covered by standard instrumentation)
+                # Add patch for responses API methods (not covered by standard instrumentation)
                 import os
                 if os.getenv('LUCIDIC_DISABLE_RESPONSES_PATCH', 'false').lower() != 'true':
                     from .openai_patch import get_responses_patcher
@@ -68,9 +68,9 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
                     patcher.patch()
                     _global_instrumentors["openai_responses_patch"] = patcher
                 else:
-                    logger.info("[Telemetry] Skipping responses.parse patch (disabled via LUCIDIC_DISABLE_RESPONSES_PATCH)")
+                    logger.info("[Telemetry] Skipping responses API patch (disabled via LUCIDIC_DISABLE_RESPONSES_PATCH)")
 
-                logger.info("[Telemetry] Instrumented OpenAI (including responses.parse)")
+                logger.info("[Telemetry] Instrumented OpenAI (including responses.parse, responses.create, beta.chat.completions.parse)")
             except Exception as e:
                 logger.error(f"Failed to instrument OpenAI: {e}")
 
