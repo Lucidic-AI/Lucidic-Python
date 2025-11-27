@@ -11,7 +11,7 @@ import logging
 import threading
 from typing import List, Dict, Any, Optional, Tuple, Union
 from PIL import Image
-import requests
+import httpx
 
 logger = logging.getLogger("Lucidic")
 
@@ -299,9 +299,9 @@ class ImageUploader:
             image_obj, content_type = ImageHandler.prepare_for_upload(image_data, format)
         
         # Upload to S3
-        upload_response = requests.put(
+        upload_response = httpx.put(
             url,
-            data=image_obj.getvalue() if hasattr(image_obj, 'getvalue') else image_obj,
+            content=image_obj.getvalue() if hasattr(image_obj, 'getvalue') else image_obj,
             headers={"Content-Type": content_type}
         )
         upload_response.raise_for_status()
