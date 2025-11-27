@@ -353,6 +353,75 @@ def get_resources() -> dict:
     return _sdk_state.resources
 
 
+def set_http(http: HttpClient) -> None:
+    """Set the HTTP client instance in SDK state."""
+    global _sdk_state
+    _sdk_state.http = http
+
+
+def set_resources(resources: dict) -> None:
+    """Set API resource instances in SDK state."""
+    global _sdk_state
+    _sdk_state.resources = resources
+
+
+def ensure_http_and_resources(api_key: Optional[str] = None, agent_id: Optional[str] = None) -> dict:
+    """Ensure HTTP client and resources are initialized, creating them if needed.
+    
+    This function checks if the HTTP client and resources already exist in SDK state.
+    If not, it creates them and stores them in SDK state for reuse.
+    
+    Args:
+        api_key: API key (uses env if not provided)
+        agent_id: Agent ID (uses env if not provided)
+        
+    Returns:
+        Dictionary of API resources with 'datasets' key
+        
+    Raises:
+        APIKeyVerificationError: If API key is not available
+    """
+    global _sdk_state
+    
+    # If we already have resources with datasets, return them
+    if _sdk_state.resources and 'datasets' in _sdk_state.resources:
+        return _sdk_state.resources
+    
+    # Need to create HTTP client and resources
+    from dotenv import load_dotenv
+    import os
+    from ..core.errors import APIKeyVerificationError
+    
+    load_dotenv()
+    
+    # Get credentials
+    if api_key is None:
+        api_key = os.getenv("LUCIDIC_API_KEY", None)
+        if api_key is None:
+            raise APIKeyVerificationError(
+                "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
+            )
+    
+    if agent_id is None:
+        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
+    
+    # Create or reuse HTTP client
+    if not _sdk_state.http:
+        debug("[SDK] Creating HTTP client for standalone use")
+        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
+        _sdk_state.http = HttpClient(config)
+    
+    # Create resources if not already present
+    if not _sdk_state.resources:
+        _sdk_state.resources = {}
+    
+    if 'datasets' not in _sdk_state.resources:
+        debug("[SDK] Creating DatasetResource for standalone use")
+        _sdk_state.resources['datasets'] = DatasetResource(_sdk_state.http)
+    
+    return _sdk_state.resources
+
+
 def get_tracer_provider() -> Optional[TracerProvider]:
     """Get the tracer provider instance."""
     return _sdk_state.tracer_provider

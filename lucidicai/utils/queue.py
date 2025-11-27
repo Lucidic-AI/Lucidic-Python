@@ -9,7 +9,7 @@ import json
 import queue
 import threading
 import time
-import requests
+import httpx
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -362,7 +362,7 @@ class EventQueue:
     def _upload_blob(self, blob_url: str, data: bytes) -> None:
         """Upload compressed blob to presigned URL."""
         headers = {"Content-Type": "application/json", "Content-Encoding": "gzip"}
-        resp = requests.put(blob_url, data=data, headers=headers)
+        resp = httpx.put(blob_url, content=data, headers=headers)
         resp.raise_for_status()
 
     @staticmethod

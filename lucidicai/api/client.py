@@ -1,15 +1,13 @@
 """Pure HTTP client for Lucidic API communication.
 
-This module contains only the HTTP client logic, separated from
-session management and other concerns.
+This module contains only the HTTP client logic using httpx,
+supporting both synchronous and asynchronous operations.
 """
-import json
+import asyncio
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
+import httpx
 
 from ..core.config import SDKConfig, get_config
 from ..core.errors import APIKeyVerificationError
@@ -17,7 +15,7 @@ from ..utils.logger import debug, info, warning, error, mask_sensitive, truncate
 
 
 class HttpClient:
-    """HTTP client for API communication."""
+    """HTTP client for API communication with sync and async support."""
     
     def __init__(self, config: Optional[SDKConfig] = None):
         """Initialize the HTTP client.
@@ -28,36 +26,26 @@ class HttpClient:
         self.config = config or get_config()
         self.base_url = self.config.network.base_url
         
-        # Create session with connection pooling
-        self.session = requests.Session()
+        # Build default headers
+        self._headers = self._build_headers()
         
-        # Configure retries
-        retry_cfg = Retry(
-            total=self.config.network.max_retries,
-            backoff_factor=self.config.network.backoff_factor,
-            status_forcelist=[502, 503, 504],
-            allowed_methods=["GET", "POST", "PUT", "DELETE"],
+        # Transport configuration for connection pooling and retries
+        self._transport_kwargs = {
+            "retries": self.config.network.max_retries,
+        }
+        
+        # Connection limits for pooling
+        self._limits = httpx.Limits(
+            max_connections=self.config.network.connection_pool_maxsize,
+            max_keepalive_connections=self.config.network.connection_pool_size,
         )
         
-        # Configure adapter with connection pooling
-        adapter = HTTPAdapter(
-            max_retries=retry_cfg,
-            pool_connections=self.config.network.connection_pool_size,
-            pool_maxsize=self.config.network.connection_pool_maxsize
-        )
-        
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-        
-        # Set headers
-        self._update_headers()
-        
-        # Verify API key if configured
-        if self.config.api_key:
-            self._verify_api_key()
+        # Lazy-initialized clients
+        self._sync_client: Optional[httpx.Client] = None
+        self._async_client: Optional[httpx.AsyncClient] = None
     
-    def _update_headers(self) -> None:
-        """Update session headers with authentication."""
+    def _build_headers(self) -> Dict[str, str]:
+        """Build default headers for requests."""
         headers = {
             "User-Agent": "lucidic-sdk/2.0",
             "Content-Type": "application/json"
@@ -69,131 +57,69 @@ class HttpClient:
         if self.config.agent_id:
             headers["x-agent-id"] = self.config.agent_id
         
-        self.session.headers.update(headers)
+        return headers
     
-    def _verify_api_key(self) -> None:
-        """Verify the API key with the backend."""
-        debug("[HTTP] Verifying API key")
-        try:
-            response = self.get("verifyapikey")
-            # Backend returns 200 OK for valid key, check if we got a response
-            if response is None:
-                raise APIKeyVerificationError("No response from API")
-            info("[HTTP] API key verified successfully")
-        except APIKeyVerificationError:
-            raise
-        except requests.RequestException as e:
-            raise APIKeyVerificationError(f"Could not verify API key: {e}")
+    @property
+    def sync_client(self) -> httpx.Client:
+        """Get or create the synchronous HTTP client."""
+        if self._sync_client is None or self._sync_client.is_closed:
+            transport = httpx.HTTPTransport(**self._transport_kwargs)
+            self._sync_client = httpx.Client(
+                base_url=self.base_url,
+                headers=self._headers,
+                timeout=httpx.Timeout(self.config.network.timeout),
+                limits=self._limits,
+                transport=transport,
+            )
+        return self._sync_client
     
-    def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Make a GET request.
-        
-        Args:
-            endpoint: API endpoint (without base URL)
-            params: Query parameters
-            
-        Returns:
-            Response data as dictionary
-        """
-        return self.request("GET", endpoint, params=params)
+    @property
+    def async_client(self) -> httpx.AsyncClient:
+        """Get or create the asynchronous HTTP client."""
+        if self._async_client is None or self._async_client.is_closed:
+            transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+            self._async_client = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers=self._headers,
+                timeout=httpx.Timeout(self.config.network.timeout),
+                limits=self._limits,
+                transport=transport,
+            )
+        return self._async_client
     
-    def post(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Make a POST request.
-        
-        Args:
-            endpoint: API endpoint (without base URL)
-            data: Request body data
-            
-        Returns:
-            Response data as dictionary
-        """
-        # Add current_time to all POST requests like TypeScript SDK does
-        from datetime import datetime, timezone
+    def _add_timestamp(self, data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Add current_time to request data."""
         if data is None:
             data = {}
         data["current_time"] = datetime.now(timezone.utc).isoformat()
-        return self.request("POST", endpoint, json=data)
+        return data
     
-    def put(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Make a PUT request.
+    def _handle_response(self, response: httpx.Response) -> Dict[str, Any]:
+        """Handle HTTP response and parse JSON.
         
         Args:
-            endpoint: API endpoint (without base URL)
-            data: Request body data
-            
-        Returns:
-            Response data as dictionary
-        """
-        # Add current_time to all PUT requests like TypeScript SDK does
-        from datetime import datetime, timezone
-        if data is None:
-            data = {}
-        data["current_time"] = datetime.now(timezone.utc).isoformat()
-        return self.request("PUT", endpoint, json=data)
-    
-    def delete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Make a DELETE request.
-        
-        Args:
-            endpoint: API endpoint (without base URL)
-            params: Query parameters
-            
-        Returns:
-            Response data as dictionary
-        """
-        return self.request("DELETE", endpoint, params=params)
-    
-    def request(
-        self,
-        method: str,
-        endpoint: str,
-        params: Optional[Dict[str, Any]] = None,
-        json: Optional[Dict[str, Any]] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """Make an HTTP request.
-        
-        Args:
-            method: HTTP method
-            endpoint: API endpoint (without base URL)
-            params: Query parameters
-            json: Request body (for POST/PUT)
-            **kwargs: Additional arguments for requests
+            response: httpx Response object
             
         Returns:
             Response data as dictionary
             
         Raises:
-            requests.RequestException: On HTTP errors
+            APIKeyVerificationError: On 401 Unauthorized responses
+            httpx.HTTPStatusError: On other HTTP errors
         """
-        url = f"{self.base_url}/{endpoint}"
-        
-        # Log request details
-        debug(f"[HTTP] {method} {url}")
-        if params:
-            debug(f"[HTTP] Query params: {mask_sensitive(params)}")
-        if json:
-            debug(f"[HTTP] Request body: {truncate_data(mask_sensitive(json))}")
-        
-        response = self.session.request(
-            method=method,
-            url=url,
-            params=params,
-            json=json,
-            timeout=self.config.network.timeout,
-            **kwargs
-        )
-        
-        # Raise for HTTP errors with more detail
-        if not response.ok:
-            # Try to get error details from response
+        # Log and raise for HTTP errors
+        if not response.is_success:
             try:
                 error_data = response.json()
                 error_msg = error_data.get('detail', response.text)
-            except:
+            except Exception:
                 error_msg = response.text
             
             error(f"[HTTP] Error {response.status_code}: {error_msg}")
+            
+            # Raise specific error for authentication/authorization failures
+            if response.status_code in (401, 403):
+                raise APIKeyVerificationError(f"Authentication failed: {error_msg}")
         
         response.raise_for_status()
         
@@ -212,7 +138,220 @@ class HttpClient:
         
         return data
     
+    # ==================== Synchronous Methods ====================
+    
+    def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make a synchronous GET request.
+        
+        Args:
+            endpoint: API endpoint (without base URL)
+            params: Query parameters
+            
+        Returns:
+            Response data as dictionary
+        """
+        return self.request("GET", endpoint, params=params)
+    
+    def post(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make a synchronous POST request.
+        
+        Args:
+            endpoint: API endpoint (without base URL)
+            data: Request body data
+            
+        Returns:
+            Response data as dictionary
+        """
+        data = self._add_timestamp(data)
+        return self.request("POST", endpoint, json=data)
+    
+    def put(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make a synchronous PUT request.
+        
+        Args:
+            endpoint: API endpoint (without base URL)
+            data: Request body data
+            
+        Returns:
+            Response data as dictionary
+        """
+        data = self._add_timestamp(data)
+        return self.request("PUT", endpoint, json=data)
+    
+    def delete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make a synchronous DELETE request.
+        
+        Args:
+            endpoint: API endpoint (without base URL)
+            params: Query parameters
+            
+        Returns:
+            Response data as dictionary
+        """
+        return self.request("DELETE", endpoint, params=params)
+    
+    def request(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Make a synchronous HTTP request.
+        
+        Args:
+            method: HTTP method
+            endpoint: API endpoint (without base URL)
+            params: Query parameters
+            json: Request body (for POST/PUT)
+            **kwargs: Additional arguments for httpx
+            
+        Returns:
+            Response data as dictionary
+            
+        Raises:
+            httpx.HTTPError: On HTTP errors
+        """
+        url = f"/{endpoint}"
+        
+        # Log request details
+        debug(f"[HTTP] {method} {self.base_url}{url}")
+        if params:
+            debug(f"[HTTP] Query params: {mask_sensitive(params)}")
+        if json:
+            debug(f"[HTTP] Request body: {truncate_data(mask_sensitive(json))}")
+        
+        response = self.sync_client.request(
+            method=method,
+            url=url,
+            params=params,
+            json=json,
+            **kwargs
+        )
+        
+        return self._handle_response(response)
+    
+    # ==================== Asynchronous Methods ====================
+    
+    async def aget(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make an asynchronous GET request.
+        
+        Args:
+            endpoint: API endpoint (without base URL)
+            params: Query parameters
+            
+        Returns:
+            Response data as dictionary
+        """
+        return await self.arequest("GET", endpoint, params=params)
+    
+    async def apost(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make an asynchronous POST request.
+        
+        Args:
+            endpoint: API endpoint (without base URL)
+            data: Request body data
+            
+        Returns:
+            Response data as dictionary
+        """
+        data = self._add_timestamp(data)
+        return await self.arequest("POST", endpoint, json=data)
+    
+    async def aput(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make an asynchronous PUT request.
+        
+        Args:
+            endpoint: API endpoint (without base URL)
+            data: Request body data
+            
+        Returns:
+            Response data as dictionary
+        """
+        data = self._add_timestamp(data)
+        return await self.arequest("PUT", endpoint, json=data)
+    
+    async def adelete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make an asynchronous DELETE request.
+        
+        Args:
+            endpoint: API endpoint (without base URL)
+            params: Query parameters
+            
+        Returns:
+            Response data as dictionary
+        """
+        return await self.arequest("DELETE", endpoint, params=params)
+    
+    async def arequest(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Make an asynchronous HTTP request.
+        
+        Args:
+            method: HTTP method
+            endpoint: API endpoint (without base URL)
+            params: Query parameters
+            json: Request body (for POST/PUT)
+            **kwargs: Additional arguments for httpx
+            
+        Returns:
+            Response data as dictionary
+            
+        Raises:
+            httpx.HTTPError: On HTTP errors
+        """
+        url = f"/{endpoint}"
+        
+        # Log request details
+        debug(f"[HTTP] {method} {self.base_url}{url}")
+        if params:
+            debug(f"[HTTP] Query params: {mask_sensitive(params)}")
+        if json:
+            debug(f"[HTTP] Request body: {truncate_data(mask_sensitive(json))}")
+        
+        response = await self.async_client.request(
+            method=method,
+            url=url,
+            params=params,
+            json=json,
+            **kwargs
+        )
+        
+        return self._handle_response(response)
+    
+    # ==================== Lifecycle Methods ====================
+    
     def close(self) -> None:
-        """Close the HTTP session."""
-        if self.session:
-            self.session.close()
+        """Close the synchronous HTTP client."""
+        if self._sync_client is not None and not self._sync_client.is_closed:
+            self._sync_client.close()
+            self._sync_client = None
+    
+    async def aclose(self) -> None:
+        """Close the asynchronous HTTP client."""
+        if self._async_client is not None and not self._async_client.is_closed:
+            await self._async_client.aclose()
+            self._async_client = None
+    
+    def __enter__(self) -> "HttpClient":
+        """Context manager entry for sync client."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit for sync client."""
+        self.close()
+    
+    async def __aenter__(self) -> "HttpClient":
+        """Async context manager entry."""
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit."""
+        await self.aclose()

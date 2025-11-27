@@ -297,7 +297,7 @@ get_error_history = error_boundary.get_error_history
 clear_error_history = error_boundary.clear_error_history
 
 # Version
-__version__ = "2.1.2"
+__version__ = "2.1.3"
 
 # Apply error boundary wrapping to all SDK functions
 from .sdk.error_boundary import wrap_sdk_function

@@ -1,9 +1,5 @@
-import os
 import logging
 from typing import Optional, Dict, List, Any
-from dotenv import load_dotenv
-
-from ...core.errors import APIKeyVerificationError
 
 logger = logging.getLogger("Lucidic")
 
@@ -36,37 +32,15 @@ def get_dataset(
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
         ValueError: If dataset_id is not provided.
     """
-    load_dotenv()
-    
     # Validation
     if not dataset_id:
         raise ValueError("Dataset ID is required")
     
-    # Get credentials
-    if api_key is None:
-        api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if api_key is None:
-            raise APIKeyVerificationError(
-                "Make sure to either pass your API key into get_dataset() or set the LUCIDIC_API_KEY environment variable."
-            )
+    from ..init import ensure_http_and_resources, get_http
     
-    if agent_id is None:
-        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-        if agent_id is None:
-            raise APIKeyVerificationError(
-                "Lucidic agent ID not specified. Make sure to either pass your agent ID into get_dataset() or set the LUCIDIC_AGENT_ID environment variable."
-            )
-    
-    # Get HTTP client
-    from ..init import get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
-    
+    # Ensure HTTP client is initialized and stored in SDK state
+    ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
     http = get_http()
-    if not http:
-        # Create a new HTTP client if needed
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
     
     # Make request to get dataset
     response = http.get('getdataset', {'dataset_id': dataset_id})
@@ -126,31 +100,9 @@ def list_datasets(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        # Get credentials
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
-
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
     return resources['datasets'].list_datasets(agent_id)
 
 
@@ -179,30 +131,9 @@ def create_dataset(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
-
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
     return resources['datasets'].create_dataset(name, description, tags, suggested_flag_config, agent_id)
 
 
@@ -233,29 +164,9 @@ def update_dataset(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
 
     kwargs = {}
     if name is not None:
@@ -289,30 +200,9 @@ def delete_dataset(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
-
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
     return resources['datasets'].delete_dataset(dataset_id)
 
 
@@ -349,30 +239,9 @@ def create_dataset_item(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
-
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
     return resources['datasets'].create_item(
         dataset_id, name, input_data,
         expected_output=expected_output,
@@ -404,30 +273,9 @@ def get_dataset_item(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
-
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
     return resources['datasets'].get_item(dataset_id, item_id)
 
 
@@ -466,29 +314,9 @@ def update_dataset_item(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
 
     kwargs = {}
     if name is not None:
@@ -530,30 +358,9 @@ def delete_dataset_item(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
-
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
     return resources['datasets'].delete_item(dataset_id, item_id)
 
 
@@ -578,28 +385,7 @@ def list_dataset_item_sessions(
     Raises:
         APIKeyVerificationError: If API key or agent ID is missing or invalid.
     """
-    from ..init import get_resources, get_http
-    from ...core.config import SDKConfig
-    from ...api.client import HttpClient
+    from ..init import ensure_http_and_resources
 
-    # Get or create resources
-    resources = get_resources()
-    if not resources or 'datasets' not in resources:
-        load_dotenv()
-
-        if api_key is None:
-            api_key = os.getenv("LUCIDIC_API_KEY", None)
-            if api_key is None:
-                raise APIKeyVerificationError(
-                    "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-                )
-
-        if agent_id is None:
-            agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
-
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        http = HttpClient(config)
-        from ...api.resources.dataset import DatasetResource
-        resources = {'datasets': DatasetResource(http)}
-
+    resources = ensure_http_and_resources(api_key=api_key, agent_id=agent_id)
     return resources['datasets'].list_item_sessions(dataset_id, item_id)
