@@ -11,8 +11,6 @@ from .core.config import get_config
 
 # Import raw functions
 from .sdk.init import (
-    create_session as _create_session,
-    acreate_session as _acreate_session,
     init as _init,  # Deprecated alias
     get_session_id as _get_session_id,
     clear_state as _clear_state,
@@ -22,11 +20,22 @@ from .sdk.init import (
     get_thread_session,
 )
 
+from .sdk.session import (
+    create_session as _create_session,
+    acreate_session as _acreate_session,
+    emit_session as _emit_session,
+    end_session as _end_session,
+    aend_session as _aend_session,
+)
+
 from .sdk.event import (
     create_event as _create_event,
     acreate_event as _acreate_event,
     create_error_event as _create_error_event,
     acreate_error_event as _acreate_error_event,
+    emit_event as _emit_event,
+    emit_error_event as _emit_error_event,
+    flush as _flush,
 )
 
 # Context management exports
@@ -93,39 +102,7 @@ def _update_session(
             resources['sessions'].update_session(session_id, updates)
 
 
-def _end_session(
-    session_eval=None,
-    session_eval_reason=None,
-    is_successful=None,
-    is_successful_reason=None,
-    session_id=None  # Accept explicit session_id
-):
-    """End the current session."""
-    from .sdk.init import get_resources, get_session_id
-    from .sdk.shutdown_manager import get_shutdown_manager
-
-    # Use provided session_id or fall back to context
-    if not session_id:
-        session_id = get_session_id()
-    if not session_id:
-        return
-    
-    # End session via API
-    resources = get_resources()
-    if resources and 'sessions' in resources:
-        resources['sessions'].end_session(
-            session_id,
-            is_successful=is_successful,
-            session_eval=session_eval,
-            is_successful_reason=is_successful_reason,
-            session_eval_reason=session_eval_reason
-        )
-    
-    # Clear session context
-    clear_active_session()
-
-    # unregister from shutdown manager
-    get_shutdown_manager().unregister_session(session_id)
+# Note: _end_session is now imported from sdk.session module
 
 
 def _get_session():
@@ -169,39 +146,7 @@ async def _aupdate_session(
             await resources['sessions'].aupdate_session(session_id, updates)
 
 
-async def _aend_session(
-    session_eval=None,
-    session_eval_reason=None,
-    is_successful=None,
-    is_successful_reason=None,
-    session_id=None  # Accept explicit session_id
-):
-    """End the current session (asynchronous)."""
-    from .sdk.init import get_resources, get_session_id
-    from .sdk.shutdown_manager import get_shutdown_manager
-
-    # Use provided session_id or fall back to context
-    if not session_id:
-        session_id = get_session_id()
-    if not session_id:
-        return
-    
-    # End session via API
-    resources = get_resources()
-    if resources and 'sessions' in resources:
-        await resources['sessions'].aend_session(
-            session_id,
-            is_successful=is_successful,
-            session_eval=session_eval,
-            is_successful_reason=is_successful_reason,
-            session_eval_reason=session_eval_reason
-        )
-    
-    # Clear session context
-    clear_active_session()
-
-    # unregister from shutdown manager
-    get_shutdown_manager().unregister_session(session_id)
+# Note: _aend_session is now imported from sdk.session module
 
 
 def _create_experiment(
@@ -517,7 +462,7 @@ get_error_history = error_boundary.get_error_history
 clear_error_history = error_boundary.clear_error_history
 
 # Version
-__version__ = "2.1.3"
+__version__ = "2.2.0"
 
 # Apply error boundary wrapping to all SDK functions
 from .sdk.error_boundary import wrap_sdk_function
@@ -525,6 +470,7 @@ from .sdk.error_boundary import wrap_sdk_function
 # Wrap main SDK functions - session creation
 create_session = wrap_sdk_function(_create_session, "session")
 acreate_session = wrap_sdk_function(_acreate_session, "session")
+emit_session = wrap_sdk_function(_emit_session, "session")
 init = wrap_sdk_function(_init, "init")  # Deprecated alias
 get_session_id = wrap_sdk_function(_get_session_id, "init")
 clear_state = wrap_sdk_function(_clear_state, "init")
@@ -534,6 +480,9 @@ create_event = wrap_sdk_function(_create_event, "event")
 acreate_event = wrap_sdk_function(_acreate_event, "event")
 create_error_event = wrap_sdk_function(_create_error_event, "event")
 acreate_error_event = wrap_sdk_function(_acreate_error_event, "event")
+emit_event = wrap_sdk_function(_emit_event, "event")
+emit_error_event = wrap_sdk_function(_emit_error_event, "event")
+flush = wrap_sdk_function(_flush, "event")
 
 # Wrap session functions (sync)
 update_session = wrap_sdk_function(_update_session, "session")
@@ -586,6 +535,7 @@ alist_dataset_item_sessions = wrap_sdk_function(_alist_dataset_item_sessions, "d
 __all__ = [
     # Session functions (sync)
     'create_session',
+    'emit_session',
     'init',  # Deprecated alias for create_session
     'get_session_id',
     'clear_state',
@@ -601,6 +551,9 @@ __all__ = [
     # Event functions (sync)
     'create_event',
     'create_error_event',
+    'emit_event',
+    'emit_error_event',
+    'flush',
     
     # Event functions (async)
     'acreate_event',

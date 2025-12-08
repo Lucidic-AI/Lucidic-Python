@@ -192,6 +192,16 @@ class ShutdownManager:
         """Perform the actual shutdown of all sessions."""
         debug("[ShutdownManager] _perform_shutdown thread started")
         try:
+            # First, flush all pending background events before ending sessions
+            # This ensures telemetry from the exporter is sent
+            try:
+                debug("[ShutdownManager] Flushing pending events before session cleanup")
+                from ..sdk.event import flush
+                flush(timeout=5.0)
+                debug("[ShutdownManager] Event flush complete")
+            except Exception as e:
+                error(f"[ShutdownManager] Error flushing events: {e}")
+            
             sessions_to_end = []
             
             with self._session_lock:

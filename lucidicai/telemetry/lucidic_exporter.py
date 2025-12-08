@@ -1,11 +1,8 @@
 """Custom OpenTelemetry exporter for Lucidic (Exporter-only mode).
 
-Converts completed spans into immutable typed LLM events via acreate_event(),
-which sends events asynchronously via HTTP without blocking the exporter.
+Converts completed spans into immutable typed LLM events via emit_event(),
+which fires events in the background without blocking the exporter.
 """
-import asyncio
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from typing import Sequence, Optional, Dict, Any, List
 from datetime import datetime, timezone
 from opentelemetry.sdk.trace import ReadableSpan
@@ -13,7 +10,7 @@ from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import StatusCode
 from opentelemetry.semconv_ai import SpanAttributes
 
-from ..sdk.event import acreate_event
+from ..sdk.event import emit_event
 from ..sdk.init import get_session_id
 from ..sdk.context import current_session_id, current_parent_event_id
 from ..telemetry.utils.model_pricing import calculate_cost
@@ -24,19 +21,11 @@ from ..utils.logger import debug, info, warning, error, verbose, truncate_id
 class LucidicSpanExporter(SpanExporter):
     """Exporter that creates immutable LLM events for completed spans.
     
-    Uses a thread pool to send events asynchronously without blocking the export() call.
+    Uses emit_event() for fire-and-forget event creation without blocking.
     """
     
-    def __init__(self, max_workers: int = 5):
-        """Initialize the exporter with a thread pool for async event creation.
-        
-        Args:
-            max_workers: Maximum number of worker threads for sending events
-        """
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="LucidicExporter"
-        )
+    def __init__(self):
+        """Initialize the exporter."""
         self._shutdown = False
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
@@ -156,9 +145,8 @@ class LucidicSpanExporter(SpanExporter):
                 'parent_event_id': parent_id,
             }
             
-            # Submit async event creation to thread pool (fire and forget)
             if not self._shutdown:
-                self._executor.submit(self._send_event_async, event_data, span.name, parent_id)
+                self._send_event_async(event_data, span.name, parent_id)
             
             debug(f"[Telemetry] Queued LLM event creation for span {span.name} (session: {truncate_id(target_session_id)})")
 
@@ -182,9 +170,9 @@ class LucidicSpanExporter(SpanExporter):
                 token = None
             
             try:
-                # Run the async event creation in a new event loop
-                event_id = asyncio.run(acreate_event(**event_data))
-                debug(f"[Telemetry] Created LLM event {truncate_id(event_id)} from span {span_name}")
+                # Use emit_event for fire-and-forget
+                event_id = emit_event(**event_data)
+                debug(f"[Telemetry] Emitted LLM event {truncate_id(event_id)} from span {span_name}")
             finally:
                 # Reset parent context
                 if token:
@@ -231,11 +219,9 @@ class LucidicSpanExporter(SpanExporter):
             if images:
                 event_data['screenshots'] = images
 
-            # Fire and forget
+            # Fire and forget using emit_event
             if not self._shutdown:
-                self._executor.submit(
-                    lambda: asyncio.run(acreate_event(**event_data))
-                )
+                emit_event(**event_data)
             return None  # We don't wait for the event ID
             
         except Exception as e:
@@ -340,9 +326,11 @@ class LucidicSpanExporter(SpanExporter):
         return None
     
     def shutdown(self) -> None:
-        """Shutdown the exporter and wait for pending events."""
+        """Shutdown the exporter and flush pending events."""
+        from ..sdk.event import flush
         self._shutdown = True
-        self._executor.shutdown(wait=True, cancel_futures=False)
+        # Flush any pending background events
+        flush(timeout=5.0)
         debug("[Telemetry] LucidicSpanExporter shutdown complete")
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:

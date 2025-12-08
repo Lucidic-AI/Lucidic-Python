@@ -3,10 +3,13 @@ import asyncio
 import gzip
 import io
 import json
+import sys
+import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Union
-
+from typing import Any, Dict, Optional, Union, Set
+from weakref import WeakSet
+import traceback
 import httpx
 
 from .context import current_parent_event_id
@@ -17,6 +20,10 @@ from ..utils.logger import debug, warning, error, truncate_id
 
 # Default blob threshold (64KB)
 DEFAULT_BLOB_THRESHOLD = 65536
+
+# Track background threads and tasks for flush()
+_background_threads: Set[threading.Thread] = WeakSet()
+_background_tasks: Set[asyncio.Task] = WeakSet()
 
 
 def _compress_json(payload: Dict[str, Any]) -> bytes:
@@ -41,6 +48,11 @@ async def _upload_blob_async(blob_url: str, data: bytes) -> None:
     async with httpx.AsyncClient() as client:
         resp = await client.put(blob_url, content=data, headers=headers)
         resp.raise_for_status()
+
+
+def _track_background_task(task: asyncio.Task) -> None:
+    """Track a background task for flush()."""
+    _background_tasks.add(task)
 
 
 def _create_preview(event_type: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -245,6 +257,11 @@ async def acreate_event(
     """
     from ..sdk.init import get_resources
     
+    # Check if we're in shutdown - fall back to sync if we are
+    if sys.is_finalizing():
+        debug(f"[Event] Python is finalizing in acreate_event, falling back to sync")
+        return create_event(type, event_id, session_id, **kwargs)
+    
     config = get_config()
     blob_threshold = getattr(config, 'blob_threshold', DEFAULT_BLOB_THRESHOLD)
     
@@ -265,16 +282,34 @@ async def acreate_event(
         return client_event_id
     
     try:
-        response = await resources['events'].acreate_event(send_body)
+        # Try async first, fall back to sync if we get shutdown errors
+        try:
+            response = await resources['events'].acreate_event(send_body)
+        except RuntimeError as e:
+            if "cannot schedule new futures after interpreter shutdown" in str(e).lower():
+                debug(f"[Event] Detected shutdown in acreate_event, falling back to sync")
+                response = resources['events'].create_event(send_body)
+            else:
+                raise
         
         # Handle blob upload if needed (background task)
         if needs_blob and original_payload:
             blob_url = response.get("blob_url")
             if blob_url:
                 compressed = _compress_json(original_payload)
-                # Fire and forget - upload in background
-                asyncio.create_task(_upload_blob_async(blob_url, compressed))
-                debug(f"[Event] Blob upload started in background for event {truncate_id(client_event_id)}")
+                try:
+                    # Try to create background task
+                    task = asyncio.create_task(_upload_blob_async(blob_url, compressed))
+                    _track_background_task(task)
+                    debug(f"[Event] Blob upload started in background for event {truncate_id(client_event_id)}")
+                except RuntimeError as e:
+                    if "cannot schedule new futures" in str(e).lower() or sys.is_finalizing():
+                        # Can't create tasks, do it synchronously
+                        debug(f"[Event] Cannot create background task, uploading blob synchronously")
+                        _upload_blob_sync(blob_url, compressed)
+                        debug(f"[Event] Blob uploaded synchronously for event {truncate_id(client_event_id)}")
+                    else:
+                        raise
             else:
                 error("[Event] No blob_url received for large payload")
         
@@ -356,3 +391,223 @@ async def acreate_error_event(
         parent_event_id=parent_event_id,
         **kwargs
     )
+
+
+def emit_event(
+    type: str = "generic",
+    event_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    **kwargs
+) -> str:
+    """Fire-and-forget event creation that returns instantly.
+    
+    This function returns immediately with an event ID, while the actual
+    event creation and any blob uploads happen in a background thread.
+    Perfect for hot path telemetry where latency is critical.
+    
+    During shutdown, falls back to synchronous event creation to avoid
+    "cannot schedule new futures after interpreter shutdown" errors.
+    
+    Args:
+        type: Event type (llm_generation, function_call, error_traceback, generic)
+        event_id: Optional client event ID (will generate if not provided)
+        session_id: Optional session ID (will use context if not provided)
+        **kwargs: Event-specific fields
+        
+    Returns:
+        Event ID (client-generated or provided UUID) - returned immediately
+    """
+    from ..sdk.init import get_session_id
+    from .context import current_session_id
+    from .shutdown_manager import get_shutdown_manager
+    
+    # Pre-generate event ID for instant return
+    client_event_id = event_id or str(uuid.uuid4())
+    
+    # Capture context variables BEFORE creating the thread
+    # This preserves the context chain across thread boundaries
+    captured_parent_id = kwargs.get('parent_event_id')
+    if captured_parent_id is None:
+        try:
+            captured_parent_id = current_parent_event_id.get()
+        except Exception:
+            captured_parent_id = None
+    
+    # Capture session from context if not provided
+    if not session_id:
+        try:
+            # Try context variable first (most specific)
+            session_id = current_session_id.get()
+        except Exception:
+            pass
+        
+        # Fall back to get_session_id if still None
+        if not session_id:
+            session_id = get_session_id()
+    
+    if not session_id:
+        debug("[Event] No active session for emit_event, returning dummy event ID")
+        return client_event_id
+    
+    # Update kwargs with captured context
+    if captured_parent_id is not None:
+        kwargs['parent_event_id'] = captured_parent_id
+    
+    # Check if Python interpreter is shutting down
+    if sys.is_finalizing():
+        debug(f"[Event] Python is finalizing, using synchronous event creation for {truncate_id(client_event_id)}")
+        try:
+            return create_event(type, client_event_id, session_id, **kwargs)
+        except Exception as e:
+            error(f"[Event] Failed to create event during finalization: {e}")
+            return client_event_id
+    
+    # Check if shutdown manager thinks we're shutting down
+    try:
+        from .shutdown_manager import get_shutdown_manager
+        shutdown_manager = get_shutdown_manager()
+        if shutdown_manager.is_shutting_down:
+            debug(f"[Event] ShutdownManager indicates shutdown, using synchronous event creation for {truncate_id(client_event_id)}")
+            try:
+                return create_event(type, client_event_id, session_id, **kwargs)
+            except Exception as e:
+                error(f"[Event] Failed to create event during shutdown: {e}")
+                return client_event_id
+    except Exception:
+        pass  # ShutdownManager not available
+    
+    # Try to create and start thread - fall back to sync if it fails
+    try:
+        # Normal path: Run async function in background thread
+        def _run():
+            try:
+                # Create new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(
+                        acreate_event(type, client_event_id, session_id, **kwargs)
+                    )
+                finally:
+                    loop.close()
+            except RuntimeError as e:
+                if "cannot schedule new futures after interpreter shutdown" in str(e).lower():
+                    # Interpreter is shutting down, can't use async
+                    debug(f"[Event] Detected interpreter shutdown in thread, falling back to sync")
+                    create_event(type, client_event_id, session_id, **kwargs)
+                else:
+                    error(f"[Event] Background emit failed for {truncate_id(client_event_id)}: {e}")
+            except Exception as e:
+                error(f"[Event] Background emit failed for {truncate_id(client_event_id)}: {e}")
+        
+        thread = threading.Thread(target=_run, daemon=True, name=f"emit-{truncate_id(client_event_id)}")
+        _background_threads.add(thread)
+        thread.start()
+    except (RuntimeError, SystemError) as e:
+        # Can't create threads during shutdown
+        debug(f"[Event] Cannot create thread (likely shutdown): {e}. Using synchronous fallback.")
+        try:
+            return create_event(type, client_event_id, session_id, **kwargs)
+        except Exception as e2:
+            error(f"[Event] Synchronous fallback also failed: {e2}")
+            return client_event_id
+    
+    debug(f"[Event] Emitted {type} event {truncate_id(client_event_id)} (fire-and-forget)")
+    return client_event_id
+
+
+def emit_error_event(
+    error: Union[str, Exception],
+    parent_event_id: Optional[str] = None,
+    **kwargs
+) -> str:
+    """Fire-and-forget error event creation that returns instantly.
+    
+    This is a convenience function for creating error events with proper
+    traceback information, returning immediately while processing happens
+    in the background.
+    
+    Args:
+        error: The error message or exception object
+        parent_event_id: Optional parent event ID for nesting
+        **kwargs: Additional event parameters
+        
+    Returns:
+        Event ID of the created error event - returned immediately
+    """
+    import traceback
+    
+    if isinstance(error, Exception):
+        error_str = str(error)
+        traceback_str = traceback.format_exc()
+    else:
+        error_str = str(error)
+        traceback_str = kwargs.pop('traceback', '')
+    
+    # Note: emit_event already handles context capture for both
+    # parent_event_id and session_id, so we just pass through
+    return emit_event(
+        type="error_traceback",
+        error=error_str,
+        traceback=traceback_str,
+        parent_event_id=parent_event_id,
+        **kwargs
+    )
+
+
+def flush(timeout: float = 5.0) -> None:
+    """Wait for all background operations to complete.
+    
+    This includes:
+    - Event creation HTTP requests
+    - S3 blob uploads for large payloads
+    - Session creation requests
+    - Any other background telemetry operations
+    
+    Useful before program exit or when you need to ensure all telemetry
+    has been sent.
+    
+    Args:
+        timeout: Maximum time to wait in seconds (default: 5.0)
+    """
+    import time
+    
+    start_time = time.time()
+    
+    # Flush sessions first
+    from .session import flush_sessions as _flush_sessions
+    remaining = timeout - (time.time() - start_time)
+    if remaining > 0:
+        _flush_sessions(timeout=remaining)
+    
+    # Wait for event background threads
+    threads = list(_background_threads)
+    for thread in threads:
+        if thread.is_alive():
+            remaining = timeout - (time.time() - start_time)
+            if remaining > 0:
+                thread.join(timeout=remaining)
+                if thread.is_alive():
+                    warning(f"[SDK] Thread {thread.name} did not complete within timeout")
+    
+    # Wait for async tasks if in async context
+    try:
+        loop = asyncio.get_running_loop()
+        tasks = [t for t in _background_tasks if not t.done()]
+        if tasks:
+            remaining = timeout - (time.time() - start_time)
+            if remaining > 0:
+                try:
+                    loop.run_until_complete(
+                        asyncio.wait_for(
+                            asyncio.gather(*tasks, return_exceptions=True),
+                            timeout=remaining
+                        )
+                    )
+                except asyncio.TimeoutError:
+                    warning(f"[SDK] {len(tasks)} async tasks did not complete within timeout")
+    except RuntimeError:
+        # Not in async context, skip async task flushing
+        pass
+    
+    debug(f"[SDK] Flush completed in {time.time() - start_time:.2f}s")
