@@ -13,10 +13,8 @@ from ..api.resources.event import EventResource
 from ..api.resources.session import SessionResource
 from ..api.resources.dataset import DatasetResource
 from ..core.config import SDKConfig, get_config, set_config
-from ..utils.queue import EventQueue
 from ..utils.logger import debug, info, warning, error, truncate_id
 from .context import set_active_session, current_session_id
-from .error_boundary import register_cleanup_handler
 from .shutdown_manager import get_shutdown_manager, SessionState
 from ..telemetry.telemetry_init import instrument_providers
 from opentelemetry.sdk.trace import TracerProvider
@@ -27,7 +25,6 @@ class SDKState:
 
     def __init__(self):
         self.http: Optional[HttpClient] = None
-        self.event_queue: Optional[EventQueue] = None
         self.session_id: Optional[str] = None
         self.tracer_provider: Optional[TracerProvider] = None
         self.resources = {}
@@ -50,13 +47,10 @@ class SDKState:
             except Exception as e:
                 error(f"[SDK] Error shutting down TracerProvider: {e}")
 
-        if self.event_queue:
-            self.event_queue.shutdown()
         if self.http:
             self.http.close()
 
         self.http = None
-        self.event_queue = None
         self.session_id = None
         self.tracer_provider = None
         self.resources = {}
@@ -70,6 +64,274 @@ class SDKState:
 _sdk_state = SDKState()
 
 
+def _prepare_session_config(
+    api_key: Optional[str],
+    agent_id: Optional[str],
+    providers: Optional[List[str]],
+    production_monitoring: bool,
+    auto_end: bool,
+    capture_uncaught: bool,
+) -> SDKConfig:
+    """Prepare and validate SDK configuration.
+    
+    Returns:
+        Validated SDKConfig instance
+    """
+    config = SDKConfig.from_env(
+        api_key=api_key,
+        agent_id=agent_id,
+        auto_end=auto_end,
+        production_monitoring=production_monitoring
+    )
+    
+    if providers:
+        config.telemetry.providers = providers
+    
+    config.error_handling.capture_uncaught = capture_uncaught
+    
+    # Validate configuration
+    errors = config.validate()
+    if errors:
+        raise ValueError(f"Invalid configuration: {', '.join(errors)}")
+    
+    return config
+
+
+def _ensure_http_and_resources_initialized(config: SDKConfig) -> None:
+    """Ensure HTTP client and resources are initialized."""
+    global _sdk_state
+    
+    # Initialize HTTP client
+    if not _sdk_state.http:
+        debug("[SDK] Initializing HTTP client")
+        _sdk_state.http = HttpClient(config)
+    
+    # Initialize resources
+    if not _sdk_state.resources:
+        _sdk_state.resources = {
+            'events': EventResource(_sdk_state.http),
+            'sessions': SessionResource(_sdk_state.http),
+            'datasets': DatasetResource(_sdk_state.http)
+        }
+
+
+def _build_session_params(
+    session_id: Optional[str],
+    session_name: Optional[str],
+    agent_id: str,
+    task: Optional[str],
+    tags: Optional[List],
+    experiment_id: Optional[str],
+    datasetitem_id: Optional[str],
+    evaluators: Optional[List],
+    production_monitoring: bool,
+) -> tuple[str, dict]:
+    """Build session parameters for API call.
+    
+    Returns:
+        Tuple of (real_session_id, session_params)
+    """
+    # Create or retrieve session
+    if session_id:
+        real_session_id = session_id
+    else:
+        real_session_id = str(uuid.uuid4())
+    
+    # Create session via API - only send non-None values
+    session_params = {
+        'session_id': real_session_id,
+        'session_name': session_name or 'Unnamed Session',
+        'agent_id': agent_id,
+    }
+    
+    # Only add optional fields if they have values
+    if task:
+        session_params['task'] = task
+    if tags:
+        session_params['tags'] = tags
+    if experiment_id:
+        session_params['experiment_id'] = experiment_id
+    if datasetitem_id:
+        session_params['datasetitem_id'] = datasetitem_id
+    if evaluators:
+        session_params['evaluators'] = evaluators
+    if production_monitoring:
+        session_params['production_monitoring'] = production_monitoring
+    
+    return real_session_id, session_params
+
+
+def _finalize_session(
+    real_session_id: str,
+    session_name: Optional[str],
+    auto_end: bool,
+    providers: Optional[List[str]],
+) -> str:
+    """Finalize session setup after API call."""
+    global _sdk_state
+    
+    _sdk_state.session_id = real_session_id
+    
+    info(f"[SDK] Session created: {truncate_id(real_session_id)} (name: {session_name or 'Unnamed Session'})")
+    
+    # Set active session in context
+    set_active_session(real_session_id)
+    
+    # Register session with shutdown manager
+    debug(f"[SDK] Registering session with shutdown manager (auto_end={auto_end})")
+    shutdown_manager = get_shutdown_manager()
+    session_state = SessionState(
+        session_id=real_session_id,
+        http_client=_sdk_state.resources,
+        auto_end=auto_end
+    )
+    shutdown_manager.register_session(real_session_id, session_state)
+    
+    # Initialize telemetry if providers specified
+    if providers:
+        debug(f"[SDK] Initializing telemetry for providers: {providers}")
+        _initialize_telemetry(providers)
+    
+    return real_session_id
+
+
+def create_session(
+    session_name: Optional[str] = None,
+    session_id: Optional[str] = None,
+    api_key: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    task: Optional[str] = None,
+    providers: Optional[List[str]] = None,
+    production_monitoring: bool = False,
+    experiment_id: Optional[str] = None,
+    evaluators: Optional[List] = None,
+    tags: Optional[List] = None,
+    datasetitem_id: Optional[str] = None,
+    masking_function: Optional[callable] = None,
+    auto_end: bool = True,
+    capture_uncaught: bool = True,
+) -> str:
+    """Create a new Lucidic session (synchronous).
+    
+    Args:
+        session_name: Name for the session
+        session_id: Custom session ID (optional)
+        api_key: API key (uses env if not provided)
+        agent_id: Agent ID (uses env if not provided)
+        task: Task description
+        providers: List of telemetry providers to instrument
+        production_monitoring: Enable production monitoring
+        experiment_id: Experiment ID to associate with session
+        evaluators: Evaluators to use
+        tags: Session tags
+        datasetitem_id: Dataset item ID
+        masking_function: Function to mask sensitive data
+        auto_end: Automatically end session on exit
+        capture_uncaught: Capture uncaught exceptions
+        
+    Returns:
+        Session ID
+        
+    Raises:
+        APIKeyVerificationError: If API credentials are invalid
+    """
+    global _sdk_state
+    
+    # Prepare configuration
+    config = _prepare_session_config(
+        api_key, agent_id, providers, production_monitoring, auto_end, capture_uncaught
+    )
+    set_config(config)
+    
+    # Ensure HTTP client and resources are initialized
+    _ensure_http_and_resources_initialized(config)
+    
+    # Build session parameters
+    real_session_id, session_params = _build_session_params(
+        session_id, session_name, config.agent_id, task, tags,
+        experiment_id, datasetitem_id, evaluators, production_monitoring
+    )
+    
+    # Create session via API (synchronous)
+    debug(f"[SDK] Creating session with params: {session_params}")
+    session_resource = _sdk_state.resources['sessions']
+    session_data = session_resource.create_session(session_params)
+    
+    # Use the session_id returned by the backend
+    real_session_id = session_data.get('session_id', real_session_id)
+    
+    return _finalize_session(real_session_id, session_name, auto_end, providers)
+
+
+async def acreate_session(
+    session_name: Optional[str] = None,
+    session_id: Optional[str] = None,
+    api_key: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    task: Optional[str] = None,
+    providers: Optional[List[str]] = None,
+    production_monitoring: bool = False,
+    experiment_id: Optional[str] = None,
+    evaluators: Optional[List] = None,
+    tags: Optional[List] = None,
+    datasetitem_id: Optional[str] = None,
+    masking_function: Optional[callable] = None,
+    auto_end: bool = True,
+    capture_uncaught: bool = True,
+) -> str:
+    """Create a new Lucidic session (asynchronous).
+    
+    Args:
+        session_name: Name for the session
+        session_id: Custom session ID (optional)
+        api_key: API key (uses env if not provided)
+        agent_id: Agent ID (uses env if not provided)
+        task: Task description
+        providers: List of telemetry providers to instrument
+        production_monitoring: Enable production monitoring
+        experiment_id: Experiment ID to associate with session
+        evaluators: Evaluators to use
+        tags: Session tags
+        datasetitem_id: Dataset item ID
+        masking_function: Function to mask sensitive data
+        auto_end: Automatically end session on exit
+        capture_uncaught: Capture uncaught exceptions
+        
+    Returns:
+        Session ID
+        
+    Raises:
+        APIKeyVerificationError: If API credentials are invalid
+    """
+    global _sdk_state
+    
+    # Prepare configuration
+    config = _prepare_session_config(
+        api_key, agent_id, providers, production_monitoring, auto_end, capture_uncaught
+    )
+    set_config(config)
+    
+    # Ensure HTTP client and resources are initialized
+    _ensure_http_and_resources_initialized(config)
+    
+    # Build session parameters
+    real_session_id, session_params = _build_session_params(
+        session_id, session_name, config.agent_id, task, tags,
+        experiment_id, datasetitem_id, evaluators, production_monitoring
+    )
+    
+    # Create session via API (asynchronous)
+    debug(f"[SDK] Creating session with params: {session_params}")
+    session_resource = _sdk_state.resources['sessions']
+    session_data = await session_resource.acreate_session(session_params)
+    
+    # Use the session_id returned by the backend
+    real_session_id = session_data.get('session_id', real_session_id)
+    
+    return _finalize_session(real_session_id, session_name, auto_end, providers)
+
+
+# Deprecated alias for backwards compatibility
 def init(
     session_name: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -88,6 +350,9 @@ def init(
 ) -> str:
     """Initialize the Lucidic SDK.
     
+    .. deprecated::
+        Use :func:`create_session` instead. This function will be removed in a future version.
+    
     Args:
         session_name: Name for the session
         session_id: Custom session ID (optional)
@@ -97,7 +362,7 @@ def init(
         providers: List of telemetry providers to instrument
         production_monitoring: Enable production monitoring
         experiment_id: Experiment ID to associate with session
-        evaluators: Ealuators to use
+        evaluators: Evaluators to use
         tags: Session tags
         datasetitem_id: Dataset item ID
         masking_function: Function to mask sensitive data
@@ -110,116 +375,29 @@ def init(
     Raises:
         APIKeyVerificationError: If API credentials are invalid
     """
-    global _sdk_state
-    
-    # Create or update configuration
-    config = SDKConfig.from_env(
+    import warnings
+    warnings.warn(
+        "init() is deprecated and will be removed in a future version. "
+        "Use create_session() instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return create_session(
+        session_name=session_name,
+        session_id=session_id,
         api_key=api_key,
         agent_id=agent_id,
+        task=task,
+        providers=providers,
+        production_monitoring=production_monitoring,
+        experiment_id=experiment_id,
+        evaluators=evaluators,
+        tags=tags,
+        datasetitem_id=datasetitem_id,
+        masking_function=masking_function,
         auto_end=auto_end,
-        production_monitoring=production_monitoring
+        capture_uncaught=capture_uncaught,
     )
-    
-    if providers:
-        config.telemetry.providers = providers
-    
-    config.error_handling.capture_uncaught = capture_uncaught
-    
-    # Validate configuration
-    errors = config.validate()
-    if errors:
-        raise ValueError(f"Invalid configuration: {', '.join(errors)}")
-    
-    # Set global config
-    set_config(config)
-    
-    # Initialize HTTP client
-    if not _sdk_state.http:
-        debug("[SDK] Initializing HTTP client")
-        _sdk_state.http = HttpClient(config)
-    
-    # Initialize resources
-    if not _sdk_state.resources:
-        _sdk_state.resources = {
-            'events': EventResource(_sdk_state.http),
-            'sessions': SessionResource(_sdk_state.http),
-            'datasets': DatasetResource(_sdk_state.http)
-        }
-    
-    # Initialize event queue
-    if not _sdk_state.event_queue:
-        debug("[SDK] Initializing event queue")
-        # Create a mock client object for backward compatibility
-        # The queue needs a client with make_request method
-        class ClientAdapter:
-            def make_request(self, endpoint, method, data):
-                return _sdk_state.http.request(method, endpoint, json=data)
-        
-        _sdk_state.event_queue = EventQueue(ClientAdapter())
-        
-        # Register cleanup handler
-        register_cleanup_handler(lambda: _sdk_state.event_queue.force_flush())
-        debug("[SDK] Event queue initialized and cleanup handler registered")
-    
-    # Create or retrieve session
-    if session_id:
-        # Use provided session ID
-        real_session_id = session_id
-    else:
-        # Create new session
-        real_session_id = str(uuid.uuid4())
-    
-    # Create session via API - only send non-None values
-    session_params = {
-        'session_id': real_session_id,
-        'session_name': session_name or 'Unnamed Session',
-        'agent_id': config.agent_id,
-    }
-    
-    # Only add optional fields if they have values
-    if task:
-        session_params['task'] = task
-    if tags:
-        session_params['tags'] = tags
-    if experiment_id:
-        session_params['experiment_id'] = experiment_id
-    if datasetitem_id:
-        session_params['datasetitem_id'] = datasetitem_id
-    if evaluators:
-        session_params['evaluators'] = evaluators
-    if production_monitoring:
-        session_params['production_monitoring'] = production_monitoring
-    
-    debug(f"[SDK] Creating session with params: {session_params}")
-    session_resource = _sdk_state.resources['sessions']
-    session_data = session_resource.create_session(session_params)
-    
-    # Use the session_id returned by the backend
-    real_session_id = session_data.get('session_id', real_session_id)
-    _sdk_state.session_id = real_session_id
-    
-    info(f"[SDK] Session created: {truncate_id(real_session_id)} (name: {session_name or 'Unnamed Session'})")
-    
-    # Set active session in context
-    set_active_session(real_session_id)
-    
-    # Register session with shutdown manager
-    debug(f"[SDK] Registering session with shutdown manager (auto_end={auto_end})")
-    shutdown_manager = get_shutdown_manager()
-    session_state = SessionState(
-        session_id=real_session_id,
-        http_client=_sdk_state.resources,  # Pass resources dict which has sessions
-        event_queue=_sdk_state.event_queue,
-        auto_end=auto_end
-    )
-    shutdown_manager.register_session(real_session_id, session_state)
-    
-    # Initialize telemetry if providers specified
-    if providers:
-        debug(f"[SDK] Initializing telemetry for providers: {providers}")
-        _initialize_telemetry(providers)
-    
-    return real_session_id
 
 
 def _initialize_telemetry(providers: List[str]) -> None:
@@ -343,11 +521,6 @@ def get_http() -> Optional[HttpClient]:
     return _sdk_state.http
 
 
-def get_event_queue() -> Optional[EventQueue]:
-    """Get the event queue instance."""
-    return _sdk_state.event_queue
-
-
 def get_resources() -> dict:
     """Get API resource instances."""
     return _sdk_state.resources
@@ -365,8 +538,61 @@ def set_resources(resources: dict) -> None:
     _sdk_state.resources = resources
 
 
+def _get_credentials(api_key: Optional[str], agent_id: Optional[str]) -> tuple[str, Optional[str]]:
+    """Get API credentials from arguments or environment.
+    
+    Returns:
+        Tuple of (api_key, agent_id)
+        
+    Raises:
+        APIKeyVerificationError: If API key is not available
+    """
+    from dotenv import load_dotenv
+    import os
+    from ..core.errors import APIKeyVerificationError
+    
+    load_dotenv()
+    
+    if api_key is None:
+        api_key = os.getenv("LUCIDIC_API_KEY", None)
+        if api_key is None:
+            raise APIKeyVerificationError(
+                "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
+            )
+    
+    if agent_id is None:
+        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
+    
+    return api_key, agent_id
+
+
+def _init_http_and_resources(api_key: str, agent_id: Optional[str]) -> dict:
+    """Initialize HTTP client and resources.
+    
+    Returns:
+        Dictionary of API resources
+    """
+    global _sdk_state
+    
+    # Create or reuse HTTP client
+    if not _sdk_state.http:
+        debug("[SDK] Creating HTTP client for standalone use")
+        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
+        _sdk_state.http = HttpClient(config)
+    
+    # Create resources if not already present
+    if not _sdk_state.resources:
+        _sdk_state.resources = {}
+    
+    if 'datasets' not in _sdk_state.resources:
+        debug("[SDK] Creating DatasetResource for standalone use")
+        _sdk_state.resources['datasets'] = DatasetResource(_sdk_state.http)
+    
+    return _sdk_state.resources
+
+
 def ensure_http_and_resources(api_key: Optional[str] = None, agent_id: Optional[str] = None) -> dict:
-    """Ensure HTTP client and resources are initialized, creating them if needed.
+    """Ensure HTTP client and resources are initialized, creating them if needed (synchronous).
     
     This function checks if the HTTP client and resources already exist in SDK state.
     If not, it creates them and stores them in SDK state for reuse.
@@ -387,39 +613,38 @@ def ensure_http_and_resources(api_key: Optional[str] = None, agent_id: Optional[
     if _sdk_state.resources and 'datasets' in _sdk_state.resources:
         return _sdk_state.resources
     
-    # Need to create HTTP client and resources
-    from dotenv import load_dotenv
-    import os
-    from ..core.errors import APIKeyVerificationError
+    api_key, agent_id = _get_credentials(api_key, agent_id)
+    return _init_http_and_resources(api_key, agent_id)
+
+
+async def aensure_http_and_resources(api_key: Optional[str] = None, agent_id: Optional[str] = None) -> dict:
+    """Ensure HTTP client and resources are initialized, creating them if needed (asynchronous).
     
-    load_dotenv()
+    This function checks if the HTTP client and resources already exist in SDK state.
+    If not, it creates them and stores them in SDK state for reuse.
     
-    # Get credentials
-    if api_key is None:
-        api_key = os.getenv("LUCIDIC_API_KEY", None)
-        if api_key is None:
-            raise APIKeyVerificationError(
-                "Make sure to either pass your API key or set the LUCIDIC_API_KEY environment variable."
-            )
+    Note: This async version shares the same initialization logic as the sync version
+    since the HTTP client and resources creation is synchronous. The async version
+    exists to maintain consistent API patterns in async contexts.
     
-    if agent_id is None:
-        agent_id = os.getenv("LUCIDIC_AGENT_ID", None)
+    Args:
+        api_key: API key (uses env if not provided)
+        agent_id: Agent ID (uses env if not provided)
+        
+    Returns:
+        Dictionary of API resources with 'datasets' key
+        
+    Raises:
+        APIKeyVerificationError: If API key is not available
+    """
+    global _sdk_state
     
-    # Create or reuse HTTP client
-    if not _sdk_state.http:
-        debug("[SDK] Creating HTTP client for standalone use")
-        config = SDKConfig.from_env(api_key=api_key, agent_id=agent_id)
-        _sdk_state.http = HttpClient(config)
+    # If we already have resources with datasets, return them
+    if _sdk_state.resources and 'datasets' in _sdk_state.resources:
+        return _sdk_state.resources
     
-    # Create resources if not already present
-    if not _sdk_state.resources:
-        _sdk_state.resources = {}
-    
-    if 'datasets' not in _sdk_state.resources:
-        debug("[SDK] Creating DatasetResource for standalone use")
-        _sdk_state.resources['datasets'] = DatasetResource(_sdk_state.http)
-    
-    return _sdk_state.resources
+    api_key, agent_id = _get_credentials(api_key, agent_id)
+    return _init_http_and_resources(api_key, agent_id)
 
 
 def get_tracer_provider() -> Optional[TracerProvider]:

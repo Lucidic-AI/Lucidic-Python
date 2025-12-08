@@ -230,7 +230,7 @@ class OpenAIResponsesPatcher:
                 attrs['gen_ai.request.response_format'] = text_format.__name__
 
             if instructions:
-                # Never truncate - EventQueue handles large messages automatically
+                # Never truncate - large payloads are handled via blob storage
                 attrs['gen_ai.request.instructions'] = str(instructions)
 
         elif 'responses.create' in span_name:
@@ -269,13 +269,13 @@ class OpenAIResponsesPatcher:
                 messages = [{"role": "user", "content": messages}]
 
         # Always set message attributes for proper event creation
-        # The EventQueue handles large messages automatically with blob storage
+        # Large payloads are handled via blob storage
         for i, msg in enumerate(messages):
             if isinstance(msg, dict):
                 role = msg.get('role', 'user')
                 content = msg.get('content', '')
                 attrs[f'gen_ai.prompt.{i}.role'] = role
-                # Always include full content - EventQueue handles large messages
+                # Always include full content - large payloads use blob storage
                 attrs[f'gen_ai.prompt.{i}.content'] = str(content)
 
         return attrs
@@ -332,7 +332,7 @@ class OpenAIResponsesPatcher:
 
         # Set completion attributes if we have output
         if output_text:
-            # Never truncate - EventQueue handles large messages automatically
+            # Never truncate - large payloads are handled via blob storage
             span.set_attribute("gen_ai.completion.0.role", "assistant")
             span.set_attribute("gen_ai.completion.0.content", output_text)
             debug(f"[OpenAI Patch] Set completion: {output_text[:100]}")

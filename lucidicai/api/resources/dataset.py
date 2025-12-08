@@ -190,3 +190,181 @@ class DatasetResource:
             "dataset_id": dataset_id,
             "datasetitem_id": item_id
         })
+
+    # ==================== Asynchronous Methods ====================
+
+    async def alist_datasets(self, agent_id=None):
+        """List all datasets for agent (asynchronous).
+
+        Args:
+            agent_id: Optional agent ID to filter by
+
+        Returns:
+            Dictionary with num_datasets and datasets list
+        """
+        params = {}
+        if agent_id:
+            params["agent_id"] = agent_id
+        return await self.http.aget("sdk/datasets", params)
+
+    async def acreate_dataset(self, name, description=None, tags=None,
+                              suggested_flag_config=None, agent_id=None):
+        """Create new dataset (asynchronous).
+
+        Args:
+            name: Dataset name (must be unique per agent)
+            description: Optional description
+            tags: Optional list of tags
+            suggested_flag_config: Optional flag configuration
+            agent_id: Optional agent ID
+
+        Returns:
+            Dictionary with dataset_id
+        """
+        data = {"name": name}
+        if description is not None:
+            data["description"] = description
+        if tags is not None:
+            data["tags"] = tags
+        if suggested_flag_config is not None:
+            data["suggested_flag_config"] = suggested_flag_config
+        if agent_id is not None:
+            data["agent_id"] = agent_id
+        return await self.http.apost("sdk/datasets/create", data)
+
+    async def aget_dataset(self, dataset_id):
+        """Get dataset with all items (asynchronous).
+
+        Args:
+            dataset_id: Dataset UUID
+
+        Returns:
+            Full dataset data including all items
+        """
+        return await self.http.aget("getdataset", {"dataset_id": dataset_id})
+
+    async def aupdate_dataset(self, dataset_id, **kwargs):
+        """Update dataset metadata (asynchronous).
+
+        Args:
+            dataset_id: Dataset UUID
+            **kwargs: Fields to update (name, description, tags, suggested_flag_config)
+
+        Returns:
+            Updated dataset data
+        """
+        data = {"dataset_id": dataset_id}
+        data.update(kwargs)
+        return await self.http.aput("sdk/datasets/update", data)
+
+    async def adelete_dataset(self, dataset_id):
+        """Delete dataset and all items (asynchronous).
+
+        Args:
+            dataset_id: Dataset UUID
+
+        Returns:
+            Success message
+        """
+        return await self.http.adelete("sdk/datasets/delete", {"dataset_id": dataset_id})
+
+    async def acreate_item(self, dataset_id, name, input_data,
+                           expected_output=None, description=None,
+                           tags=None, metadata=None, flag_overrides=None):
+        """Create dataset item (asynchronous).
+
+        Args:
+            dataset_id: Dataset UUID
+            name: Item name
+            input_data: Input data dictionary
+            expected_output: Optional expected output
+            description: Optional description
+            tags: Optional list of tags
+            metadata: Optional metadata dictionary
+            flag_overrides: Optional flag overrides
+
+        Returns:
+            Dictionary with datasetitem_id
+        """
+        data = {
+            "dataset_id": dataset_id,
+            "name": name,
+            "input": input_data
+        }
+
+        # Add optional fields if provided
+        if expected_output is not None:
+            data["expected_output"] = expected_output
+        if description is not None:
+            data["description"] = description
+        if tags is not None:
+            data["tags"] = tags
+        if metadata is not None:
+            data["metadata"] = metadata
+        if flag_overrides is not None:
+            data["flag_overrides"] = flag_overrides
+
+        return await self.http.apost("sdk/datasets/items/create", data)
+
+    async def aget_item(self, dataset_id, item_id):
+        """Get specific dataset item (asynchronous).
+
+        Args:
+            dataset_id: Dataset UUID
+            item_id: Item UUID
+
+        Returns:
+            Dataset item data
+        """
+        return await self.http.aget("sdk/datasets/items/get", {
+            "dataset_id": dataset_id,
+            "datasetitem_id": item_id
+        })
+
+    async def aupdate_item(self, dataset_id, item_id, **kwargs):
+        """Update dataset item (asynchronous).
+
+        Args:
+            dataset_id: Dataset UUID
+            item_id: Item UUID
+            **kwargs: Fields to update
+
+        Returns:
+            Updated item data
+        """
+        data = {
+            "dataset_id": dataset_id,
+            "datasetitem_id": item_id
+        }
+        data.update(kwargs)
+        return await self.http.aput("sdk/datasets/items/update", data)
+
+    async def adelete_item(self, dataset_id, item_id):
+        """Delete dataset item (asynchronous).
+
+        Args:
+            dataset_id: Dataset UUID
+            item_id: Item UUID
+
+        Returns:
+            Success message
+        """
+        return await self.http.adelete("sdk/datasets/items/delete", {
+            "dataset_id": dataset_id,
+            "datasetitem_id": item_id
+        })
+
+    async def alist_item_sessions(self, dataset_id, item_id):
+        """List all sessions for a dataset item (asynchronous).
+
+        Args:
+            dataset_id: Dataset UUID
+            item_id: Item UUID
+
+        Returns:
+            Dictionary with num_sessions and sessions list
+        """
+        return await self.http.aget("sdk/datasets/items/sessions", {
+            "dataset_id": dataset_id,
+            "datasetitem_id": item_id
+        })

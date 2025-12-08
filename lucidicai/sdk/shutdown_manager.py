@@ -19,7 +19,6 @@ class SessionState:
     """State information for an active session."""
     session_id: str
     http_client: Optional[object] = None
-    event_queue: Optional[object] = None
     is_shutting_down: bool = False
     auto_end: bool = True
 
@@ -244,7 +243,7 @@ class ShutdownManager:
             session_id: Session identifier
             state: Session state
         """
-        # Flush OpenTelemetry spans first (before event queue)
+        # Flush OpenTelemetry spans first
         try:
             # Get the global tracer provider if it exists
             from ..sdk.init import _sdk_state
@@ -257,11 +256,6 @@ class ShutdownManager:
                     error(f"[ShutdownManager] Error flushing spans: {e}")
         except ImportError:
             pass  # SDK not initialized
-        
-        # Skip event queue flush during shutdown to avoid hanging
-        # The queue worker is a daemon thread and will flush on its own
-        if state.event_queue:
-            debug(f"[ShutdownManager] Skipping event queue flush during shutdown for session {truncate_id(session_id)}")
         
         # end session via API if http client present
         if state.http_client and session_id:

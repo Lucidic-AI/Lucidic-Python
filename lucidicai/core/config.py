@@ -41,31 +41,6 @@ class NetworkConfig:
 
 
 @dataclass
-class EventQueueConfig:
-    """Event queue processing settings"""
-    max_queue_size: int = 100000
-    flush_interval_ms: int = 100
-    flush_at_count: int = 100
-    blob_threshold: int = 65536
-    daemon_mode: bool = True
-    max_parallel_workers: int = 10
-    retry_failed: bool = True
-    
-    @classmethod
-    def from_env(cls) -> 'EventQueueConfig':
-        """Load event queue configuration from environment variables"""
-        return cls(
-            max_queue_size=int(os.getenv("LUCIDIC_MAX_QUEUE_SIZE", "100000")),
-            flush_interval_ms=int(os.getenv("LUCIDIC_FLUSH_INTERVAL", "1000")),
-            flush_at_count=int(os.getenv("LUCIDIC_FLUSH_AT", "50")),
-            blob_threshold=int(os.getenv("LUCIDIC_BLOB_THRESHOLD", "65536")),
-            daemon_mode=os.getenv("LUCIDIC_DAEMON_QUEUE", "true").lower() == "true",
-            max_parallel_workers=int(os.getenv("LUCIDIC_MAX_PARALLEL", "10")),
-            retry_failed=os.getenv("LUCIDIC_RETRY_FAILED", "true").lower() == "true"
-        )
-
-
-@dataclass
 class ErrorHandlingConfig:
     """Error handling and suppression settings"""
     suppress_errors: bool = True
@@ -110,9 +85,11 @@ class SDKConfig:
     auto_end: bool = True
     production_monitoring: bool = False
     
+    # Blob threshold for large event payloads (default 64KB)
+    blob_threshold: int = 65536
+    
     # Sub-configurations
     network: NetworkConfig = field(default_factory=NetworkConfig)
-    event_queue: EventQueueConfig = field(default_factory=EventQueueConfig)
     error_handling: ErrorHandlingConfig = field(default_factory=ErrorHandlingConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     
@@ -133,8 +110,8 @@ class SDKConfig:
             agent_id=os.getenv("LUCIDIC_AGENT_ID"),
             auto_end=os.getenv("LUCIDIC_AUTO_END", "true").lower() == "true",
             production_monitoring=False,
+            blob_threshold=int(os.getenv("LUCIDIC_BLOB_THRESHOLD", "65536")),
             network=NetworkConfig.from_env(),
-            event_queue=EventQueueConfig.from_env(),
             error_handling=ErrorHandlingConfig.from_env(),
             telemetry=TelemetryConfig.from_env(),
             environment=Environment.DEBUG if debug else Environment.PRODUCTION,
@@ -165,11 +142,8 @@ class SDKConfig:
         if not self.agent_id:
             errors.append("Agent ID is required (LUCIDIC_AGENT_ID)")
         
-        if self.event_queue.max_parallel_workers < 1:
-            errors.append("Max parallel workers must be at least 1")
-        
-        if self.event_queue.flush_interval_ms < 10:
-            errors.append("Flush interval must be at least 10ms")
+        if self.blob_threshold < 1024:
+            errors.append("Blob threshold must be at least 1024 bytes")
         
         return errors
     
@@ -181,16 +155,12 @@ class SDKConfig:
             "environment": self.environment.value,
             "debug": self.debug,
             "auto_end": self.auto_end,
+            "blob_threshold": self.blob_threshold,
             "network": {
                 "base_url": self.network.base_url,
                 "timeout": self.network.timeout,
                 "max_retries": self.network.max_retries,
                 "connection_pool_size": self.network.connection_pool_size
-            },
-            "event_queue": {
-                "max_workers": self.event_queue.max_parallel_workers,
-                "flush_interval_ms": self.event_queue.flush_interval_ms,
-                "flush_at_count": self.event_queue.flush_at_count
             },
             "error_handling": {
                 "suppress": self.error_handling.suppress_errors,
