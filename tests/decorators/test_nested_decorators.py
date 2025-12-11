@@ -14,6 +14,7 @@ import time
 import json
 import asyncio
 from typing import List, Dict, Any
+from unittest.mock import patch, MagicMock
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -28,7 +29,7 @@ class TestNestedDecorators:
 
     def setup(self):
         """Setup test environment - uses real backend from .env."""
-        # Track events created through monitoring the event queue
+        # Track events created through monitoring the event resource
         self.created_events = []
         
         # Initialize SDK with real backend
@@ -37,20 +38,20 @@ class TestNestedDecorators:
             providers=['openai']
         )
         
-        # Hook into the event queue to track events
-        from lucidicai.sdk.init import get_event_queue
-        event_queue = get_event_queue()
+        # Hook into the event resource to track events
+        from lucidicai.sdk.init import get_resources
+        resources = get_resources()
         
-        if event_queue:
-            original_queue_event = event_queue.queue_event
+        if resources and 'events' in resources:
+            original_create_event = resources['events'].create_event
             
-            def track_and_queue(event_request):
-                """Track events as they're queued."""
+            def track_and_create(event_request):
+                """Track events as they're created."""
                 self.created_events.append(event_request)
-                return original_queue_event(event_request)
+                return original_create_event(event_request)
             
-            event_queue.queue_event = track_and_queue
-            self.event_queue = event_queue
+            resources['events'].create_event = track_and_create
+            self.event_resource = resources['events']
         
         print(f"\033[94mSession initialized: {session_id}\033[0m")
     
@@ -219,7 +220,7 @@ class TestNestedDecorators:
         except RuntimeError as e:
             print(f"\033[92m✓\033[0m Expected RuntimeError caught: {e}")
         
-        # Wait a moment for events to be queued
+        # Wait a moment for events to be sent
         time.sleep(0.5)
         
         # Verify the event structure
@@ -370,7 +371,7 @@ class TestNestedDecorators:
         
         asyncio.run(run_test())
         
-        # Wait for events to be queued
+        # Wait for events to be sent
         time.sleep(0.5)
         
         # Verify async events were created
@@ -429,7 +430,7 @@ class TestNestedDecorators:
         
         asyncio.run(run_test())
         
-        # Wait for events to be queued
+        # Wait for events to be sent
         time.sleep(0.5)
         
         # Verify mixed events
@@ -450,13 +451,9 @@ class TestNestedDecorators:
     
     def cleanup(self):
         """Clean up after tests."""
-        # Force flush the event queue
-        if hasattr(self, 'event_queue'):
-            self.event_queue.force_flush(timeout_seconds=2.0)
-        
         # End the session
         lai.end_session()
-        print(f"\n\033[94mSession ended and events flushed\033[0m")
+        print(f"\n\033[94mSession ended\033[0m")
 
 
 if __name__ == "__main__":

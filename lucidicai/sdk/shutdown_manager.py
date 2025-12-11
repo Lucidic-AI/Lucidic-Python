@@ -19,7 +19,6 @@ class SessionState:
     """State information for an active session."""
     session_id: str
     http_client: Optional[object] = None
-    event_queue: Optional[object] = None
     is_shutting_down: bool = False
     auto_end: bool = True
 
@@ -193,6 +192,16 @@ class ShutdownManager:
         """Perform the actual shutdown of all sessions."""
         debug("[ShutdownManager] _perform_shutdown thread started")
         try:
+            # First, flush all pending background events before ending sessions
+            # This ensures telemetry from the exporter is sent
+            try:
+                debug("[ShutdownManager] Flushing pending events before session cleanup")
+                from ..sdk.event import flush
+                flush(timeout=5.0)
+                debug("[ShutdownManager] Event flush complete")
+            except Exception as e:
+                error(f"[ShutdownManager] Error flushing events: {e}")
+            
             sessions_to_end = []
             
             with self._session_lock:
@@ -244,7 +253,7 @@ class ShutdownManager:
             session_id: Session identifier
             state: Session state
         """
-        # Flush OpenTelemetry spans first (before event queue)
+        # Flush OpenTelemetry spans first
         try:
             # Get the global tracer provider if it exists
             from ..sdk.init import _sdk_state
@@ -257,11 +266,6 @@ class ShutdownManager:
                     error(f"[ShutdownManager] Error flushing spans: {e}")
         except ImportError:
             pass  # SDK not initialized
-        
-        # Skip event queue flush during shutdown to avoid hanging
-        # The queue worker is a daemon thread and will flush on its own
-        if state.event_queue:
-            debug(f"[ShutdownManager] Skipping event queue flush during shutdown for session {truncate_id(session_id)}")
         
         # end session via API if http client present
         if state.http_client and session_id:

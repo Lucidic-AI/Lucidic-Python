@@ -43,6 +43,7 @@ class HttpClient:
         # Lazy-initialized clients
         self._sync_client: Optional[httpx.Client] = None
         self._async_client: Optional[httpx.AsyncClient] = None
+        self._async_client_loop: Optional[asyncio.AbstractEventLoop] = None
     
     def _build_headers(self) -> Dict[str, str]:
         """Build default headers for requests."""
@@ -75,8 +76,34 @@ class HttpClient:
     
     @property
     def async_client(self) -> httpx.AsyncClient:
-        """Get or create the asynchronous HTTP client."""
-        if self._async_client is None or self._async_client.is_closed:
+        """Get or create the asynchronous HTTP client.
+        
+        The client is recreated if the event loop has changed, since
+        httpx.AsyncClient is tied to a specific event loop.
+        """
+        # Check if we need to recreate the client
+        current_loop = None
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass  # No running loop
+        
+        # Recreate client if: no client, client closed, or event loop changed
+        needs_new_client = (
+            self._async_client is None or 
+            self._async_client.is_closed or
+            (current_loop is not None and self._async_client_loop is not current_loop)
+        )
+        
+        if needs_new_client:
+            # Close old client if it exists and isn't already closed
+            if self._async_client is not None and not self._async_client.is_closed:
+                try:
+                    # Can't await in a property, so we just let it be garbage collected
+                    pass
+                except Exception:
+                    pass
+            
             transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
             self._async_client = httpx.AsyncClient(
                 base_url=self.base_url,
@@ -85,6 +112,8 @@ class HttpClient:
                 limits=self._limits,
                 transport=transport,
             )
+            self._async_client_loop = current_loop
+            
         return self._async_client
     
     def _add_timestamp(self, data: Optional[Dict[str, Any]]) -> Dict[str, Any]:

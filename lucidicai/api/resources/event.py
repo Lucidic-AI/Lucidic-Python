@@ -17,7 +17,7 @@ class EventResource:
         self.http = http
     
     def create_event(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new event.
+        """Create a new event (synchronous).
         
         Args:
             params: Event parameters including:
@@ -32,6 +32,23 @@ class EventResource:
             API response with optional blob_url for large payloads
         """
         return self.http.post("events", params)
+    
+    async def acreate_event(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new event (asynchronous).
+        
+        Args:
+            params: Event parameters including:
+                - client_event_id: Client-generated event ID
+                - session_id: Session ID
+                - type: Event type
+                - occurred_at: When the event occurred
+                - payload: Event payload
+                - etc.
+                
+        Returns:
+            API response with optional blob_url for large payloads
+        """
+        return await self.http.apost("events", params)
     
     def get_event(self, event_id: str) -> Dict[str, Any]:
         """Get an event by ID.
@@ -86,3 +103,57 @@ class EventResource:
             params["type"] = event_type
         
         return self.http.get("events", params)
+    
+    async def aget_event(self, event_id: str) -> Dict[str, Any]:
+        """Get an event by ID (asynchronous).
+        
+        Args:
+            event_id: Event ID
+            
+        Returns:
+            Event data
+        """
+        return await self.http.aget(f"events/{event_id}")
+    
+    async def aupdate_event(self, event_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Update an existing event (asynchronous).
+        
+        Args:
+            event_id: Event ID
+            updates: Fields to update
+            
+        Returns:
+            Updated event data
+        """
+        return await self.http.aput(f"events/{event_id}", updates)
+    
+    async def alist_events(
+        self,
+        session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """List events with optional filters (asynchronous).
+        
+        Args:
+            session_id: Filter by session ID
+            event_type: Filter by event type
+            limit: Maximum number of events to return
+            offset: Pagination offset
+            
+        Returns:
+            List of events and pagination info
+        """
+        params = {
+            "limit": limit,
+            "offset": offset
+        }
+        
+        if session_id:
+            params["session_id"] = session_id
+        
+        if event_type:
+            params["type"] = event_type
+        
+        return await self.http.aget("events", params)

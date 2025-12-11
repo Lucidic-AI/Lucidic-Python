@@ -1,9 +1,8 @@
 """Custom OpenTelemetry exporter for Lucidic (Exporter-only mode).
 
-Converts completed spans into immutable typed LLM events via Client.create_event(),
-which enqueues non-blocking delivery through the EventQueue.
+Converts completed spans into immutable typed LLM events via emit_event(),
+which fires events in the background without blocking the exporter.
 """
-import json
 from typing import Sequence, Optional, Dict, Any, List
 from datetime import datetime, timezone
 from opentelemetry.sdk.trace import ReadableSpan
@@ -11,7 +10,7 @@ from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import StatusCode
 from opentelemetry.semconv_ai import SpanAttributes
 
-from ..sdk.event import create_event
+from ..sdk.event import emit_event
 from ..sdk.init import get_session_id
 from ..sdk.context import current_session_id, current_parent_event_id
 from ..telemetry.utils.model_pricing import calculate_cost
@@ -20,7 +19,14 @@ from ..utils.logger import debug, info, warning, error, verbose, truncate_id
 
 
 class LucidicSpanExporter(SpanExporter):
-    """Exporter that creates immutable LLM events for completed spans."""
+    """Exporter that creates immutable LLM events for completed spans.
+    
+    Uses emit_event() for fire-and-forget event creation without blocking.
+    """
+    
+    def __init__(self):
+        """Initialize the exporter."""
+        self._shutdown = False
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
@@ -121,6 +127,41 @@ class LucidicSpanExporter(SpanExporter):
             cost = self._calculate_cost(attributes)
             images = extract_images(attributes)
 
+            # Prepare event data for async creation
+            event_data = {
+                'type': 'llm_generation',
+                'session_id': target_session_id,
+                'occurred_at': occurred_at,
+                'duration': duration_seconds,
+                'provider': provider,
+                'model': model,
+                'messages': messages,
+                'params': params,
+                'output': output_text,
+                'input_tokens': input_tokens,
+                'output_tokens': output_tokens,
+                'cost': cost,
+                'raw': {"images": images} if images else None,
+                'parent_event_id': parent_id,
+            }
+            
+            if not self._shutdown:
+                self._send_event_async(event_data, span.name, parent_id)
+            
+            debug(f"[Telemetry] Queued LLM event creation for span {span.name} (session: {truncate_id(target_session_id)})")
+
+        except Exception as e:
+            error(f"[Telemetry] Failed to process span {span.name}: {e}")
+    
+    def _send_event_async(self, event_data: Dict[str, Any], span_name: str, parent_id: Optional[str]) -> None:
+        """Send event asynchronously in a background thread.
+        
+        Args:
+            event_data: Event data to send
+            span_name: Name of the span (for logging)
+            parent_id: Parent event ID (for context)
+        """
+        try:
             # Set context for parent if needed
             from ..sdk.context import current_parent_event_id as parent_context
             if parent_id:
@@ -129,34 +170,16 @@ class LucidicSpanExporter(SpanExporter):
                 token = None
             
             try:
-                # Create immutable event via non-blocking queue
-                debug(f"[Telemetry] Creating LLM event with parent_id: {truncate_id(parent_id)}, session_id: {truncate_id(target_session_id)}")
-                event_id = create_event(
-                type="llm_generation",
-                session_id=target_session_id,  # Pass the session_id explicitly
-                occurred_at=occurred_at,
-                duration=duration_seconds,
-                provider=provider,
-                model=model,
-                messages=messages,
-                params=params,
-                output=output_text,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cost=cost,
-                raw={"images": images} if images else None,
-                parent_event_id=parent_id,  # Pass the parent_id explicitly
-            )
+                # Use emit_event for fire-and-forget
+                event_id = emit_event(**event_data)
+                debug(f"[Telemetry] Emitted LLM event {truncate_id(event_id)} from span {span_name}")
             finally:
                 # Reset parent context
                 if token:
                     parent_context.reset(token)
-            
-            debug(f"[Telemetry] Created LLM event {truncate_id(event_id)} from span {span.name} for session {truncate_id(target_session_id)}")
-
+                    
         except Exception as e:
-            error(f"[Telemetry] Failed to process span {span.name}: {e}")
-    
+            error(f"[Telemetry] Failed to send event for span {span_name}: {e}")
     
     def _create_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any]) -> Optional[str]:
         """Create a Lucidic event from span start"""
@@ -185,18 +208,21 @@ class LucidicSpanExporter(SpanExporter):
                 debug(f"[Telemetry] No session ID for span {span.name}, skipping")
                 return None
 
-            # Create event
-            event_kwargs = {
-                'session_id': target_session_id,  # Pass session_id explicitly
+            # Create event asynchronously
+            event_data = {
+                'session_id': target_session_id,
                 'description': description,
-                'result': "Processing...",  # Will be updated when span ends
+                'result': "Processing...",
                 'model': model
             }
 
             if images:
-                event_kwargs['screenshots'] = images
+                event_data['screenshots'] = images
 
-            return create_event(**event_kwargs)
+            # Fire and forget using emit_event
+            if not self._shutdown:
+                emit_event(**event_data)
+            return None  # We don't wait for the event ID
             
         except Exception as e:
             error(f"[Telemetry] Failed to create event from span: {e}")
@@ -300,7 +326,13 @@ class LucidicSpanExporter(SpanExporter):
         return None
     
     def shutdown(self) -> None:
-        return None
+        """Shutdown the exporter and flush pending events."""
+        from ..sdk.event import flush
+        self._shutdown = True
+        # Flush any pending background events
+        flush(timeout=5.0)
+        debug("[Telemetry] LucidicSpanExporter shutdown complete")
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """Force flush is a no-op since events are sent immediately in background threads."""
         return True

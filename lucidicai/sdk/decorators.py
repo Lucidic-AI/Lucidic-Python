@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Callable, Optional, TypeVar
 from collections.abc import Iterable
 
-from .event import create_event
+from .event import emit_event
 from .init import get_session_id
 from ..core.errors import LucidicNotInitializedError
 from .context import current_parent_event_id, event_context, event_context_async
@@ -81,7 +81,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                         # Create a separate error_traceback event for the exception
                         import traceback
                         try:
-                            create_event(
+                            emit_event(
                                 type="error_traceback",
                                 error=str(error),
                                 traceback=traceback.format_exc(),
@@ -93,9 +93,10 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                     else:
                         return_val = _serialize(result)
                     
-                    create_event(
+                    emit_event(
                         type="function_call",
                         event_id=pre_event_id,  # Use the pre-generated ID
+                        parent_event_id=parent_id,
                         function_name=func.__name__,
                         arguments=args_dict,
                         return_value=return_val,
@@ -154,7 +155,7 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                         # Create a separate error_traceback event for the exception
                         import traceback
                         try:
-                            create_event(
+                            emit_event(
                                 type="error_traceback",
                                 error=str(error),
                                 traceback=traceback.format_exc(),
@@ -166,9 +167,10 @@ def event(**decorator_kwargs) -> Callable[[F], F]:
                     else:
                         return_val = _serialize(result)
                     
-                    create_event(
+                    emit_event(
                         type="function_call",
                         event_id=pre_event_id,  # Use the pre-generated ID
+                        parent_event_id=parent_id,
                         function_name=func.__name__,
                         arguments=args_dict,
                         return_value=return_val,
