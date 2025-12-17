@@ -3,12 +3,13 @@
 Converts completed spans into immutable typed LLM events via emit_event(),
 which fires events in the background without blocking the exporter.
 """
-from typing import Sequence, Optional, Dict, Any, List
+from typing import Sequence, Optional, Dict, Any, List, TYPE_CHECKING
 from datetime import datetime, timezone
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import StatusCode
 from opentelemetry.semconv_ai import SpanAttributes
+import threading
 
 from ..sdk.event import emit_event
 from ..sdk.init import get_session_id
@@ -17,16 +18,43 @@ from ..telemetry.utils.model_pricing import calculate_cost
 from .extract import detect_is_llm_span, extract_images, extract_prompts, extract_completions, extract_model
 from ..utils.logger import debug, info, warning, error, verbose, truncate_id
 
+if TYPE_CHECKING:
+    from ..client import LucidicAI
+
 
 class LucidicSpanExporter(SpanExporter):
     """Exporter that creates immutable LLM events for completed spans.
-    
+
     Uses emit_event() for fire-and-forget event creation without blocking.
+    Supports multi-client routing via client registry.
     """
-    
+
     def __init__(self):
         """Initialize the exporter."""
         self._shutdown = False
+        # Client registry for multi-client support
+        self._client_registry: Dict[str, "LucidicAI"] = {}
+        self._registry_lock = threading.Lock()
+
+    def register_client(self, client: "LucidicAI") -> None:
+        """Register a client for span routing.
+
+        Args:
+            client: The LucidicAI client to register
+        """
+        with self._registry_lock:
+            self._client_registry[client._client_id] = client
+            debug(f"[Exporter] Registered client {client._client_id[:8]}...")
+
+    def unregister_client(self, client_id: str) -> None:
+        """Unregister a client.
+
+        Args:
+            client_id: The client ID to unregister
+        """
+        with self._registry_lock:
+            self._client_registry.pop(client_id, None)
+            debug(f"[Exporter] Unregistered client {client_id[:8]}...")
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
@@ -145,39 +173,72 @@ class LucidicSpanExporter(SpanExporter):
                 'parent_event_id': parent_id,
             }
             
+            # Get client_id for routing
+            client_id = attributes.get("lucidic.client_id")
+
             if not self._shutdown:
-                self._send_event_async(event_data, span.name, parent_id)
-            
-            debug(f"[Telemetry] Queued LLM event creation for span {span.name} (session: {truncate_id(target_session_id)})")
+                self._send_event_async(event_data, span.name, parent_id, client_id)
+
+            debug(
+                f"[Telemetry] Queued LLM event creation for span {span.name} "
+                f"(session: {truncate_id(target_session_id)}, client: {truncate_id(client_id)})"
+            )
 
         except Exception as e:
             error(f"[Telemetry] Failed to process span {span.name}: {e}")
     
-    def _send_event_async(self, event_data: Dict[str, Any], span_name: str, parent_id: Optional[str]) -> None:
+    def _send_event_async(
+        self,
+        event_data: Dict[str, Any],
+        span_name: str,
+        parent_id: Optional[str],
+        client_id: Optional[str] = None,
+    ) -> None:
         """Send event asynchronously in a background thread.
-        
+
         Args:
             event_data: Event data to send
             span_name: Name of the span (for logging)
             parent_id: Parent event ID (for context)
+            client_id: Client ID for routing (if available)
         """
         try:
             # Set context for parent if needed
             from ..sdk.context import current_parent_event_id as parent_context
+
             if parent_id:
                 token = parent_context.set(parent_id)
             else:
                 token = None
-            
+
             try:
-                # Use emit_event for fire-and-forget
+                # Try to route to specific client if client_id is available
+                if client_id:
+                    with self._registry_lock:
+                        client = self._client_registry.get(client_id)
+                    if client:
+                        # Use client's event resource directly
+                        try:
+                            response = client._resources["events"].create_event(event_data)
+                            event_id = response.get("event_id") if response else None
+                            debug(
+                                f"[Telemetry] Routed LLM event {truncate_id(event_id)} to client {client_id[:8]}..."
+                            )
+                            return
+                        except Exception as e:
+                            debug(f"[Telemetry] Failed to route event to client: {e}")
+                            # Fall through to emit_event
+
+                # Fallback to emit_event (uses global state)
                 event_id = emit_event(**event_data)
-                debug(f"[Telemetry] Emitted LLM event {truncate_id(event_id)} from span {span_name}")
+                debug(
+                    f"[Telemetry] Emitted LLM event {truncate_id(event_id)} from span {span_name}"
+                )
             finally:
                 # Reset parent context
                 if token:
                     parent_context.reset(token)
-                    
+
         except Exception as e:
             error(f"[Telemetry] Failed to send event for span {span_name}: {e}")
     

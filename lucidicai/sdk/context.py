@@ -8,10 +8,13 @@ session under concurrency.
 
 from contextlib import contextmanager, asynccontextmanager
 import contextvars
-from typing import Optional, Iterator, AsyncIterator, Callable, Any, Dict
+from typing import Optional, Iterator, AsyncIterator, Callable, Any, Dict, TYPE_CHECKING
 import logging
 import os
 import threading
+
+if TYPE_CHECKING:
+    from ..client import LucidicAI
 
 
 # Context variable for the active Lucidic session id
@@ -20,10 +23,25 @@ current_session_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 )
 
 
-# NEW: Context variable for parent event nesting
+# Context variable for parent event nesting
 current_parent_event_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "lucidic.parent_event_id", default=None
 )
+
+
+# Context variable for the active client (for multi-client support)
+current_client: contextvars.ContextVar[Optional["LucidicAI"]] = contextvars.ContextVar(
+    "lucidic.client", default=None
+)
+
+
+def get_active_client() -> Optional["LucidicAI"]:
+    """Get the currently active LucidicAI client from context.
+
+    Returns:
+        The active client, or None if no client is bound to the current context.
+    """
+    return current_client.get(None)
 
 
 def set_active_session(session_id: Optional[str]) -> None:

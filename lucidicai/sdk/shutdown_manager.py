@@ -8,10 +8,13 @@ import signal
 import sys
 import threading
 import time
-from typing import Dict, Optional, Set, Callable
+from typing import Dict, Optional, Set, Callable, TYPE_CHECKING
 from dataclasses import dataclass
 
 from ..utils.logger import debug, info, warning, error, truncate_id
+
+if TYPE_CHECKING:
+    from ..client import LucidicAI
 
 
 @dataclass
@@ -45,14 +48,18 @@ class ShutdownManager:
         # only initialize once
         if self._initialized:
             return
-            
+
         self._initialized = True
         self.active_sessions: Dict[str, SessionState] = {}
         self.is_shutting_down = False
         self.shutdown_complete = threading.Event()
         self.listeners_registered = False
         self._session_lock = threading.Lock()
-        
+
+        # Client registry for multi-client support
+        self._clients: Dict[str, "LucidicAI"] = {}
+        self._client_lock = threading.Lock()
+
         debug("[ShutdownManager] Initialized")
     
     def register_session(self, session_id: str, state: SessionState) -> None:
@@ -86,16 +93,39 @@ class ShutdownManager:
     
     def is_session_active(self, session_id: str) -> bool:
         """Check if a session is active.
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             True if session is active
         """
         with self._session_lock:
             return session_id in self.active_sessions
-    
+
+    def register_client(self, client: "LucidicAI") -> None:
+        """Register a client for shutdown tracking.
+
+        Args:
+            client: The LucidicAI client to register
+        """
+        with self._client_lock:
+            self._clients[client._client_id] = client
+            debug(f"[ShutdownManager] Registered client {client._client_id[:8]}...")
+
+            # Ensure listeners are registered
+            self._ensure_listeners_registered()
+
+    def unregister_client(self, client_id: str) -> None:
+        """Unregister a client.
+
+        Args:
+            client_id: The client ID to unregister
+        """
+        with self._client_lock:
+            self._clients.pop(client_id, None)
+            debug(f"[ShutdownManager] Unregistered client {client_id[:8]}...")
+
     def _ensure_listeners_registered(self) -> None:
         """Register process exit listeners once."""
         if self.listeners_registered:
@@ -189,7 +219,7 @@ class ShutdownManager:
                 warning("[ShutdownManager] Shutdown timeout after 30s")
     
     def _perform_shutdown(self) -> None:
-        """Perform the actual shutdown of all sessions."""
+        """Perform the actual shutdown of all sessions and clients."""
         debug("[ShutdownManager] _perform_shutdown thread started")
         try:
             # First, flush all pending background events before ending sessions
@@ -201,18 +231,33 @@ class ShutdownManager:
                 debug("[ShutdownManager] Event flush complete")
             except Exception as e:
                 error(f"[ShutdownManager] Error flushing events: {e}")
-            
+
+            # Close all registered clients (this will also end their sessions)
+            clients_to_close = []
+            with self._client_lock:
+                clients_to_close = list(self._clients.values())
+
+            if clients_to_close:
+                debug(f"[ShutdownManager] Closing {len(clients_to_close)} registered client(s)")
+                for client in clients_to_close:
+                    try:
+                        debug(f"[ShutdownManager] Closing client {client._client_id[:8]}...")
+                        client.close()
+                    except Exception as e:
+                        error(f"[ShutdownManager] Error closing client: {e}")
+
+            # Also handle sessions registered directly (legacy support)
             sessions_to_end = []
-            
+
             with self._session_lock:
                 # collect sessions that need ending
                 for session_id, state in self.active_sessions.items():
                     if state.auto_end and not state.is_shutting_down:
                         state.is_shutting_down = True
                         sessions_to_end.append((session_id, state))
-            
+
             debug(f"[ShutdownManager] Found {len(sessions_to_end)} sessions to end")
-            
+
             # end all sessions
             for session_id, state in sessions_to_end:
                 try:
