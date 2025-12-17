@@ -213,10 +213,10 @@ class ShutdownManager:
             )
             shutdown_thread.daemon = True
             shutdown_thread.start()
-            
-            # wait for shutdown with timeout
-            if not self.shutdown_complete.wait(timeout=30):
-                warning("[ShutdownManager] Shutdown timeout after 30s")
+
+        # wait for shutdown with timeout - MUST be outside lock to avoid deadlock
+        if not self.shutdown_complete.wait(timeout=30):
+            warning("[ShutdownManager] Shutdown timeout after 30s")
     
     def _perform_shutdown(self) -> None:
         """Perform the actual shutdown of all sessions and clients."""

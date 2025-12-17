@@ -319,14 +319,17 @@ class LucidicAI:
         """
         logger.info(f"[LucidicAI] Closing client {self._client_id[:8]}...")
 
-        # End all active sessions
+        # Collect session IDs under lock (don't clear - let end() handle removal)
         with self._session_lock:
-            for session_id in list(self._sessions.keys()):
-                try:
-                    self.sessions.end(session_id)
-                except Exception as e:
-                    logger.debug(f"[LucidicAI] Error ending session on close: {e}")
-            self._sessions.clear()
+            session_ids = list(self._sessions.keys())
+
+        # End sessions WITHOUT holding lock (HTTP calls can be slow)
+        # end() will acquire lock and pop each session from _sessions
+        for session_id in session_ids:
+            try:
+                self.sessions.end(session_id)
+            except Exception as e:
+                logger.debug(f"[LucidicAI] Error ending session on close: {e}")
 
         # Unregister from telemetry
         if self._providers:
@@ -357,13 +360,17 @@ class LucidicAI:
         """Close the client (async version)."""
         logger.info(f"[LucidicAI] Closing async client {self._client_id[:8]}...")
 
+        # Collect session IDs under lock (don't clear - let aend() handle removal)
         with self._session_lock:
-            for session_id in list(self._sessions.keys()):
-                try:
-                    await self.sessions.aend(session_id)
-                except Exception as e:
-                    logger.debug(f"[LucidicAI] Error ending session on close: {e}")
-            self._sessions.clear()
+            session_ids = list(self._sessions.keys())
+
+        # End sessions WITHOUT holding lock (HTTP calls can be slow)
+        # aend() will acquire lock and pop each session from _sessions
+        for session_id in session_ids:
+            try:
+                await self.sessions.aend(session_id)
+            except Exception as e:
+                logger.debug(f"[LucidicAI] Error ending session on close: {e}")
 
         if self._providers:
             try:
