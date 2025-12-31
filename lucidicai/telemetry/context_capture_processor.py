@@ -31,13 +31,13 @@ class ContextCaptureProcessor(SpanProcessor):
             
             try:
                 session_id = current_session_id.get(None)
-            except Exception:
-                pass
-            
+            except Exception as e:
+                debug(f"[ContextCapture] Failed to get session_id from contextvar: {e}")
+
             try:
                 parent_event_id = current_parent_event_id.get(None)
-            except Exception:
-                pass
+            except Exception as e:
+                debug(f"[ContextCapture] Failed to get parent_event_id from contextvar: {e}")
             
             # If not found in contextvars, try OpenTelemetry baggage
             # This handles cases where spans are created in different threads

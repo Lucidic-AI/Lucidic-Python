@@ -200,35 +200,12 @@ PROVIDER_AVERAGES = {
 }
 
 def get_provider_from_model(model: str) -> str:
-    """Extract provider name from model string"""
-    model_lower = model.lower()
-    
-    if any(claude in model_lower for claude in ["claude", "anthropic"]):
-        return "anthropic"
-    elif any(gpt in model_lower for gpt in ["gpt", "openai", "o1", "o3", "o4", "text-davinci", "code-davinci"]):
-        return "openai"  
-    elif any(gemini in model_lower for gemini in ["gemini", "google", "gemma", "palm", "bison"]):
-        return "google"
-    elif any(llama in model_lower for llama in ["llama", "meta"]):
-        return "meta"
-    elif "mistral" in model_lower:
-        return "mistral"
-    elif any(cohere in model_lower for cohere in ["command", "cohere"]):
-        return "cohere"
-    elif "deepseek" in model_lower:
-        return "deepseek"
-    elif any(qwen in model_lower for qwen in ["qwen", "qwq"]):
-        return "qwen"
-    elif any(together in model_lower for together in ["together", "redpajama"]):
-        return "together"
-    elif any(pplx in model_lower for pplx in ["pplx", "perplexity"]):
-        return "perplexity"
-    elif any(grok in model_lower for grok in ["grok", "xAI"]):
-        return "grok"
-    elif "groq" in model_lower:
-        return "groq"
-    else:
-        return "unknown"
+    """Extract provider name from model string.
+
+    This is a backward-compatible alias for detect_provider().
+    """
+    from .provider import detect_provider
+    return detect_provider(model=model)
 
 def normalize_model_name(model: str) -> str:
     """Normalize model name by stripping dates and provider prefixes"""

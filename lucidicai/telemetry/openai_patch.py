@@ -394,8 +394,9 @@ class OpenAIResponsesPatcher:
             for obj, method_name, original_method in self._client_refs:
                 try:
                     setattr(obj, method_name, original_method)
-                except:
-                    pass  # Client might have been garbage collected
+                except (AttributeError, ReferenceError) as e:
+                    # Client might have been garbage collected
+                    logger.debug(f"[OpenAI Patch] Could not restore {method_name}: {e}")
 
             self._client_refs.clear()
             self._is_patched = False

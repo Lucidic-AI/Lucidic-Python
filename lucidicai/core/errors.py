@@ -37,9 +37,9 @@ class FeatureFlagError(LucidicError):
 
 def install_error_handler():
     """Install global handler to create ERROR_TRACEBACK events for uncaught exceptions."""
-    from .sdk.event import create_event
-    from .sdk.init import get_session_id
-    from .context import current_parent_event_id
+    from ..sdk.event import create_event
+    from ..sdk.init import get_session_id
+    from ..sdk.context import current_parent_event_id
 
     def handle_exception(exc_type, exc_value, exc_traceback):
         try:

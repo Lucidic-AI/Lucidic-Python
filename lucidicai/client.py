@@ -299,9 +299,9 @@ class LucidicAI:
                 # Async functions are also supported
                 return result
         """
-        from .sdk.bound_decorators import create_bound_event_decorator
+        from .sdk.decorators import event as event_decorator
 
-        decorator = create_bound_event_decorator(self, **decorator_kwargs)
+        decorator = event_decorator(client=self, **decorator_kwargs)
 
         # If func is provided, we're being used without parentheses
         if func is not None:

@@ -193,26 +193,33 @@ class ShutdownManager:
         if self.is_shutting_down:
             debug(f"[ShutdownManager] Already shutting down, ignoring {trigger}")
             return
-        
+
         self.is_shutting_down = True
-        
+
+        # Check if there's anything to clean up
         with self._session_lock:
             session_count = len(self.active_sessions)
-            if session_count == 0:
-                debug("[ShutdownManager] No active sessions to clean up")
-                self.shutdown_complete.set()
-                return
-                
-            info(f"[ShutdownManager] Shutdown initiated by {trigger}, ending {session_count} active session(s)")
-            
-            # perform shutdown in separate thread to avoid deadlocks
-            import threading
-            shutdown_thread = threading.Thread(
-                target=self._perform_shutdown,
-                name="ShutdownThread"
-            )
-            shutdown_thread.daemon = True
-            shutdown_thread.start()
+        with self._client_lock:
+            client_count = len(self._clients)
+
+        if session_count == 0 and client_count == 0:
+            debug("[ShutdownManager] No active sessions or clients to clean up")
+            # Reset flag so future shutdowns can proceed (e.g., if exception triggered
+            # shutdown before any sessions were created, then user creates sessions)
+            self.is_shutting_down = False
+            self.shutdown_complete.set()
+            return
+
+        info(f"[ShutdownManager] Shutdown initiated by {trigger}, ending {session_count} active session(s), {client_count} client(s)")
+
+        # perform shutdown in separate thread to avoid deadlocks
+        import threading
+        shutdown_thread = threading.Thread(
+            target=self._perform_shutdown,
+            name="ShutdownThread"
+        )
+        shutdown_thread.daemon = True
+        shutdown_thread.start()
 
         # wait for shutdown with timeout - MUST be outside lock to avoid deadlock
         if not self.shutdown_complete.wait(timeout=30):
@@ -268,13 +275,14 @@ class ShutdownManager:
             
             # Final telemetry shutdown after all sessions are ended
             try:
-                from ..sdk.init import _sdk_state
-                if hasattr(_sdk_state, 'tracer_provider') and _sdk_state.tracer_provider:
+                from ..sdk.init import get_tracer_provider
+                tracer_provider = get_tracer_provider()
+                if tracer_provider:
                     debug("[ShutdownManager] Final OpenTelemetry shutdown")
                     try:
                         # Final flush and shutdown with longer timeout
-                        _sdk_state.tracer_provider.force_flush(timeout_millis=5000)
-                        _sdk_state.tracer_provider.shutdown()
+                        tracer_provider.force_flush(timeout_millis=5000)
+                        tracer_provider.shutdown()
                         debug("[ShutdownManager] OpenTelemetry shutdown complete")
                     except Exception as e:
                         error(f"[ShutdownManager] Error in final telemetry shutdown: {e}")
@@ -300,13 +308,13 @@ class ShutdownManager:
         """
         # Flush OpenTelemetry spans first
         try:
-            # Get the global tracer provider if it exists
-            from ..sdk.init import _sdk_state
-            if hasattr(_sdk_state, 'tracer_provider') and _sdk_state.tracer_provider:
+            from ..sdk.init import get_tracer_provider
+            tracer_provider = get_tracer_provider()
+            if tracer_provider:
                 debug(f"[ShutdownManager] Flushing OpenTelemetry spans for session {truncate_id(session_id)}")
                 try:
                     # Force flush with 3 second timeout
-                    _sdk_state.tracer_provider.force_flush(timeout_millis=3000)
+                    tracer_provider.force_flush(timeout_millis=3000)
                 except Exception as e:
                     error(f"[ShutdownManager] Error flushing spans: {e}")
         except ImportError:

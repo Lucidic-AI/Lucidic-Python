@@ -7,7 +7,6 @@ from typing import Sequence, Optional, Dict, Any, List, TYPE_CHECKING
 from datetime import datetime, timezone
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
-from opentelemetry.trace import StatusCode
 from opentelemetry.semconv_ai import SpanAttributes
 import threading
 
@@ -15,7 +14,8 @@ from ..sdk.event import emit_event
 from ..sdk.init import get_session_id
 from ..sdk.context import current_session_id, current_parent_event_id
 from ..telemetry.utils.model_pricing import calculate_cost
-from .extract import detect_is_llm_span, extract_images, extract_prompts, extract_completions, extract_model
+from .extract import detect_is_llm_span, extract_prompts, extract_completions, extract_model
+from .utils.provider import detect_provider
 from ..utils.logger import debug, info, warning, error, verbose, truncate_id
 
 if TYPE_CHECKING:
@@ -100,7 +100,8 @@ class LucidicSpanExporter(SpanExporter):
             if not target_session_id:
                 try:
                     target_session_id = current_session_id.get(None)
-                except Exception:
+                except Exception as e:
+                    debug(f"[Telemetry] Failed to get session_id from contextvar: {e}")
                     target_session_id = None
             if not target_session_id:
                 target_session_id = get_session_id()
@@ -117,7 +118,8 @@ class LucidicSpanExporter(SpanExporter):
                     parent_id = current_parent_event_id.get(None)
                     if parent_id:
                         debug(f"[Telemetry] Got parent_id from context for span {span.name}: {truncate_id(parent_id)}")
-                except Exception:
+                except Exception as e:
+                    debug(f"[Telemetry] Failed to get parent_event_id from contextvar: {e}")
                     parent_id = None
             
             if not parent_id:
@@ -130,7 +132,7 @@ class LucidicSpanExporter(SpanExporter):
 
             # Typed fields using extract utilities
             model = extract_model(attributes) or 'unknown'
-            provider = self._detect_provider_name(attributes)
+            provider = detect_provider(model=model, attributes=attributes)
             messages = extract_prompts(attributes) or []
             params = self._extract_params(attributes)
             output_text = extract_completions(span, attributes)
@@ -153,7 +155,6 @@ class LucidicSpanExporter(SpanExporter):
             input_tokens = self._extract_prompt_tokens(attributes)
             output_tokens = self._extract_completion_tokens(attributes)
             cost = self._calculate_cost(attributes)
-            images = extract_images(attributes)
 
             # Prepare event data for async creation
             event_data = {
@@ -169,7 +170,7 @@ class LucidicSpanExporter(SpanExporter):
                 'input_tokens': input_tokens,
                 'output_tokens': output_tokens,
                 'cost': cost,
-                'raw': {"images": images} if images else None,
+                'raw': None,
                 'parent_event_id': parent_id,
             }
             
@@ -241,101 +242,7 @@ class LucidicSpanExporter(SpanExporter):
 
         except Exception as e:
             error(f"[Telemetry] Failed to send event for span {span_name}: {e}")
-    
-    def _create_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any]) -> Optional[str]:
-        """Create a Lucidic event from span start"""
-        try:
-            # Extract description from prompts/messages
-            description = self._extract_description(span, attributes)
-            
-            # Extract images if present
-            images = self._extract_images(attributes)
-            
-            # Get model info
-            model = attributes.get(SpanAttributes.LLM_RESPONSE_MODEL) or \
-                   attributes.get(SpanAttributes.LLM_REQUEST_MODEL) or \
-                   attributes.get('gen_ai.request.model') or 'unknown'
-            
-            # Resolve target session id for this span
-            target_session_id = attributes.get('lucidic.session_id')
-            if not target_session_id:
-                try:
-                    target_session_id = current_session_id.get(None)
-                except Exception:
-                    target_session_id = None
-            if not target_session_id:
-                target_session_id = get_session_id()
-            if not target_session_id:
-                debug(f"[Telemetry] No session ID for span {span.name}, skipping")
-                return None
 
-            # Create event asynchronously
-            event_data = {
-                'session_id': target_session_id,
-                'description': description,
-                'result': "Processing...",
-                'model': model
-            }
-
-            if images:
-                event_data['screenshots'] = images
-
-            # Fire and forget using emit_event
-            if not self._shutdown:
-                emit_event(**event_data)
-            return None  # We don't wait for the event ID
-            
-        except Exception as e:
-            error(f"[Telemetry] Failed to create event from span: {e}")
-            return None
-    
-    def _update_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], event_id: str) -> None:
-        """Deprecated: events are immutable; no updates performed."""
-        return
-    
-    def _extract_description(self, span: ReadableSpan, attributes: Dict[str, Any]) -> str:
-        """Extract description from span attributes"""
-        # Try to get prompts/messages
-        prompts = attributes.get(SpanAttributes.LLM_PROMPTS) or \
-                 attributes.get('gen_ai.prompt')
-        
-        verbose(f"[Telemetry] Extracting description from attributes: {attributes}, prompts: {prompts}")
-
-        if prompts:
-            if isinstance(prompts, list) and prompts:
-                # Handle message list format
-                return self._format_messages(prompts)
-            elif isinstance(prompts, str):
-                return prompts
-                
-        # Fallback to span name
-        return f"LLM Call: {span.name}"
-    
-    def _extract_result(self, span: ReadableSpan, attributes: Dict[str, Any]) -> str:
-        """Extract result/response from span attributes"""
-        # Try to get completions
-        completions = attributes.get(SpanAttributes.LLM_COMPLETIONS) or \
-                     attributes.get('gen_ai.completion')
-        
-        if completions:
-            if isinstance(completions, list) and completions:
-                # Handle multiple completions
-                return "\n".join(str(c) for c in completions)
-            elif isinstance(completions, str):
-                return completions
-                
-        # Check for error
-        if span.status.status_code == StatusCode.ERROR:
-            return f"Error: {span.status.description or 'Unknown error'}"
-            
-        return "Response received"
-    
-    def _detect_provider_name(self, attributes: Dict[str, Any]) -> str:
-        name = attributes.get('gen_ai.system') or attributes.get('service.name')
-        if name:
-            return str(name)
-        return "openai" if 'openai' in (str(attributes.get('service.name', '')).lower()) else "unknown"
-    
 
     def _extract_params(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
         return {

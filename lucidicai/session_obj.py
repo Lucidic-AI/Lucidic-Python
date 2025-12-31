@@ -255,16 +255,15 @@ class Session:
         # Flush telemetry before ending
         try:
             from .telemetry.telemetry_manager import get_telemetry_manager
-            import time
 
             manager = get_telemetry_manager()
             if manager.is_telemetry_initialized:
                 logger.debug(
                     f"[Session] Flushing telemetry for session {self._session_id}"
                 )
-                manager.force_flush(timeout_millis=5000)
-                # Small delay to ensure exporter processes spans
-                time.sleep(0.1)
+                flush_success = manager.force_flush(timeout_millis=5000)
+                if not flush_success:
+                    logger.warning("[Session] Telemetry flush may be incomplete")
         except Exception as e:
             logger.debug(f"[Session] Error flushing telemetry: {e}")
 
@@ -299,9 +298,9 @@ class Session:
                 logger.debug(
                     f"[Session] Flushing telemetry for async session {self._session_id}"
                 )
-                manager.force_flush(timeout_millis=5000)
-                # Small delay to ensure exporter processes spans
-                await asyncio.sleep(0.1)
+                flush_success = manager.force_flush(timeout_millis=5000)
+                if not flush_success:
+                    logger.warning("[Session] Telemetry flush may be incomplete")
         except Exception as e:
             logger.debug(f"[Session] Error flushing telemetry: {e}")
 

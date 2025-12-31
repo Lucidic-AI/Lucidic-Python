@@ -104,8 +104,8 @@ class OpenAIAgentsInstrumentor:
                 import openai
                 openai.chat.completions.create = self._original_openai_create
                 logger.debug("Restored OpenAI chat.completions.create")
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"[OpenAIAgents] Failed to restore OpenAI client: {e}")
 
 
 class OpenAIAgentsTracingProcessor:

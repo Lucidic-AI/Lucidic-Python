@@ -20,65 +20,6 @@ def detect_is_llm_span(span) -> bool:
     return False
 
 
-def extract_images(attrs: Dict[str, Any]) -> List[str]:
-    """Extract images from span attributes - matches TypeScript logic.
-    
-    Looks for images in:
-    - gen_ai.prompt.{i}.content arrays with image_url items
-    - Direct image attributes
-    """
-    images = []
-    
-    # Check indexed prompt content for images (gen_ai.prompt.{i}.content)
-    for i in range(50):
-        key = f"gen_ai.prompt.{i}.content"
-        if key in attrs:
-            content = attrs[key]
-            
-            # Parse if JSON string
-            if isinstance(content, str):
-                try:
-                    content = json.loads(content)
-                except:
-                    continue
-            
-            # Extract images from content array
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict):
-                        if item.get("type") == "image_url":
-                            image_url = item.get("image_url", {})
-                            if isinstance(image_url, dict):
-                                url = image_url.get("url", "")
-                                if url.startswith("data:image"):
-                                    images.append(url)
-                        elif item.get("type") == "image":
-                            # Anthropic format
-                            source = item.get("source", {})
-                            if isinstance(source, dict):
-                                data = source.get("data", "")
-                                media_type = source.get("media_type", "image/jpeg")
-                                if data:
-                                    images.append(f"data:{media_type};base64,{data}")
-    
-    # Also check direct gen_ai.prompt list
-    prompt_list = attrs.get("gen_ai.prompt")
-    if isinstance(prompt_list, list):
-        for msg in prompt_list:
-            if isinstance(msg, dict):
-                content = msg.get("content")
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "image_url":
-                            image_url = item.get("image_url", {})
-                            if isinstance(image_url, dict):
-                                url = image_url.get("url", "")
-                                if url.startswith("data:image"):
-                                    images.append(url)
-    
-    return images
-
-
 def extract_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
     """Extract prompts as message list from span attributes.
     
@@ -102,7 +43,7 @@ def extract_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
             try:
                 parsed = json.loads(content)
                 content = parsed
-            except:
+            except (ValueError, TypeError):
                 pass
         
         # Format content
@@ -132,7 +73,7 @@ def extract_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
             parsed = json.loads(ai_prompt)
             if isinstance(parsed, list):
                 return parsed
-        except:
+        except (ValueError, TypeError):
             pass
     
     return None
@@ -153,7 +94,7 @@ def extract_completions(span, attrs: Dict[str, Any]) -> Optional[str]:
         else:
             try:
                 completions.append(json.dumps(content))
-            except:
+            except (ValueError, TypeError):
                 completions.append(str(content))
     
     if completions:
