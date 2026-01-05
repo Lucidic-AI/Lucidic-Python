@@ -16,22 +16,71 @@ class Environment(Enum):
     DEBUG = "debug"
 
 
+class Region(Enum):
+    """Supported deployment regions"""
+    US = "us"
+    INDIA = "india"
+
+    @classmethod
+    def from_string(cls, value: str) -> 'Region':
+        """Convert string to Region enum, case-insensitive."""
+        value_lower = value.lower().strip()
+        for region in cls:
+            if region.value == value_lower:
+                return region
+        valid_regions = [r.value for r in cls]
+        raise ValueError(f"Invalid region '{value}'. Valid regions: {', '.join(valid_regions)}")
+
+
+# Region to URL mapping
+REGION_URLS: Dict[str, str] = {
+    Region.US: "https://backend.lucidic.ai/api",
+    Region.INDIA: "https://in.backend.lucidic.ai/api",
+}
+DEFAULT_REGION = Region.US
+DEBUG_URL = "http://localhost:8000/api"
+
+
 @dataclass
 class NetworkConfig:
     """Network and connection settings"""
     base_url: str = "https://backend.lucidic.ai/api"
+    region: Optional[Region] = None
     timeout: int = 30
     max_retries: int = 3
     backoff_factor: float = 0.5
     connection_pool_size: int = 20
     connection_pool_maxsize: int = 100
-    
+
     @classmethod
-    def from_env(cls) -> 'NetworkConfig':
-        """Load network configuration from environment variables"""
-        debug = os.getenv("LUCIDIC_DEBUG", "False").lower() == "true"
+    def from_env(cls, region: Optional[str] = None, debug: bool = False) -> 'NetworkConfig':
+        """Load network configuration from environment variables.
+
+        Priority: debug > region argument > LUCIDIC_REGION env var > default
+
+        Args:
+            region: Region string override (e.g., "us", "india")
+            debug: If True, use localhost URL regardless of region
+        """
+        # If debug mode, use localhost (ignores region)
+        if debug:
+            return cls(
+                base_url=DEBUG_URL,
+                region=None,
+                timeout=int(os.getenv("LUCIDIC_TIMEOUT", "30")),
+                max_retries=int(os.getenv("LUCIDIC_MAX_RETRIES", "3")),
+                backoff_factor=float(os.getenv("LUCIDIC_BACKOFF_FACTOR", "0.5")),
+                connection_pool_size=int(os.getenv("LUCIDIC_CONNECTION_POOL_SIZE", "20")),
+                connection_pool_maxsize=int(os.getenv("LUCIDIC_CONNECTION_POOL_MAXSIZE", "100"))
+            )
+
+        # Resolve region: argument > env var > default
+        region_str = region or os.getenv("LUCIDIC_REGION")
+        resolved_region = Region.from_string(region_str) if region_str else DEFAULT_REGION
+
         return cls(
-            base_url="http://localhost:8000/api" if debug else "https://backend.lucidic.ai/api",
+            base_url=REGION_URLS[resolved_region],
+            region=resolved_region,
             timeout=int(os.getenv("LUCIDIC_TIMEOUT", "30")),
             max_retries=int(os.getenv("LUCIDIC_MAX_RETRIES", "3")),
             backoff_factor=float(os.getenv("LUCIDIC_BACKOFF_FACTOR", "0.5")),
@@ -98,26 +147,31 @@ class SDKConfig:
     debug: bool = False
     
     @classmethod
-    def from_env(cls, **overrides) -> 'SDKConfig':
-        """Create configuration from environment variables with optional overrides"""
+    def from_env(cls, region: Optional[str] = None, **overrides) -> 'SDKConfig':
+        """Create configuration from environment variables with optional overrides.
+
+        Args:
+            region: Region string (e.g., "us", "india"). Priority: arg > env var > default
+            **overrides: Additional configuration overrides
+        """
         from dotenv import load_dotenv
         load_dotenv()
-        
+
         debug = os.getenv("LUCIDIC_DEBUG", "False").lower() == "true"
-        
+
         config = cls(
             api_key=os.getenv("LUCIDIC_API_KEY"),
             agent_id=os.getenv("LUCIDIC_AGENT_ID"),
             auto_end=os.getenv("LUCIDIC_AUTO_END", "true").lower() == "true",
             production_monitoring=False,
             blob_threshold=int(os.getenv("LUCIDIC_BLOB_THRESHOLD", "65536")),
-            network=NetworkConfig.from_env(),
+            network=NetworkConfig.from_env(region=region, debug=debug),
             error_handling=ErrorHandlingConfig.from_env(),
             telemetry=TelemetryConfig.from_env(),
             environment=Environment.DEBUG if debug else Environment.PRODUCTION,
             debug=debug
         )
-        
+
         # Apply any overrides
         config.update(**overrides)
         return config
@@ -158,6 +212,7 @@ class SDKConfig:
             "blob_threshold": self.blob_threshold,
             "network": {
                 "base_url": self.network.base_url,
+                "region": self.network.region.value if self.network.region else None,
                 "timeout": self.network.timeout,
                 "max_retries": self.network.max_retries,
                 "connection_pool_size": self.network.connection_pool_size

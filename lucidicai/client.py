@@ -62,10 +62,11 @@ class LucidicAI:
         providers: List of LLM providers to instrument (e.g., ["openai", "anthropic"]).
         auto_end: Whether sessions auto-end on context exit or process shutdown.
         production: If True, suppress SDK errors. If None, checks LUCIDIC_PRODUCTION env var.
+        region: Deployment region ("us", "india"). Falls back to LUCIDIC_REGION env var.
         **kwargs: Additional configuration options passed to SDKConfig.
 
     Raises:
-        ValueError: If required configuration is missing or invalid.
+        ValueError: If required configuration is missing, invalid, or region is unrecognized.
 
     Example:
         # Basic usage
@@ -84,6 +85,13 @@ class LucidicAI:
             agent_id="...",
             production=True
         )
+
+        # India region
+        client = LucidicAI(
+            api_key="...",
+            agent_id="...",
+            region="india"
+        )
     """
 
     def __init__(
@@ -93,6 +101,7 @@ class LucidicAI:
         providers: Optional[List[str]] = None,
         auto_end: bool = True,
         production: Optional[bool] = None,
+        region: Optional[str] = None,
         **kwargs,
     ):
         # Generate unique client ID for telemetry routing
@@ -108,6 +117,7 @@ class LucidicAI:
             api_key=api_key,
             agent_id=agent_id,
             auto_end=auto_end,
+            region=region,
             **kwargs,
         )
 
