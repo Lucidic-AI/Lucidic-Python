@@ -14,7 +14,7 @@ from ..sdk.event import emit_event
 from ..sdk.init import get_session_id
 from ..sdk.context import current_session_id, current_parent_event_id
 from ..telemetry.utils.model_pricing import calculate_cost
-from .extract import detect_is_llm_span, extract_prompts, extract_completions, extract_model
+from .extract import detect_is_llm_span, extract_prompts, extract_completions, extract_model, extract_tool_calls
 from .utils.provider import detect_provider
 from ..utils.logger import debug, info, warning, error, verbose, truncate_id
 
@@ -77,6 +77,8 @@ class LucidicSpanExporter(SpanExporter):
                 return
 
             debug(f"[Telemetry] Processing LLM span: {span.name}")
+            verbose(f"[Telemetry] Span: {span.attributes}")
+            verbose(f"[Telemetry] Span name: {span.name}")
 
             attributes = dict(span.attributes or {})
 
@@ -136,20 +138,30 @@ class LucidicSpanExporter(SpanExporter):
             messages = extract_prompts(attributes) or []
             params = self._extract_params(attributes)
             output_text = extract_completions(span, attributes)
+            tool_calls = extract_tool_calls(span, attributes)
+            debug(f"[Telemetry] Extracted tool calls: {tool_calls}")
 
             # Debug for responses.create
             if span.name == "openai.responses.create":
                 debug(f"[Telemetry] Extracted messages: {messages}")
                 debug(f"[Telemetry] Extracted output: {output_text}")
+                debug(f"[Telemetry] Extracted tool calls: {tool_calls}")
 
-            # Skip spans with no meaningful output (likely incomplete or duplicate instrumentation)
-            if not output_text or output_text == "Response received":
+
+            # see if tool calls need to be used instead of output_text
+            if not output_text or output_text == "Response received" or not tool_calls:
+
+                if tool_calls:
+                    debug(f"[Telemetry] Using tool calls for span {span.name}")
+                    output_text = tool_calls
+
                 # Only use "Response received" if we have other meaningful data
-                if not messages and not attributes.get("lucidic.instrumented"):
+                if not messages and not tool_calls and not attributes.get("lucidic.instrumented"):
                     verbose(f"[Telemetry] Skipping span {span.name} with no meaningful content")
                     return
                 # Use a more descriptive default if we must
                 if not output_text:
+                    debug(f"[Telemetry] No output text for span {span.name}. Using default 'Response received'")
                     output_text = "Response received"
 
             input_tokens = self._extract_prompt_tokens(attributes)
@@ -220,8 +232,8 @@ class LucidicSpanExporter(SpanExporter):
                     if client:
                         # Use client's event resource directly
                         try:
-                            response = client._resources["events"].create_event(event_data)
-                            event_id = response.get("event_id") if response else None
+                            response = client._resources["events"].create(**event_data)
+                            event_id = response if response else None
                             debug(
                                 f"[Telemetry] Routed LLM event {truncate_id(event_id)} to client {client_id[:8]}..."
                             )
