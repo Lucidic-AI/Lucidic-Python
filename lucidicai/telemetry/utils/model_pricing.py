@@ -4,6 +4,10 @@ logger = logging.getLogger("Lucidic")
 
 MODEL_PRICING = {
 
+    # gpt 5.x pricing
+    "gpt-5.2": {"input": 1.75, "output": 14.0},
+    "gpt-5.1": {"input": 1.25, "output": 10.0},
+
     # OpenAI GPT-5 Series (Verified 2025)
     "gpt-5": {"input": 10.0, "output": 10.0},
     "gpt-5-mini": {"input": 0.250, "output": 2.0},
@@ -44,6 +48,11 @@ MODEL_PRICING = {
     "text-davinci-003": {"input": 20.0, "output": 20.0},
     "text-davinci-002": {"input": 20.0, "output": 20.0},
     "code-davinci-002": {"input": 20.0, "output": 20.0},
+
+    # Claude 4.5 models
+    "claude-sonnet-4-5": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    "claude-opus-4-5": {"input": 5.0, "output": 25.0},
     
     # Claude 4 Models (2025) - Verified
     "claude-4-opus": {"input": 15.0, "output": 75.0},
@@ -74,6 +83,11 @@ MODEL_PRICING = {
     "claude-instant": {"input": 0.8, "output": 2.4},
     "claude-instant-1": {"input": 0.8, "output": 2.4},
     "claude-instant-1.2": {"input": 0.8, "output": 2.4},
+
+    # Gemini 3 series
+    "gemini-3-flash-preview": {"input": 0.5, "output": 3.00},
+    "gemini-3-pro-preview": {"input": 2.0, "output": 12.00}, # different pricing for different input sizes ????
+    
     
     # Google Gemini 2.5 Series (2025) - Verified
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0},  # Up to 200k tokens
