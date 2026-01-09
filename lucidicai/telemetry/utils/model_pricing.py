@@ -9,7 +9,7 @@ MODEL_PRICING = {
     "gpt-5.1": {"input": 1.25, "output": 10.0},
 
     # OpenAI GPT-5 Series (Verified 2025)
-    "gpt-5": {"input": 10.0, "output": 10.0},
+    "gpt-5": {"input": 1.25, "output": 10.0},
     "gpt-5-mini": {"input": 0.250, "output": 2.0},
     "gpt-5-nano": {"input": 0.05, "output": 0.4},
 
