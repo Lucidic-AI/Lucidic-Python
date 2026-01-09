@@ -18,6 +18,7 @@ from lucidicai.sdk.event import create_event
 from lucidicai.sdk.init import get_session_id
 from lucidicai.telemetry.utils.model_pricing import calculate_cost
 from lucidicai.sdk.context import current_parent_event_id
+from lucidicai.telemetry.utils.provider import detect_provider
 
 logger = logging.getLogger("Lucidic")
 DEBUG = os.getenv("LUCIDIC_DEBUG", "False") == "True"
@@ -117,7 +118,7 @@ class LucidicLiteLLMCallback(CustomLogger):
             
             # Extract model and provider info
             model = kwargs.get("model", pre_call_info.get("model", "unknown"))
-            provider = self._extract_provider(model)
+            provider = detect_provider(model=model)
             
             # Get messages for description
             messages = kwargs.get("messages", pre_call_info.get("messages", []))
@@ -131,9 +132,6 @@ class LucidicLiteLLMCallback(CustomLogger):
             cost = None
             if usage:
                 cost = self._calculate_litellm_cost(model, usage)
-            
-            # Extract any images from multimodal requests
-            images = self._extract_images_from_messages(messages)
             
             # Get parent event ID from context
             parent_id = None
@@ -191,7 +189,7 @@ class LucidicLiteLLMCallback(CustomLogger):
             
             # Extract model info
             model = kwargs.get("model", pre_call_info.get("model", "unknown"))
-            provider = self._extract_provider(model)
+            provider = detect_provider(model=model)
             
             # Get messages for description
             messages = kwargs.get("messages", pre_call_info.get("messages", []))
@@ -250,26 +248,6 @@ class LucidicLiteLLMCallback(CustomLogger):
     async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
         """Async version of log_stream_event"""
         self.log_stream_event(kwargs, response_obj, start_time, end_time)
-    
-    def _extract_provider(self, model: str) -> str:
-        """Extract provider from model string"""
-        if "/" in model:
-            return model.split("/")[0]
-        
-        # Try to infer provider from model name patterns
-        model_lower = model.lower()
-        if "gpt" in model_lower:
-            return "openai"
-        elif "claude" in model_lower:
-            return "anthropic"
-        elif "gemini" in model_lower:
-            return "vertex_ai"
-        elif "llama" in model_lower:
-            return "meta"
-        elif "mistral" in model_lower:
-            return "mistral"
-        
-        return "unknown"
     
     def _format_messages(self, messages: List[Dict[str, Any]]) -> str:
         """Format messages into a description string"""
@@ -347,25 +325,6 @@ class LucidicLiteLLMCallback(CustomLogger):
             logger.debug(f"Could not calculate cost for {model}: {e}")
             return None
     
-    def _extract_images_from_messages(self, messages: List[Dict[str, Any]]) -> List[str]:
-        """Extract base64 images from multimodal messages"""
-        images = []
-        
-        for msg in messages:
-            if isinstance(msg, dict):
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "image_url":
-                            image_url = item.get("image_url", {})
-                            if isinstance(image_url, dict):
-                                url = image_url.get("url", "")
-                                if url.startswith("data:image"):
-                                    images.append(url)
-                                    
-        return images
-
-
 def setup_litellm_callback():
     """Registers the LucidicLiteLLMCallback with LiteLLM if available.
     

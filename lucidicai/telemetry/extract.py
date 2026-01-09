@@ -1,6 +1,7 @@
 """Extraction utilities matching TypeScript SDK for span attribute processing."""
 import json
 from typing import List, Dict, Any, Optional
+from ..utils.logger import debug, info, warning, error, verbose, truncate_id
 
 
 def detect_is_llm_span(span) -> bool:
@@ -18,65 +19,6 @@ def detect_is_llm_span(span) -> bool:
                 return True
     
     return False
-
-
-def extract_images(attrs: Dict[str, Any]) -> List[str]:
-    """Extract images from span attributes - matches TypeScript logic.
-    
-    Looks for images in:
-    - gen_ai.prompt.{i}.content arrays with image_url items
-    - Direct image attributes
-    """
-    images = []
-    
-    # Check indexed prompt content for images (gen_ai.prompt.{i}.content)
-    for i in range(50):
-        key = f"gen_ai.prompt.{i}.content"
-        if key in attrs:
-            content = attrs[key]
-            
-            # Parse if JSON string
-            if isinstance(content, str):
-                try:
-                    content = json.loads(content)
-                except:
-                    continue
-            
-            # Extract images from content array
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict):
-                        if item.get("type") == "image_url":
-                            image_url = item.get("image_url", {})
-                            if isinstance(image_url, dict):
-                                url = image_url.get("url", "")
-                                if url.startswith("data:image"):
-                                    images.append(url)
-                        elif item.get("type") == "image":
-                            # Anthropic format
-                            source = item.get("source", {})
-                            if isinstance(source, dict):
-                                data = source.get("data", "")
-                                media_type = source.get("media_type", "image/jpeg")
-                                if data:
-                                    images.append(f"data:{media_type};base64,{data}")
-    
-    # Also check direct gen_ai.prompt list
-    prompt_list = attrs.get("gen_ai.prompt")
-    if isinstance(prompt_list, list):
-        for msg in prompt_list:
-            if isinstance(msg, dict):
-                content = msg.get("content")
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "image_url":
-                            image_url = item.get("image_url", {})
-                            if isinstance(image_url, dict):
-                                url = image_url.get("url", "")
-                                if url.startswith("data:image"):
-                                    images.append(url)
-    
-    return images
 
 
 def extract_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
@@ -102,7 +44,7 @@ def extract_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
             try:
                 parsed = json.loads(content)
                 content = parsed
-            except:
+            except (ValueError, TypeError):
                 pass
         
         # Format content
@@ -114,6 +56,29 @@ def extract_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
                     text_parts.append(item.get("text", ""))
             if text_parts:
                 content = " ".join(text_parts)
+
+        # if we have no content here then that means we have a tool call
+        # NOTE: for now, I am assumign that tools call history only shows up if there is no content
+        # based on my testing of otel spans in different cases. Should be revisited if this is not the case.
+        if not content:
+            # look for tool calls in the attributes
+            j = 0
+            tool_calls = []
+            while True:
+                tool_key_name = f"gen_ai.prompt.{i}.tool_calls.{j}.name"
+                tool_key_arguments = f"gen_ai.prompt.{i}.tool_calls.{j}.arguments"
+                if tool_key_name not in attrs:
+                    break
+                name = attrs[tool_key_name]
+                arguments = attrs[tool_key_arguments]
+                tool_calls.append({"name": name, "arguments": arguments})
+                j += 1
+
+            # for now, just make content as "Tool Calls:\n 1) <tool call 1> \n 2) <tool call 2> \n ..."
+            if tool_calls:
+                content = 'Tool Calls:' if len(tool_calls) > 1 else 'Tool Call:'
+                for k, tool_call in enumerate(tool_calls):
+                    content += f'\n{k + 1}) {json.dumps(tool_call, indent=4)}'
         
         messages.append({"role": role, "content": content})
     
@@ -132,7 +97,7 @@ def extract_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
             parsed = json.loads(ai_prompt)
             if isinstance(parsed, list):
                 return parsed
-        except:
+        except (ValueError, TypeError):
             pass
     
     return None
@@ -143,7 +108,8 @@ def extract_completions(span, attrs: Dict[str, Any]) -> Optional[str]:
     completions = []
     
     # Check indexed format (gen_ai.completion.{i}.content)
-    for i in range(50):
+    i = 0
+    while True:
         key = f"gen_ai.completion.{i}.content"
         if key not in attrs:
             break
@@ -153,8 +119,9 @@ def extract_completions(span, attrs: Dict[str, Any]) -> Optional[str]:
         else:
             try:
                 completions.append(json.dumps(content))
-            except:
+            except (ValueError, TypeError):
                 completions.append(str(content))
+        i += 1
     
     if completions:
         return "\n".join(completions)
@@ -179,6 +146,36 @@ def extract_completions(span, attrs: Dict[str, Any]) -> Optional[str]:
     
     return None
 
+
+def extract_tool_calls(span, attrs: Dict[str, Any]) -> Optional[List[Dict]]:
+    """Extract tool calls from span attributes."""
+
+    debug(f"[Telemetry] Extracting tool calls from span")
+
+    # check if this is a tool call span
+    if not attrs.get("gen_ai.completion.0.finish_reason") == "tool_calls":
+        debug(f"[Telemetry] Not a tool call span {span.name}")
+        return None
+
+    tool_calls = []
+    i = 0
+    while True:
+        key_name = f"gen_ai.completion.0.tool_calls.{i}.name"
+        key_arguments = f"gen_ai.completion.0.tool_calls.{i}.arguments"
+        if key_name not in attrs:
+            break
+        name = attrs[key_name]
+        arguments = attrs[key_arguments]
+        debug(f"[Telemetry] Extracted tool call {name} with arguments: {arguments}")
+        tool_calls.append({"name": name, "arguments": arguments})
+        i += 1
+
+    if tool_calls:
+        # prettify the tool calls and return as a string
+        tool_calls_str = [json.dumps(tool_call, indent=4) for tool_call in tool_calls]
+        return "\n".join(tool_calls_str)
+
+    return None
 
 def extract_model(attrs: Dict[str, Any]) -> Optional[str]:
     """Extract model name from span attributes."""

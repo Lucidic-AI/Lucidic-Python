@@ -4,8 +4,12 @@ logger = logging.getLogger("Lucidic")
 
 MODEL_PRICING = {
 
+    # gpt 5.x pricing
+    "gpt-5.2": {"input": 1.75, "output": 14.0},
+    "gpt-5.1": {"input": 1.25, "output": 10.0},
+
     # OpenAI GPT-5 Series (Verified 2025)
-    "gpt-5": {"input": 10.0, "output": 10.0},
+    "gpt-5": {"input": 1.25, "output": 10.0},
     "gpt-5-mini": {"input": 0.250, "output": 2.0},
     "gpt-5-nano": {"input": 0.05, "output": 0.4},
 
@@ -44,6 +48,11 @@ MODEL_PRICING = {
     "text-davinci-003": {"input": 20.0, "output": 20.0},
     "text-davinci-002": {"input": 20.0, "output": 20.0},
     "code-davinci-002": {"input": 20.0, "output": 20.0},
+
+    # Claude 4.5 models
+    "claude-sonnet-4-5": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    "claude-opus-4-5": {"input": 5.0, "output": 25.0},
     
     # Claude 4 Models (2025) - Verified
     "claude-4-opus": {"input": 15.0, "output": 75.0},
@@ -74,6 +83,11 @@ MODEL_PRICING = {
     "claude-instant": {"input": 0.8, "output": 2.4},
     "claude-instant-1": {"input": 0.8, "output": 2.4},
     "claude-instant-1.2": {"input": 0.8, "output": 2.4},
+
+    # Gemini 3 series
+    "gemini-3-flash-preview": {"input": 0.5, "output": 3.00},
+    "gemini-3-pro-preview": {"input": 2.0, "output": 12.00}, # different pricing for different input sizes ????
+    
     
     # Google Gemini 2.5 Series (2025) - Verified
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0},  # Up to 200k tokens
@@ -200,35 +214,12 @@ PROVIDER_AVERAGES = {
 }
 
 def get_provider_from_model(model: str) -> str:
-    """Extract provider name from model string"""
-    model_lower = model.lower()
-    
-    if any(claude in model_lower for claude in ["claude", "anthropic"]):
-        return "anthropic"
-    elif any(gpt in model_lower for gpt in ["gpt", "openai", "o1", "o3", "o4", "text-davinci", "code-davinci"]):
-        return "openai"  
-    elif any(gemini in model_lower for gemini in ["gemini", "google", "gemma", "palm", "bison"]):
-        return "google"
-    elif any(llama in model_lower for llama in ["llama", "meta"]):
-        return "meta"
-    elif "mistral" in model_lower:
-        return "mistral"
-    elif any(cohere in model_lower for cohere in ["command", "cohere"]):
-        return "cohere"
-    elif "deepseek" in model_lower:
-        return "deepseek"
-    elif any(qwen in model_lower for qwen in ["qwen", "qwq"]):
-        return "qwen"
-    elif any(together in model_lower for together in ["together", "redpajama"]):
-        return "together"
-    elif any(pplx in model_lower for pplx in ["pplx", "perplexity"]):
-        return "perplexity"
-    elif any(grok in model_lower for grok in ["grok", "xAI"]):
-        return "grok"
-    elif "groq" in model_lower:
-        return "groq"
-    else:
-        return "unknown"
+    """Extract provider name from model string.
+
+    This is a backward-compatible alias for detect_provider().
+    """
+    from .provider import detect_provider
+    return detect_provider(model=model)
 
 def normalize_model_name(model: str) -> str:
     """Normalize model name by stripping dates and provider prefixes"""

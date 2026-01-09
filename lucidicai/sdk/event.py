@@ -179,6 +179,25 @@ def _prepare_event_request(
     return send_body, needs_blob, payload if needs_blob else None
 
 
+def _get_event_resource():
+    """Get an event resource from a registered client.
+
+    Returns:
+        Event resource or None if no client is available.
+    """
+    try:
+        from .shutdown_manager import get_shutdown_manager
+        manager = get_shutdown_manager()
+        with manager._client_lock:
+            # Return first available client's event resource
+            for client in manager._clients.values():
+                if hasattr(client, '_resources') and 'events' in client._resources:
+                    return client._resources['events']
+    except Exception as e:
+        debug(f"[Event] Failed to get event resource from client registry: {e}")
+    return None
+
+
 def create_event(
     type: str = "generic",
     event_id: Optional[str] = None,
@@ -196,30 +215,28 @@ def create_event(
     Returns:
         Event ID (client-generated or provided UUID)
     """
-    from ..sdk.init import get_resources
-    
     config = get_config()
     blob_threshold = getattr(config, 'blob_threshold', DEFAULT_BLOB_THRESHOLD)
-    
+
     send_body, needs_blob, original_payload = _prepare_event_request(
         type, event_id, session_id, blob_threshold, **kwargs
     )
-    
+
     if send_body is None:
         # No active session
         return str(uuid.uuid4())
-    
+
     client_event_id = send_body.get('client_event_id', str(uuid.uuid4()))
-    
-    # Get resources and send event
-    resources = get_resources()
-    if not resources or 'events' not in resources:
-        warning("[Event] No event resource available, event not sent")
+
+    # Get event resource from client registry
+    event_resource = _get_event_resource()
+    if not event_resource:
+        warning("[Event] No event resource available (no client registered), event not sent")
         return client_event_id
-    
+
     try:
-        response = resources['events'].create_event(send_body)
-        
+        response = event_resource.create_event(send_body)
+
         # Handle blob upload if needed (blocking)
         if needs_blob and original_payload:
             blob_url = response.get("blob_url")
@@ -229,12 +246,12 @@ def create_event(
                 debug(f"[Event] Blob uploaded for event {truncate_id(client_event_id)}")
             else:
                 error("[Event] No blob_url received for large payload")
-        
+
         debug(f"[Event] Event {truncate_id(client_event_id)} sent successfully")
-        
+
     except Exception as e:
         error(f"[Event] Failed to send event {truncate_id(client_event_id)}: {e}")
-    
+
     return client_event_id
 
 
@@ -255,43 +272,41 @@ async def acreate_event(
     Returns:
         Event ID (client-generated or provided UUID)
     """
-    from ..sdk.init import get_resources
-    
     # Check if we're in shutdown - fall back to sync if we are
     if sys.is_finalizing():
         debug(f"[Event] Python is finalizing in acreate_event, falling back to sync")
         return create_event(type, event_id, session_id, **kwargs)
-    
+
     config = get_config()
     blob_threshold = getattr(config, 'blob_threshold', DEFAULT_BLOB_THRESHOLD)
-    
+
     send_body, needs_blob, original_payload = _prepare_event_request(
         type, event_id, session_id, blob_threshold, **kwargs
     )
-    
+
     if send_body is None:
         # No active session
         return str(uuid.uuid4())
-    
+
     client_event_id = send_body.get('client_event_id', str(uuid.uuid4()))
-    
-    # Get resources and send event
-    resources = get_resources()
-    if not resources or 'events' not in resources:
-        warning("[Event] No event resource available, event not sent")
+
+    # Get event resource from client registry
+    event_resource = _get_event_resource()
+    if not event_resource:
+        warning("[Event] No event resource available (no client registered), event not sent")
         return client_event_id
-    
+
     try:
         # Try async first, fall back to sync if we get shutdown errors
         try:
-            response = await resources['events'].acreate_event(send_body)
+            response = await event_resource.acreate_event(send_body)
         except RuntimeError as e:
             if "cannot schedule new futures after interpreter shutdown" in str(e).lower():
                 debug(f"[Event] Detected shutdown in acreate_event, falling back to sync")
-                response = resources['events'].create_event(send_body)
+                response = event_resource.create_event(send_body)
             else:
                 raise
-        
+
         # Handle blob upload if needed (background task)
         if needs_blob and original_payload:
             blob_url = response.get("blob_url")
@@ -312,12 +327,12 @@ async def acreate_event(
                         raise
             else:
                 error("[Event] No blob_url received for large payload")
-        
+
         debug(f"[Event] Event {truncate_id(client_event_id)} sent successfully")
-        
+
     except Exception as e:
         error(f"[Event] Failed to send event {truncate_id(client_event_id)}: {e}")
-    
+
     return client_event_id
 
 

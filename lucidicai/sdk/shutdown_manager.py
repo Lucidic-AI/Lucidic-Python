@@ -8,10 +8,13 @@ import signal
 import sys
 import threading
 import time
-from typing import Dict, Optional, Set, Callable
+from typing import Dict, Optional, Set, Callable, TYPE_CHECKING
 from dataclasses import dataclass
 
 from ..utils.logger import debug, info, warning, error, truncate_id
+
+if TYPE_CHECKING:
+    from ..client import LucidicAI
 
 
 @dataclass
@@ -45,14 +48,18 @@ class ShutdownManager:
         # only initialize once
         if self._initialized:
             return
-            
+
         self._initialized = True
         self.active_sessions: Dict[str, SessionState] = {}
         self.is_shutting_down = False
         self.shutdown_complete = threading.Event()
         self.listeners_registered = False
         self._session_lock = threading.Lock()
-        
+
+        # Client registry for multi-client support
+        self._clients: Dict[str, "LucidicAI"] = {}
+        self._client_lock = threading.Lock()
+
         debug("[ShutdownManager] Initialized")
     
     def register_session(self, session_id: str, state: SessionState) -> None:
@@ -86,16 +93,39 @@ class ShutdownManager:
     
     def is_session_active(self, session_id: str) -> bool:
         """Check if a session is active.
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             True if session is active
         """
         with self._session_lock:
             return session_id in self.active_sessions
-    
+
+    def register_client(self, client: "LucidicAI") -> None:
+        """Register a client for shutdown tracking.
+
+        Args:
+            client: The LucidicAI client to register
+        """
+        with self._client_lock:
+            self._clients[client._client_id] = client
+            debug(f"[ShutdownManager] Registered client {client._client_id[:8]}...")
+
+            # Ensure listeners are registered
+            self._ensure_listeners_registered()
+
+    def unregister_client(self, client_id: str) -> None:
+        """Unregister a client.
+
+        Args:
+            client_id: The client ID to unregister
+        """
+        with self._client_lock:
+            self._clients.pop(client_id, None)
+            debug(f"[ShutdownManager] Unregistered client {client_id[:8]}...")
+
     def _ensure_listeners_registered(self) -> None:
         """Register process exit listeners once."""
         if self.listeners_registered:
@@ -163,33 +193,40 @@ class ShutdownManager:
         if self.is_shutting_down:
             debug(f"[ShutdownManager] Already shutting down, ignoring {trigger}")
             return
-        
+
         self.is_shutting_down = True
-        
+
+        # Check if there's anything to clean up
         with self._session_lock:
             session_count = len(self.active_sessions)
-            if session_count == 0:
-                debug("[ShutdownManager] No active sessions to clean up")
-                self.shutdown_complete.set()
-                return
-                
-            info(f"[ShutdownManager] Shutdown initiated by {trigger}, ending {session_count} active session(s)")
-            
-            # perform shutdown in separate thread to avoid deadlocks
-            import threading
-            shutdown_thread = threading.Thread(
-                target=self._perform_shutdown,
-                name="ShutdownThread"
-            )
-            shutdown_thread.daemon = True
-            shutdown_thread.start()
-            
-            # wait for shutdown with timeout
-            if not self.shutdown_complete.wait(timeout=30):
-                warning("[ShutdownManager] Shutdown timeout after 30s")
+        with self._client_lock:
+            client_count = len(self._clients)
+
+        if session_count == 0 and client_count == 0:
+            debug("[ShutdownManager] No active sessions or clients to clean up")
+            # Reset flag so future shutdowns can proceed (e.g., if exception triggered
+            # shutdown before any sessions were created, then user creates sessions)
+            self.is_shutting_down = False
+            self.shutdown_complete.set()
+            return
+
+        info(f"[ShutdownManager] Shutdown initiated by {trigger}, ending {session_count} active session(s), {client_count} client(s)")
+
+        # perform shutdown in separate thread to avoid deadlocks
+        import threading
+        shutdown_thread = threading.Thread(
+            target=self._perform_shutdown,
+            name="ShutdownThread"
+        )
+        shutdown_thread.daemon = True
+        shutdown_thread.start()
+
+        # wait for shutdown with timeout - MUST be outside lock to avoid deadlock
+        if not self.shutdown_complete.wait(timeout=30):
+            warning("[ShutdownManager] Shutdown timeout after 30s")
     
     def _perform_shutdown(self) -> None:
-        """Perform the actual shutdown of all sessions."""
+        """Perform the actual shutdown of all sessions and clients."""
         debug("[ShutdownManager] _perform_shutdown thread started")
         try:
             # First, flush all pending background events before ending sessions
@@ -201,18 +238,33 @@ class ShutdownManager:
                 debug("[ShutdownManager] Event flush complete")
             except Exception as e:
                 error(f"[ShutdownManager] Error flushing events: {e}")
-            
+
+            # Close all registered clients (this will also end their sessions)
+            clients_to_close = []
+            with self._client_lock:
+                clients_to_close = list(self._clients.values())
+
+            if clients_to_close:
+                debug(f"[ShutdownManager] Closing {len(clients_to_close)} registered client(s)")
+                for client in clients_to_close:
+                    try:
+                        debug(f"[ShutdownManager] Closing client {client._client_id[:8]}...")
+                        client.close()
+                    except Exception as e:
+                        error(f"[ShutdownManager] Error closing client: {e}")
+
+            # Also handle sessions registered directly (legacy support)
             sessions_to_end = []
-            
+
             with self._session_lock:
                 # collect sessions that need ending
                 for session_id, state in self.active_sessions.items():
                     if state.auto_end and not state.is_shutting_down:
                         state.is_shutting_down = True
                         sessions_to_end.append((session_id, state))
-            
+
             debug(f"[ShutdownManager] Found {len(sessions_to_end)} sessions to end")
-            
+
             # end all sessions
             for session_id, state in sessions_to_end:
                 try:
@@ -223,13 +275,14 @@ class ShutdownManager:
             
             # Final telemetry shutdown after all sessions are ended
             try:
-                from ..sdk.init import _sdk_state
-                if hasattr(_sdk_state, 'tracer_provider') and _sdk_state.tracer_provider:
+                from ..sdk.init import get_tracer_provider
+                tracer_provider = get_tracer_provider()
+                if tracer_provider:
                     debug("[ShutdownManager] Final OpenTelemetry shutdown")
                     try:
                         # Final flush and shutdown with longer timeout
-                        _sdk_state.tracer_provider.force_flush(timeout_millis=5000)
-                        _sdk_state.tracer_provider.shutdown()
+                        tracer_provider.force_flush(timeout_millis=5000)
+                        tracer_provider.shutdown()
                         debug("[ShutdownManager] OpenTelemetry shutdown complete")
                     except Exception as e:
                         error(f"[ShutdownManager] Error in final telemetry shutdown: {e}")
@@ -255,13 +308,13 @@ class ShutdownManager:
         """
         # Flush OpenTelemetry spans first
         try:
-            # Get the global tracer provider if it exists
-            from ..sdk.init import _sdk_state
-            if hasattr(_sdk_state, 'tracer_provider') and _sdk_state.tracer_provider:
+            from ..sdk.init import get_tracer_provider
+            tracer_provider = get_tracer_provider()
+            if tracer_provider:
                 debug(f"[ShutdownManager] Flushing OpenTelemetry spans for session {truncate_id(session_id)}")
                 try:
                     # Force flush with 3 second timeout
-                    _sdk_state.tracer_provider.force_flush(timeout_millis=3000)
+                    tracer_provider.force_flush(timeout_millis=3000)
                 except Exception as e:
                     error(f"[ShutdownManager] Error flushing spans: {e}")
         except ImportError:

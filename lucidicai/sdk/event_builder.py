@@ -30,7 +30,7 @@ class EventBuilder:
     # field sets for different event types
     BASE_FIELDS = {
         'type', 'event_id', 'parent_event_id', 'occurred_at',
-        'duration', 'tags', 'metadata', 'screenshots'
+        'duration', 'tags', 'metadata'
     }
     
     LLM_FIELDS = {
@@ -136,9 +136,7 @@ class EventBuilder:
             base['tags'] = params['tags']
         if 'metadata' in params:
             base['metadata'] = params['metadata']
-        if 'screenshots' in params:
-            base['screenshots'] = params['screenshots']
-            
+
         return base
     
     @classmethod

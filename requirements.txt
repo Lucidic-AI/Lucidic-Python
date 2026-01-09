@@ -3,8 +3,6 @@ langchain-community
 langchain-core
 python-dotenv>=1.0.0
 openai>=1.3.0
-pillow
-boto3
 httpx>=0.27.0
 openai-agents
 anthropic

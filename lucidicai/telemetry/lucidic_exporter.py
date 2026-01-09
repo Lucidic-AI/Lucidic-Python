@@ -3,30 +3,58 @@
 Converts completed spans into immutable typed LLM events via emit_event(),
 which fires events in the background without blocking the exporter.
 """
-from typing import Sequence, Optional, Dict, Any, List
+from typing import Sequence, Optional, Dict, Any, List, TYPE_CHECKING
 from datetime import datetime, timezone
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
-from opentelemetry.trace import StatusCode
 from opentelemetry.semconv_ai import SpanAttributes
+import threading
 
 from ..sdk.event import emit_event
 from ..sdk.init import get_session_id
 from ..sdk.context import current_session_id, current_parent_event_id
 from ..telemetry.utils.model_pricing import calculate_cost
-from .extract import detect_is_llm_span, extract_images, extract_prompts, extract_completions, extract_model
+from .extract import detect_is_llm_span, extract_prompts, extract_completions, extract_model, extract_tool_calls
+from .utils.provider import detect_provider
 from ..utils.logger import debug, info, warning, error, verbose, truncate_id
+
+if TYPE_CHECKING:
+    from ..client import LucidicAI
 
 
 class LucidicSpanExporter(SpanExporter):
     """Exporter that creates immutable LLM events for completed spans.
-    
+
     Uses emit_event() for fire-and-forget event creation without blocking.
+    Supports multi-client routing via client registry.
     """
-    
+
     def __init__(self):
         """Initialize the exporter."""
         self._shutdown = False
+        # Client registry for multi-client support
+        self._client_registry: Dict[str, "LucidicAI"] = {}
+        self._registry_lock = threading.Lock()
+
+    def register_client(self, client: "LucidicAI") -> None:
+        """Register a client for span routing.
+
+        Args:
+            client: The LucidicAI client to register
+        """
+        with self._registry_lock:
+            self._client_registry[client._client_id] = client
+            debug(f"[Exporter] Registered client {client._client_id[:8]}...")
+
+    def unregister_client(self, client_id: str) -> None:
+        """Unregister a client.
+
+        Args:
+            client_id: The client ID to unregister
+        """
+        with self._registry_lock:
+            self._client_registry.pop(client_id, None)
+            debug(f"[Exporter] Unregistered client {client_id[:8]}...")
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
@@ -49,6 +77,8 @@ class LucidicSpanExporter(SpanExporter):
                 return
 
             debug(f"[Telemetry] Processing LLM span: {span.name}")
+            verbose(f"[Telemetry] Span: {span.attributes}")
+            verbose(f"[Telemetry] Span name: {span.name}")
 
             attributes = dict(span.attributes or {})
 
@@ -72,7 +102,8 @@ class LucidicSpanExporter(SpanExporter):
             if not target_session_id:
                 try:
                     target_session_id = current_session_id.get(None)
-                except Exception:
+                except Exception as e:
+                    debug(f"[Telemetry] Failed to get session_id from contextvar: {e}")
                     target_session_id = None
             if not target_session_id:
                 target_session_id = get_session_id()
@@ -89,7 +120,8 @@ class LucidicSpanExporter(SpanExporter):
                     parent_id = current_parent_event_id.get(None)
                     if parent_id:
                         debug(f"[Telemetry] Got parent_id from context for span {span.name}: {truncate_id(parent_id)}")
-                except Exception:
+                except Exception as e:
+                    debug(f"[Telemetry] Failed to get parent_event_id from contextvar: {e}")
                     parent_id = None
             
             if not parent_id:
@@ -102,30 +134,39 @@ class LucidicSpanExporter(SpanExporter):
 
             # Typed fields using extract utilities
             model = extract_model(attributes) or 'unknown'
-            provider = self._detect_provider_name(attributes)
+            provider = detect_provider(model=model, attributes=attributes)
             messages = extract_prompts(attributes) or []
             params = self._extract_params(attributes)
             output_text = extract_completions(span, attributes)
+            tool_calls = extract_tool_calls(span, attributes)
+            debug(f"[Telemetry] Extracted tool calls: {tool_calls}")
 
             # Debug for responses.create
             if span.name == "openai.responses.create":
                 debug(f"[Telemetry] Extracted messages: {messages}")
                 debug(f"[Telemetry] Extracted output: {output_text}")
+                debug(f"[Telemetry] Extracted tool calls: {tool_calls}")
 
-            # Skip spans with no meaningful output (likely incomplete or duplicate instrumentation)
-            if not output_text or output_text == "Response received":
+
+            # see if tool calls need to be used instead of output_text
+            if not output_text or output_text == "Response received" or not tool_calls:
+
+                if tool_calls:
+                    debug(f"[Telemetry] Using tool calls for span {span.name}")
+                    output_text = tool_calls
+
                 # Only use "Response received" if we have other meaningful data
-                if not messages and not attributes.get("lucidic.instrumented"):
+                if not messages and not tool_calls and not attributes.get("lucidic.instrumented"):
                     verbose(f"[Telemetry] Skipping span {span.name} with no meaningful content")
                     return
                 # Use a more descriptive default if we must
                 if not output_text:
+                    debug(f"[Telemetry] No output text for span {span.name}. Using default 'Response received'")
                     output_text = "Response received"
 
             input_tokens = self._extract_prompt_tokens(attributes)
             output_tokens = self._extract_completion_tokens(attributes)
             cost = self._calculate_cost(attributes)
-            images = extract_images(attributes)
 
             # Prepare event data for async creation
             event_data = {
@@ -141,140 +182,79 @@ class LucidicSpanExporter(SpanExporter):
                 'input_tokens': input_tokens,
                 'output_tokens': output_tokens,
                 'cost': cost,
-                'raw': {"images": images} if images else None,
+                'raw': None,
                 'parent_event_id': parent_id,
             }
             
+            # Get client_id for routing
+            client_id = attributes.get("lucidic.client_id")
+
             if not self._shutdown:
-                self._send_event_async(event_data, span.name, parent_id)
-            
-            debug(f"[Telemetry] Queued LLM event creation for span {span.name} (session: {truncate_id(target_session_id)})")
+                self._send_event_async(event_data, span.name, parent_id, client_id)
+
+            debug(
+                f"[Telemetry] Queued LLM event creation for span {span.name} "
+                f"(session: {truncate_id(target_session_id)}, client: {truncate_id(client_id)})"
+            )
 
         except Exception as e:
             error(f"[Telemetry] Failed to process span {span.name}: {e}")
     
-    def _send_event_async(self, event_data: Dict[str, Any], span_name: str, parent_id: Optional[str]) -> None:
+    def _send_event_async(
+        self,
+        event_data: Dict[str, Any],
+        span_name: str,
+        parent_id: Optional[str],
+        client_id: Optional[str] = None,
+    ) -> None:
         """Send event asynchronously in a background thread.
-        
+
         Args:
             event_data: Event data to send
             span_name: Name of the span (for logging)
             parent_id: Parent event ID (for context)
+            client_id: Client ID for routing (if available)
         """
         try:
             # Set context for parent if needed
             from ..sdk.context import current_parent_event_id as parent_context
+
             if parent_id:
                 token = parent_context.set(parent_id)
             else:
                 token = None
-            
+
             try:
-                # Use emit_event for fire-and-forget
+                # Try to route to specific client if client_id is available
+                if client_id:
+                    with self._registry_lock:
+                        client = self._client_registry.get(client_id)
+                    if client:
+                        # Use client's event resource directly
+                        try:
+                            response = client._resources["events"].create(**event_data)
+                            event_id = response if response else None
+                            debug(
+                                f"[Telemetry] Routed LLM event {truncate_id(event_id)} to client {client_id[:8]}..."
+                            )
+                            return
+                        except Exception as e:
+                            debug(f"[Telemetry] Failed to route event to client: {e}")
+                            # Fall through to emit_event
+
+                # Fallback to emit_event (uses global state)
                 event_id = emit_event(**event_data)
-                debug(f"[Telemetry] Emitted LLM event {truncate_id(event_id)} from span {span_name}")
+                debug(
+                    f"[Telemetry] Emitted LLM event {truncate_id(event_id)} from span {span_name}"
+                )
             finally:
                 # Reset parent context
                 if token:
                     parent_context.reset(token)
-                    
+
         except Exception as e:
             error(f"[Telemetry] Failed to send event for span {span_name}: {e}")
-    
-    def _create_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any]) -> Optional[str]:
-        """Create a Lucidic event from span start"""
-        try:
-            # Extract description from prompts/messages
-            description = self._extract_description(span, attributes)
-            
-            # Extract images if present
-            images = self._extract_images(attributes)
-            
-            # Get model info
-            model = attributes.get(SpanAttributes.LLM_RESPONSE_MODEL) or \
-                   attributes.get(SpanAttributes.LLM_REQUEST_MODEL) or \
-                   attributes.get('gen_ai.request.model') or 'unknown'
-            
-            # Resolve target session id for this span
-            target_session_id = attributes.get('lucidic.session_id')
-            if not target_session_id:
-                try:
-                    target_session_id = current_session_id.get(None)
-                except Exception:
-                    target_session_id = None
-            if not target_session_id:
-                target_session_id = get_session_id()
-            if not target_session_id:
-                debug(f"[Telemetry] No session ID for span {span.name}, skipping")
-                return None
 
-            # Create event asynchronously
-            event_data = {
-                'session_id': target_session_id,
-                'description': description,
-                'result': "Processing...",
-                'model': model
-            }
-
-            if images:
-                event_data['screenshots'] = images
-
-            # Fire and forget using emit_event
-            if not self._shutdown:
-                emit_event(**event_data)
-            return None  # We don't wait for the event ID
-            
-        except Exception as e:
-            error(f"[Telemetry] Failed to create event from span: {e}")
-            return None
-    
-    def _update_event_from_span(self, span: ReadableSpan, attributes: Dict[str, Any], event_id: str) -> None:
-        """Deprecated: events are immutable; no updates performed."""
-        return
-    
-    def _extract_description(self, span: ReadableSpan, attributes: Dict[str, Any]) -> str:
-        """Extract description from span attributes"""
-        # Try to get prompts/messages
-        prompts = attributes.get(SpanAttributes.LLM_PROMPTS) or \
-                 attributes.get('gen_ai.prompt')
-        
-        verbose(f"[Telemetry] Extracting description from attributes: {attributes}, prompts: {prompts}")
-
-        if prompts:
-            if isinstance(prompts, list) and prompts:
-                # Handle message list format
-                return self._format_messages(prompts)
-            elif isinstance(prompts, str):
-                return prompts
-                
-        # Fallback to span name
-        return f"LLM Call: {span.name}"
-    
-    def _extract_result(self, span: ReadableSpan, attributes: Dict[str, Any]) -> str:
-        """Extract result/response from span attributes"""
-        # Try to get completions
-        completions = attributes.get(SpanAttributes.LLM_COMPLETIONS) or \
-                     attributes.get('gen_ai.completion')
-        
-        if completions:
-            if isinstance(completions, list) and completions:
-                # Handle multiple completions
-                return "\n".join(str(c) for c in completions)
-            elif isinstance(completions, str):
-                return completions
-                
-        # Check for error
-        if span.status.status_code == StatusCode.ERROR:
-            return f"Error: {span.status.description or 'Unknown error'}"
-            
-        return "Response received"
-    
-    def _detect_provider_name(self, attributes: Dict[str, Any]) -> str:
-        name = attributes.get('gen_ai.system') or attributes.get('service.name')
-        if name:
-            return str(name)
-        return "openai" if 'openai' in (str(attributes.get('service.name', '')).lower()) else "unknown"
-    
 
     def _extract_params(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
         return {

@@ -31,13 +31,13 @@ class ContextCaptureProcessor(SpanProcessor):
             
             try:
                 session_id = current_session_id.get(None)
-            except Exception:
-                pass
-            
+            except Exception as e:
+                debug(f"[ContextCapture] Failed to get session_id from contextvar: {e}")
+
             try:
                 parent_event_id = current_parent_event_id.get(None)
-            except Exception:
-                pass
+            except Exception as e:
+                debug(f"[ContextCapture] Failed to get parent_event_id from contextvar: {e}")
             
             # If not found in contextvars, try OpenTelemetry baggage
             # This handles cases where spans are created in different threads
@@ -57,12 +57,19 @@ class ContextCaptureProcessor(SpanProcessor):
             if session_id:
                 span.set_attribute("lucidic.session_id", session_id)
                 debug(f"[ContextCapture] Set session_id attribute for span {span.name}")
-            
+
             if parent_event_id:
                 span.set_attribute("lucidic.parent_event_id", parent_event_id)
                 debug(f"[ContextCapture] Captured parent_event_id {truncate_id(parent_event_id)} for span {span.name}")
             else:
                 debug(f"[ContextCapture] No parent_event_id available for span {span.name}")
+
+            # Capture client_id for multi-client routing
+            from lucidicai.sdk.context import get_active_client
+            client = get_active_client()
+            if client:
+                span.set_attribute("lucidic.client_id", client._client_id)
+                debug(f"[ContextCapture] Set client_id attribute for span {span.name}")
             
         except Exception as e:
             # Never fail span creation due to context capture
