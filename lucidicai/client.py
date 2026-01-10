@@ -30,6 +30,7 @@ from .api.resources.dataset import DatasetResource
 from .api.resources.experiment import ExperimentResource
 from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
+from .api.resources.evals import EvalsResource
 from .core.config import SDKConfig
 from .core.errors import LucidicError
 from .session_obj import Session
@@ -145,6 +146,7 @@ class LucidicAI:
             "experiments": ExperimentResource(self._http, self._config.agent_id, self._production),
             "prompts": PromptResource(self._http, self._production),
             "feature_flags": FeatureFlagResource(self._http, self._config.agent_id, self._production),
+            "evals": EvalsResource(self._http, self._production),
         }
 
         # Active sessions for this client
@@ -270,6 +272,17 @@ class LucidicAI:
             client.datasets.create(name="My Dataset")
         """
         return self._resources["datasets"]
+
+    @property
+    def evals(self) -> EvalsResource:
+        """Access evals resource for submitting evaluation results.
+
+        Example:
+            client.evals.emit(result=True, name="task_success")
+            client.evals.emit(result=0.95, name="accuracy")
+            client.evals.emit(result="excellent", name="quality")
+        """
+        return self._resources["evals"]
 
     # ==================== Decorators ====================
 
