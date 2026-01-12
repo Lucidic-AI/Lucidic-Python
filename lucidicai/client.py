@@ -31,6 +31,7 @@ from .api.resources.experiment import ExperimentResource
 from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
 from .api.resources.evals import EvalsResource
+from .api.resources.calls import CallsResource
 from .core.config import SDKConfig
 from .core.errors import LucidicError
 from .session_obj import Session
@@ -147,6 +148,7 @@ class LucidicAI:
             "prompts": PromptResource(self._http, self._production),
             "feature_flags": FeatureFlagResource(self._http, self._config.agent_id, self._production),
             "evals": EvalsResource(self._http, self._production),
+            "calls": CallsResource(self._http, self._config.agent_id, self._production),
         }
 
         # Active sessions for this client
@@ -283,6 +285,37 @@ class LucidicAI:
             client.evals.emit(result="excellent", name="quality")
         """
         return self._resources["evals"]
+
+    @property
+    def calls(self) -> CallsResource:
+        """Access calls resource for persona generation.
+
+        This resource treats a dataset as a collection of call transcripts
+        and provides methods to generate personas from them.
+
+        Example:
+            # generate personas for multiple calls
+            result = client.calls.generate_personas(
+                dataset_id="...",
+                call_ids=["call-001", "call-002"]
+            )
+
+            # generate custom persona with overrides
+            result = client.calls.generate_custom_persona(
+                dataset_id="...",
+                call_id="call-001",
+                confidence="anxious",
+                mood="frustrated"
+            )
+
+            # generate fully synthetic persona
+            result = client.calls.generate_synthetic_persona(
+                dataset_id="...",
+                verbosity="terse",
+                mood="frustrated"
+            )
+        """
+        return self._resources["calls"]
 
     # ==================== Decorators ====================
 

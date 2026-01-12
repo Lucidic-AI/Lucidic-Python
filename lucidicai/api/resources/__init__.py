@@ -5,6 +5,7 @@ from .dataset import DatasetResource
 from .experiment import ExperimentResource
 from .prompt import PromptResource
 from .feature_flag import FeatureFlagResource
+from .calls import CallsResource
 
 __all__ = [
     "SessionResource",
@@ -13,4 +14,5 @@ __all__ = [
     "ExperimentResource",
     "PromptResource",
     "FeatureFlagResource",
+    "CallsResource",
 ]
