@@ -35,7 +35,7 @@ from .core.errors import (
 )
 
 # Version
-__version__ = "3.1.0"
+__version__ = "3.1.1"
 
 # All exports
 __all__ = [

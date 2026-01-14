@@ -51,7 +51,7 @@ def _emit_event_to_client(
             "session_id": session_id,
             **event_data,
         }
-        response = client._resources["events"].create_event(event_payload)
+        response = client._resources["events"].create(**event_payload)
         return response.get("event_id") if response else None
     except Exception as e:
         debug(f"[Decorator] Failed to emit event: {e}")
@@ -81,7 +81,7 @@ async def _aemit_event_to_client(
             "session_id": session_id,
             **event_data,
         }
-        response = await client._resources["events"].acreate_event(event_payload)
+        response = await client._resources["events"].acreate(**event_payload)
         return response.get("event_id") if response else None
     except Exception as e:
         debug(f"[Decorator] Failed to emit async event: {e}")
