@@ -53,16 +53,20 @@ class NetworkConfig:
     connection_pool_maxsize: int = 100
 
     @classmethod
-    def from_env(cls, region: Optional[str] = None, debug: bool = False) -> 'NetworkConfig':
+    def from_env(cls, region: Optional[str] = None, base_url: Optional[str] = None, debug: bool = False) -> 'NetworkConfig':
         """Load network configuration from environment variables.
 
-        Priority: debug > region argument > LUCIDIC_REGION env var > default
+        Priority: debug > base_url argument > LUCIDIC_BASE_URL > region argument > LUCIDIC_REGION > default
 
         Args:
             region: Region string override (e.g., "us", "india")
-            debug: If True, use localhost URL regardless of region
+            base_url: Custom base URL override (takes precedence over region)
+            debug: If True, use localhost URL regardless of other settings
         """
-        # If debug mode, use localhost (ignores region)
+        import logging
+        logger = logging.getLogger("Lucidic")
+
+        # If debug mode, use localhost (highest priority)
         if debug:
             return cls(
                 base_url=DEBUG_URL,
@@ -74,7 +78,28 @@ class NetworkConfig:
                 connection_pool_maxsize=int(os.getenv("LUCIDIC_CONNECTION_POOL_MAXSIZE", "100"))
             )
 
-        # Resolve region: argument > env var > default
+        # Resolve base_url: argument > env var
+        resolved_base_url = base_url or os.getenv("LUCIDIC_BASE_URL")
+
+        if resolved_base_url:
+            # base_url takes precedence over region
+            region_str = region or os.getenv("LUCIDIC_REGION")
+            if region_str:
+                logger.warning(
+                    f"[LucidicAI] Both base_url and region specified. "
+                    f"Using base_url '{resolved_base_url}', ignoring region '{region_str}'."
+                )
+            return cls(
+                base_url=resolved_base_url,
+                region=None,  # Custom deployment, no region
+                timeout=int(os.getenv("LUCIDIC_TIMEOUT", "30")),
+                max_retries=int(os.getenv("LUCIDIC_MAX_RETRIES", "3")),
+                backoff_factor=float(os.getenv("LUCIDIC_BACKOFF_FACTOR", "0.5")),
+                connection_pool_size=int(os.getenv("LUCIDIC_CONNECTION_POOL_SIZE", "20")),
+                connection_pool_maxsize=int(os.getenv("LUCIDIC_CONNECTION_POOL_MAXSIZE", "100"))
+            )
+
+        # Fall back to region-based URL resolution
         region_str = region or os.getenv("LUCIDIC_REGION")
         resolved_region = Region.from_string(region_str) if region_str else DEFAULT_REGION
 
@@ -147,11 +172,13 @@ class SDKConfig:
     debug: bool = False
     
     @classmethod
-    def from_env(cls, region: Optional[str] = None, **overrides) -> 'SDKConfig':
+    def from_env(cls, region: Optional[str] = None, base_url: Optional[str] = None, **overrides) -> 'SDKConfig':
         """Create configuration from environment variables with optional overrides.
 
         Args:
             region: Region string (e.g., "us", "india"). Priority: arg > env var > default
+            base_url: Custom base URL override. Takes precedence over region.
+                      Falls back to LUCIDIC_BASE_URL env var.
             **overrides: Additional configuration overrides
         """
         from dotenv import load_dotenv
@@ -165,7 +192,7 @@ class SDKConfig:
             auto_end=os.getenv("LUCIDIC_AUTO_END", "true").lower() == "true",
             production_monitoring=False,
             blob_threshold=int(os.getenv("LUCIDIC_BLOB_THRESHOLD", "65536")),
-            network=NetworkConfig.from_env(region=region, debug=debug),
+            network=NetworkConfig.from_env(region=region, base_url=base_url, debug=debug),
             error_handling=ErrorHandlingConfig.from_env(),
             telemetry=TelemetryConfig.from_env(),
             environment=Environment.DEBUG if debug else Environment.PRODUCTION,
