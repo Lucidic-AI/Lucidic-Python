@@ -64,6 +64,8 @@ class LucidicAI:
         auto_end: Whether sessions auto-end on context exit or process shutdown.
         production: If True, suppress SDK errors. If None, checks LUCIDIC_PRODUCTION env var.
         region: Deployment region ("us", "india"). Falls back to LUCIDIC_REGION env var.
+        base_url: Custom base URL for API requests. Takes precedence over region.
+                  Falls back to LUCIDIC_BASE_URL env var.
         **kwargs: Additional configuration options passed to SDKConfig.
 
     Raises:
@@ -93,6 +95,13 @@ class LucidicAI:
             agent_id="...",
             region="india"
         )
+
+        # Custom base URL (e.g., self-hosted deployment)
+        client = LucidicAI(
+            api_key="...",
+            agent_id="...",
+            base_url="https://custom.example.com/api"
+        )
     """
 
     def __init__(
@@ -103,6 +112,7 @@ class LucidicAI:
         auto_end: bool = True,
         production: Optional[bool] = None,
         region: Optional[str] = None,
+        base_url: Optional[str] = None,
         **kwargs,
     ):
         # Generate unique client ID for telemetry routing
@@ -119,6 +129,7 @@ class LucidicAI:
             agent_id=agent_id,
             auto_end=auto_end,
             region=region,
+            base_url=base_url,
             **kwargs,
         )
 
