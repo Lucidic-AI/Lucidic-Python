@@ -38,7 +38,7 @@ from .core.errors import (
 from .integrations.livekit import setup_livekit
 
 # Version
-__version__ = "3.3.0"
+__version__ = "3.3.1"
 
 # All exports
 __all__ = [

@@ -1,8 +1,12 @@
 """Prompt resource API operations."""
 import logging
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 from ..client import HttpClient
+
+if TYPE_CHECKING:
+    from ...core.config import SDKConfig
 
 logger = logging.getLogger("Lucidic")
 
@@ -10,21 +14,44 @@ logger = logging.getLogger("Lucidic")
 class PromptResource:
     """Handle prompt-related API operations."""
 
-    def __init__(self, http: HttpClient, production: bool = False):
+    def __init__(self, http: HttpClient, config: "SDKConfig", production: bool = False):
         """Initialize prompt resource.
 
         Args:
             http: HTTP client instance
+            config: SDK configuration
             production: Whether to suppress errors in production mode
         """
         self.http = http
+        self._config = config
         self._production = production
+        self._cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    def _is_cache_valid(self, cache_key: Tuple[str, str], cache_ttl: int) -> bool:
+        """Check if a cached prompt is still valid.
+
+        Args:
+            cache_key: The (prompt_name, label) tuple
+            cache_ttl: Cache TTL in seconds (-1 = indefinite, 0 = no cache)
+
+        Returns:
+            True if cache is valid, False otherwise
+        """
+        if cache_ttl == 0:
+            return False
+        if cache_key not in self._cache:
+            return False
+        if cache_ttl == -1:
+            return True
+        cached = self._cache[cache_key]
+        return (time.time() - cached["timestamp"]) < cache_ttl
 
     def get(
         self,
         prompt_name: str,
         variables: Optional[Dict[str, Any]] = None,
         label: str = "production",
+        cache_ttl: int = 0,
     ) -> str:
         """Get a prompt from the prompt database.
 
@@ -32,21 +59,36 @@ class PromptResource:
             prompt_name: Name of the prompt.
             variables: Variables to interpolate into the prompt.
             label: Prompt version label (default: "production").
+            cache_ttl: Cache TTL in seconds. 0 = no cache, -1 = cache indefinitely,
+                       positive value = seconds before refetching.
 
         Returns:
             The prompt content with variables interpolated.
         """
         try:
-            response = self.http.get(
-                "getprompt",
-                {"prompt_name": prompt_name, "label": label},
-            )
-            prompt = response.get("prompt_content", "")
+            cache_key = (prompt_name, label)
+
+            # Check cache
+            if self._is_cache_valid(cache_key, cache_ttl):
+                prompt = self._cache[cache_key]["content"]
+            else:
+                response = self.http.get(
+                    "getprompt",
+                    {"prompt_name": prompt_name, "label": label, "agent_id": self._config.agent_id},
+                )
+                prompt = response.get("prompt_content", "")
+
+                # Store in cache if caching is enabled
+                if cache_ttl != 0:
+                    self._cache[cache_key] = {
+                        "content": prompt,
+                        "timestamp": time.time(),
+                    }
 
             # Replace variables
             if variables:
                 for key, value in variables.items():
-                    prompt = prompt.replace(f"{{{key}}}", str(value))
+                    prompt = prompt.replace(f"{{{{{key}}}}}", str(value))
 
             return prompt
         except Exception as e:
@@ -60,21 +102,35 @@ class PromptResource:
         prompt_name: str,
         variables: Optional[Dict[str, Any]] = None,
         label: str = "production",
+        cache_ttl: int = 0,
     ) -> str:
         """Get a prompt from the prompt database (asynchronous).
 
         See get() for full documentation.
         """
         try:
-            response = await self.http.aget(
-                "getprompt",
-                {"prompt_name": prompt_name, "label": label},
-            )
-            prompt = response.get("prompt_content", "")
+            cache_key = (prompt_name, label)
+
+            # Check cache
+            if self._is_cache_valid(cache_key, cache_ttl):
+                prompt = self._cache[cache_key]["content"]
+            else:
+                response = await self.http.aget(
+                    "getprompt",
+                    {"prompt_name": prompt_name, "label": label, "agent_id": self._config.agent_id},
+                )
+                prompt = response.get("prompt_content", "")
+
+                # Store in cache if caching is enabled
+                if cache_ttl != 0:
+                    self._cache[cache_key] = {
+                        "content": prompt,
+                        "timestamp": time.time(),
+                    }
 
             if variables:
                 for key, value in variables.items():
-                    prompt = prompt.replace(f"{{{key}}}", str(value))
+                    prompt = prompt.replace(f"{{{{{key}}}}}", str(value))
 
             return prompt
         except Exception as e:

@@ -155,7 +155,7 @@ class LucidicAI:
             "events": EventResource(self._http, self._production),
             "datasets": DatasetResource(self._http, self._config.agent_id, self._production),
             "experiments": ExperimentResource(self._http, self._config.agent_id, self._production),
-            "prompts": PromptResource(self._http, self._production),
+            "prompts": PromptResource(self._http, self._config, self._production),
             "feature_flags": FeatureFlagResource(self._http, self._config.agent_id, self._production),
             "evals": EvalsResource(self._http, self._production),
         }
