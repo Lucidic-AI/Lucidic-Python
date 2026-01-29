@@ -34,11 +34,14 @@ from .core.errors import (
     FeatureFlagError,
 )
 
+# Prompt object
+from .api.resources.prompt import Prompt
+
 # Integrations
 from .integrations.livekit import setup_livekit
 
 # Version
-__version__ = "3.3.1"
+__version__ = "3.4.0"
 
 # All exports
 __all__ = [
@@ -53,6 +56,8 @@ __all__ = [
     "InvalidOperationError",
     "PromptError",
     "FeatureFlagError",
+    # Prompt object
+    "Prompt",
     # Integrations
     "setup_livekit",
     # Version
