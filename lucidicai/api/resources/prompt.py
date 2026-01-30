@@ -23,6 +23,24 @@ class Prompt:
     def __str__(self) -> str:
         return self.content
 
+    def replace_variables(self, variables: Dict[str, Any]) -> "Prompt":
+        """Replace template variables in the prompt content.
+
+        Replaces {{key}} placeholders in raw_content with the provided
+        variable values and updates content.
+
+        Args:
+            variables: Dictionary mapping variable names to their values.
+
+        Returns:
+            self, for method chaining.
+        """
+        content = self.raw_content
+        for key, value in variables.items():
+            content = content.replace(f"{{{{{key}}}}}", str(value))
+        self.content = content
+        return self
+
 
 class PromptResource:
     """Handle prompt-related API operations."""
@@ -102,13 +120,10 @@ class PromptResource:
                         "timestamp": time.time(),
                     }
 
-            # Replace variables
-            content = raw_content
+            prompt = Prompt(raw_content=raw_content, content=raw_content, metadata=metadata)
             if variables:
-                for key, value in variables.items():
-                    content = content.replace(f"{{{{{key}}}}}", str(value))
-
-            return Prompt(raw_content=raw_content, content=content, metadata=metadata)
+                prompt.replace_variables(variables)
+            return prompt
         except Exception as e:
             if self._production:
                 logger.error(f"[PromptResource] Failed to get prompt: {e}")
@@ -149,12 +164,10 @@ class PromptResource:
                         "timestamp": time.time(),
                     }
 
-            content = raw_content
+            prompt = Prompt(raw_content=raw_content, content=raw_content, metadata=metadata)
             if variables:
-                for key, value in variables.items():
-                    content = content.replace(f"{{{{{key}}}}}", str(value))
-
-            return Prompt(raw_content=raw_content, content=content, metadata=metadata)
+                prompt.replace_variables(variables)
+            return prompt
         except Exception as e:
             if self._production:
                 logger.error(f"[PromptResource] Failed to get prompt: {e}")
