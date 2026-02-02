@@ -2,7 +2,7 @@
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from ..client import HttpClient
 
@@ -58,6 +58,21 @@ class PromptResource:
         self._production = production
         self._cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
+    def _invalidate_cache(self, prompt_name: str, label: Optional[str] = None) -> None:
+        """Invalidate cached prompt entries.
+
+        Args:
+            prompt_name: Name of the prompt to invalidate.
+            label: If provided, only invalidate the specific (prompt_name, label) entry.
+                   If None, invalidate all entries matching prompt_name.
+        """
+        if label is not None:
+            self._cache.pop((prompt_name, label), None)
+        else:
+            keys_to_remove = [k for k in self._cache if k[0] == prompt_name]
+            for k in keys_to_remove:
+                del self._cache[k]
+
     def _is_cache_valid(self, cache_key: Tuple[str, str], cache_ttl: int) -> bool:
         """Check if a cached prompt is still valid.
 
@@ -106,7 +121,7 @@ class PromptResource:
                 metadata = self._cache[cache_key]["metadata"]
             else:
                 response = self.http.get(
-                    "getprompt",
+                    "sdk/prompts",
                     {"prompt_name": prompt_name, "label": label, "agent_id": self._config.agent_id},
                 )
                 raw_content = response.get("prompt_content", "")
@@ -150,7 +165,7 @@ class PromptResource:
                 metadata = self._cache[cache_key]["metadata"]
             else:
                 response = await self.http.aget(
-                    "getprompt",
+                    "sdk/prompts",
                     {"prompt_name": prompt_name, "label": label, "agent_id": self._config.agent_id},
                 )
                 raw_content = response.get("prompt_content", "")
@@ -171,5 +186,157 @@ class PromptResource:
         except Exception as e:
             if self._production:
                 logger.error(f"[PromptResource] Failed to get prompt: {e}")
+                return Prompt(raw_content="", content="", metadata={})
+            raise
+
+    def update(
+        self,
+        prompt_name: str,
+        prompt_content: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        labels: Optional[List[str]] = None,
+    ) -> Prompt:
+        """Update a prompt, creating a new immutable version.
+
+        Args:
+            prompt_name: Name of the prompt to update.
+            prompt_content: New content for the prompt.
+            description: Optional description for the prompt version.
+            metadata: Optional metadata dict to attach to the prompt version.
+            labels: Optional list of labels to assign to the new version.
+
+        Returns:
+            A Prompt object with the new content and metadata from the response.
+        """
+        try:
+            body: Dict[str, Any] = {
+                "agent_id": self._config.agent_id,
+                "prompt_name": prompt_name,
+                "prompt_content": prompt_content,
+            }
+            if description is not None:
+                body["description"] = description
+            if metadata is not None:
+                body["metadata"] = metadata
+            if labels is not None:
+                body["labels"] = labels
+
+            response = self.http.put("sdk/prompts", data=body)
+            response_metadata = response.get("metadata", {})
+
+            self._invalidate_cache(prompt_name)
+
+            return Prompt(raw_content=prompt_content, content=prompt_content, metadata=response_metadata)
+        except Exception as e:
+            if self._production:
+                logger.error(f"[PromptResource] Failed to update prompt: {e}")
+                return Prompt(raw_content="", content="", metadata={})
+            raise
+
+    async def aupdate(
+        self,
+        prompt_name: str,
+        prompt_content: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        labels: Optional[List[str]] = None,
+    ) -> Prompt:
+        """Update a prompt, creating a new immutable version (asynchronous).
+
+        See update() for full documentation.
+        """
+        try:
+            body: Dict[str, Any] = {
+                "agent_id": self._config.agent_id,
+                "prompt_name": prompt_name,
+                "prompt_content": prompt_content,
+            }
+            if description is not None:
+                body["description"] = description
+            if metadata is not None:
+                body["metadata"] = metadata
+            if labels is not None:
+                body["labels"] = labels
+
+            response = await self.http.aput("sdk/prompts", data=body)
+            response_metadata = response.get("metadata", {})
+
+            self._invalidate_cache(prompt_name)
+
+            return Prompt(raw_content=prompt_content, content=prompt_content, metadata=response_metadata)
+        except Exception as e:
+            if self._production:
+                logger.error(f"[PromptResource] Failed to update prompt: {e}")
+                return Prompt(raw_content="", content="", metadata={})
+            raise
+
+    def update_metadata(
+        self,
+        prompt_name: str,
+        label: str,
+        metadata: Dict[str, Any],
+    ) -> Prompt:
+        """Update metadata on an existing prompt version.
+
+        Sends a PATCH request to update only the metadata for the prompt version
+        identified by (prompt_name, label). The prompt content is not returned
+        by this endpoint, so the returned Prompt will have empty content fields.
+
+        Args:
+            prompt_name: Name of the prompt.
+            label: Label identifying the prompt version to update.
+            metadata: Metadata dict to set on the prompt version.
+
+        Returns:
+            A Prompt object with empty content and the updated metadata.
+        """
+        try:
+            body: Dict[str, Any] = {
+                "agent_id": self._config.agent_id,
+                "prompt_name": prompt_name,
+                "label": label,
+                "metadata": metadata,
+            }
+
+            response = self.http.patch("sdk/prompts", data=body)
+            response_metadata = response.get("metadata", {})
+
+            self._invalidate_cache(prompt_name, label)
+
+            return Prompt(raw_content="", content="", metadata=response_metadata)
+        except Exception as e:
+            if self._production:
+                logger.error(f"[PromptResource] Failed to update prompt metadata: {e}")
+                return Prompt(raw_content="", content="", metadata={})
+            raise
+
+    async def aupdate_metadata(
+        self,
+        prompt_name: str,
+        label: str,
+        metadata: Dict[str, Any],
+    ) -> Prompt:
+        """Update metadata on an existing prompt version (asynchronous).
+
+        See update_metadata() for full documentation.
+        """
+        try:
+            body: Dict[str, Any] = {
+                "agent_id": self._config.agent_id,
+                "prompt_name": prompt_name,
+                "label": label,
+                "metadata": metadata,
+            }
+
+            response = await self.http.apatch("sdk/prompts", data=body)
+            response_metadata = response.get("metadata", {})
+
+            self._invalidate_cache(prompt_name, label)
+
+            return Prompt(raw_content="", content="", metadata=response_metadata)
+        except Exception as e:
+            if self._production:
+                logger.error(f"[PromptResource] Failed to update prompt metadata: {e}")
                 return Prompt(raw_content="", content="", metadata={})
             raise

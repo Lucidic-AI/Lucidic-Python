@@ -207,6 +207,19 @@ class HttpClient:
         data = self._add_timestamp(data)
         return self.request("PUT", endpoint, json=data)
     
+    def patch(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make a synchronous PATCH request.
+
+        Args:
+            endpoint: API endpoint (without base URL)
+            data: Request body data
+
+        Returns:
+            Response data as dictionary
+        """
+        data = self._add_timestamp(data)
+        return self.request("PATCH", endpoint, json=data)
+
     def delete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Make a synchronous DELETE request.
         
@@ -301,6 +314,19 @@ class HttpClient:
         data = self._add_timestamp(data)
         return await self.arequest("PUT", endpoint, json=data)
     
+    async def apatch(self, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make an asynchronous PATCH request.
+
+        Args:
+            endpoint: API endpoint (without base URL)
+            data: Request body data
+
+        Returns:
+            Response data as dictionary
+        """
+        data = self._add_timestamp(data)
+        return await self.arequest("PATCH", endpoint, json=data)
+
     async def adelete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Make an asynchronous DELETE request.
         
