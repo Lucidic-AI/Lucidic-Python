@@ -5,11 +5,12 @@ This test suite verifies the implementation against the LiveKit agents tracing s
 as documented in the verification analysis.
 
 Test scenarios covered:
-1. Basic LLM call - verify model, provider, tokens, cost appear
-2. With tool calls - verify tool_calls array populated from gen_ai.choice
-3. Function execution - verify function_call events with arguments/return_value
-4. Missing metrics - verify fallback to detect_provider() works
-5. Legacy format - verify fallback to lk.chat_ctx and lk.response.text
+1. Hybrid span processing - llm_request cached, llm_node creates events
+2. Messages from lk.chat_ctx (restored familiar format)
+3. Model/provider/tokens from cached llm_request data
+4. Provider hostname normalization (e.g., "api.openai.com" -> "openai")
+5. Function execution - verify function_call events with arguments/return_value
+6. Edge cases - llm_node without llm_request, unknown provider hostnames
 """
 
 import json
@@ -28,6 +29,7 @@ from lucidicai.integrations.livekit import (
     _MetadataSpanProcessor,
     setup_livekit,
 )
+from lucidicai.telemetry.utils.provider import normalize_provider
 
 
 class MockEvent:
@@ -37,6 +39,13 @@ class MockEvent:
         self.name = name
         self.attributes = attributes or {}
         self.timestamp = int(datetime.now(timezone.utc).timestamp() * 1e9)
+
+
+class MockSpanContext:
+    """Mock SpanContext for parent reference."""
+
+    def __init__(self, span_id: int):
+        self.span_id = span_id
 
 
 class MockSpan:
@@ -49,6 +58,9 @@ class MockSpan:
         events: List[MockEvent] = None,
         start_time: int = None,
         end_time: int = None,
+        trace_id: int = 0x000000000000000000000000deadbeef,
+        span_id: int = 0x00000000cafebabe,
+        parent_span_id: int = None,
     ):
         self.name = name
         self._attributes = attributes or {}
@@ -61,14 +73,14 @@ class MockSpan:
 
         # required span attributes
         self._context = SpanContext(
-            trace_id=0x000000000000000000000000deadbeef,
-            span_id=0x00000000cafebabe,
+            trace_id=trace_id,
+            span_id=span_id,
             is_remote=False,
             trace_state=TraceState(),
         )
         self._status = Status(StatusCode.OK)
         self._kind = SpanKind.INTERNAL
-        self._parent = None
+        self._parent = MockSpanContext(parent_span_id) if parent_span_id else None
         self._resource = MagicMock()
         self._instrumentation_scope = MagicMock()
 
@@ -140,30 +152,20 @@ def exporter(mock_client):
     return LucidicLiveKitExporter(mock_client, "test-session-id")
 
 
-class TestLLMRequestSpanProcessing:
-    """Test llm_request span to llm_generation event conversion."""
+class TestHybridSpanProcessing:
+    """Test hybrid llm_request -> llm_node span processing."""
 
-    def test_basic_llm_call_with_genai_events(self, exporter, mock_client):
-        """Test basic LLM call - verify model, provider, tokens, cost appear."""
-        # create lk.llm_metrics JSON as LiveKit does
+    def test_llm_request_caches_data_no_event(self, exporter, mock_client):
+        """Test that llm_request spans cache data but don't create events."""
         llm_metrics = json.dumps({
-            "timestamp": 1234567890.123,
-            "request_id": "req-123",
             "ttft": 0.245,
             "duration": 2.456,
-            "cancelled": False,
-            "completion_tokens": 150,
-            "prompt_tokens": 500,
-            "total_tokens": 650,
             "tokens_per_second": 65.2,
-            "metadata": {
-                "model_name": "gpt-4o",
-                "model_provider": "openai"
-            }
+            "metadata": {"model_provider": "openai", "model_name": "gpt-4o"}
         })
 
-        # create span with GenAI events (as llm_request spans have)
-        span = MockSpan(
+        # llm_request span (child of llm_node)
+        llm_request_span = MockSpan(
             name="llm_request",
             attributes={
                 "gen_ai.request.model": "gpt-4o",
@@ -172,322 +174,359 @@ class TestLLMRequestSpanProcessing:
                 "lk.llm_metrics": llm_metrics,
             },
             events=[
-                MockEvent("gen_ai.system.message", {"content": "You are a helpful assistant."}),
-                MockEvent("gen_ai.user.message", {"content": "Hello, how are you?"}),
-                MockEvent("gen_ai.choice", {"content": "I'm doing well, thank you!"}),
-            ]
+                MockEvent("gen_ai.choice", {"content": "Response from LLM"}),
+            ],
+            span_id=0x000000000000c001,
+            parent_span_id=0x000000000000a001,
         )
 
-        result = exporter.export([span])
+        result = exporter.export([llm_request_span])
 
         assert result == SpanExportResult.SUCCESS
+        # no event should be created for llm_request
+        assert len(mock_client.created_events) == 0
+        # data should be cached
+        assert len(exporter._llm_request_cache) == 1
+
+    def test_llm_node_creates_event_with_cached_data(self, exporter, mock_client):
+        """Test that llm_node spans create events using cached llm_request data."""
+        llm_metrics = json.dumps({
+            "ttft": 0.245,
+            "duration": 2.456,
+            "tokens_per_second": 65.2,
+            "metadata": {"model_provider": "openai", "model_name": "gpt-4o"}
+        })
+
+        chat_ctx = json.dumps({
+            "items": [
+                {"type": "message", "role": "system", "text_content": "You are a helpful assistant."},
+                {"type": "message", "role": "user", "text_content": "Hello, how are you?"},
+            ]
+        })
+
+        # use consistent IDs
+        trace_id = 0x000000000000000000000000deadbeef
+        llm_node_span_id = 0x000000000000a001
+        llm_request_span_id = 0x000000000000c001
+
+        # first, export llm_request (child) - should cache data
+        llm_request_span = MockSpan(
+            name="llm_request",
+            attributes={
+                "gen_ai.request.model": "gpt-4o",
+                "gen_ai.usage.input_tokens": 500,
+                "gen_ai.usage.output_tokens": 150,
+                "lk.llm_metrics": llm_metrics,
+            },
+            events=[
+                MockEvent("gen_ai.choice", {"content": "I'm doing well, thank you!"}),
+            ],
+            trace_id=trace_id,
+            span_id=llm_request_span_id,
+            parent_span_id=llm_node_span_id,
+        )
+
+        # then, export llm_node (parent) - should create event with merged data
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "I'm doing well, thank you!",
+            },
+            trace_id=trace_id,
+            span_id=llm_node_span_id,
+        )
+
+        # export both spans
+        result = exporter.export([llm_request_span, llm_node_span])
+
+        assert result == SpanExportResult.SUCCESS
+        # only one event should be created (from llm_node)
         assert len(mock_client.created_events) == 1
 
         event = mock_client.created_events[0]
 
-        # verify type
+        # verify event type
         assert event["type"] == "llm_generation"
 
-        # verify model extraction (primary: gen_ai.request.model)
+        # verify model from cached llm_request
         assert event["model"] == "gpt-4o"
 
-        # verify provider extraction (from lk.llm_metrics.metadata.model_provider)
+        # verify provider from cached llm_request (normalized)
         assert event["provider"] == "openai"
 
-        # verify token extraction
+        # verify tokens from cached llm_request
         assert event["input_tokens"] == 500
         assert event["output_tokens"] == 150
 
-        # verify cost calculation
+        # verify cost is calculated
         assert event["cost"] is not None
         assert event["cost"] > 0
 
-        # verify messages from GenAI events
-        assert len(event["messages"]) == 2  # system + user (choice is output)
+        # verify messages from lk.chat_ctx (familiar format!)
+        assert len(event["messages"]) == 2
         assert event["messages"][0]["role"] == "system"
         assert event["messages"][0]["content"] == "You are a helpful assistant."
         assert event["messages"][1]["role"] == "user"
         assert event["messages"][1]["content"] == "Hello, how are you?"
 
-        # verify output from gen_ai.choice
+        # verify output from lk.response.text
         assert event["output"] == "I'm doing well, thank you!"
 
-        # verify metadata from lk.llm_metrics
+        # verify metadata has timing from cached llm_request
         assert event["metadata"]["ttft"] == 0.245
         assert event["metadata"]["tokens_per_second"] == 65.2
 
-        # verify session_id
-        assert event["session_id"] == "test-session-id"
-
-    def test_llm_call_with_tool_calls_in_choice(self, exporter, mock_client):
-        """Test LLM call with tool_calls array populated from gen_ai.choice."""
-        llm_metrics = json.dumps({
-            "ttft": 0.3,
-            "duration": 1.5,
-            "metadata": {"model_provider": "openai", "model_name": "gpt-4o"}
+    def test_llm_node_without_cached_data_uses_fallbacks(self, exporter, mock_client):
+        """Test llm_node without prior llm_request uses fallback values."""
+        chat_ctx = json.dumps({
+            "items": [
+                {"type": "message", "role": "user", "text_content": "Hello"},
+            ]
         })
 
-        # tool_calls in gen_ai.choice are stored as a list of JSON strings
-        tool_calls = [
-            json.dumps({"id": "call_123", "type": "function", "function": {"name": "get_weather", "arguments": '{"location": "NYC"}'}}),
-            json.dumps({"id": "call_456", "type": "function", "function": {"name": "get_time", "arguments": '{"timezone": "EST"}'}}),
-        ]
-
-        span = MockSpan(
-            name="llm_request",
+        # llm_node span without any cached llm_request data
+        llm_node_span = MockSpan(
+            name="llm_node",
             attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "gen_ai.usage.input_tokens": 200,
-                "gen_ai.usage.output_tokens": 50,
-                "lk.llm_metrics": llm_metrics,
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "Hi there!",
             },
-            events=[
-                MockEvent("gen_ai.user.message", {"content": "What's the weather in NYC?"}),
-                MockEvent("gen_ai.choice", {"content": "", "tool_calls": tool_calls}),
-            ]
         )
 
-        result = exporter.export([span])
+        result = exporter.export([llm_node_span])
 
         assert result == SpanExportResult.SUCCESS
         assert len(mock_client.created_events) == 1
 
         event = mock_client.created_events[0]
 
-        # verify tool_calls are extracted
-        assert "tool_calls" in event
-        assert len(event["tool_calls"]) == 2
-        assert event["tool_calls"][0]["function"]["name"] == "get_weather"
-        assert event["tool_calls"][1]["function"]["name"] == "get_time"
+        # model/provider should be unknown without cached data
+        assert event["model"] == "unknown"
+        assert event["provider"] == "unknown"
 
-    def test_llm_call_with_assistant_tool_calls_in_history(self, exporter, mock_client):
-        """Test tool_calls in assistant messages (input history)."""
+        # tokens should be None
+        assert event["input_tokens"] is None
+        assert event["output_tokens"] is None
+
+        # messages still come from lk.chat_ctx
+        assert len(event["messages"]) == 1
+        assert event["messages"][0]["content"] == "Hello"
+
+        # output still comes from lk.response.text
+        assert event["output"] == "Hi there!"
+
+
+class TestProviderHostnameNormalization:
+    """Test provider hostname to standard name normalization."""
+
+    def test_normalize_openai_hostname(self):
+        """Test normalizing api.openai.com -> openai."""
+        assert normalize_provider("api.openai.com") == "openai"
+
+    def test_normalize_anthropic_hostname(self):
+        """Test normalizing api.anthropic.com -> anthropic."""
+        assert normalize_provider("api.anthropic.com") == "anthropic"
+
+    def test_normalize_google_hostname(self):
+        """Test normalizing generativelanguage.googleapis.com -> google."""
+        assert normalize_provider("generativelanguage.googleapis.com") == "google"
+
+    def test_normalize_groq_hostname(self):
+        """Test normalizing api.groq.com -> groq."""
+        assert normalize_provider("api.groq.com") == "groq"
+
+    def test_normalize_already_valid_provider(self):
+        """Test that already valid provider names pass through."""
+        assert normalize_provider("openai") == "openai"
+        assert normalize_provider("anthropic") == "anthropic"
+
+    def test_normalize_unknown_hostname(self):
+        """Test that unknown hostnames pass through."""
+        assert normalize_provider("api.unknown-provider.com") == "api.unknown-provider.com"
+
+    def test_normalize_none(self):
+        """Test normalizing None returns unknown."""
+        assert normalize_provider(None) == "unknown"
+
+    def test_normalize_empty_string(self):
+        """Test normalizing empty string returns unknown."""
+        assert normalize_provider("") == "unknown"
+
+    def test_llm_request_normalizes_hostname_provider(self, exporter, mock_client):
+        """Test that llm_request caches normalized provider from hostname."""
+        # lk.llm_metrics with hostname as provider (LiveKit's actual format)
         llm_metrics = json.dumps({
             "ttft": 0.2,
-            "duration": 1.0,
-            "metadata": {"model_provider": "openai"}
+            "metadata": {"model_provider": "api.openai.com", "model_name": "gpt-4o"}
         })
 
-        # assistant message with tool_calls (from previous turn)
-        assistant_tool_calls = [
-            json.dumps({"id": "call_prev", "type": "function", "function": {"name": "lookup_user", "arguments": '{"id": 123}'}}),
-        ]
+        chat_ctx = json.dumps({
+            "items": [{"type": "message", "role": "user", "text_content": "Test"}]
+        })
 
-        span = MockSpan(
+        trace_id = 0x000000000000000000000000deadbeef
+        llm_node_span_id = 0x000000000000a001
+        llm_request_span_id = 0x000000000000c001
+
+        llm_request_span = MockSpan(
             name="llm_request",
             attributes={
                 "gen_ai.request.model": "gpt-4o",
-                "gen_ai.usage.input_tokens": 300,
-                "gen_ai.usage.output_tokens": 100,
-                "lk.llm_metrics": llm_metrics,
-            },
-            events=[
-                MockEvent("gen_ai.user.message", {"content": "Who is user 123?"}),
-                MockEvent("gen_ai.assistant.message", {"content": "", "tool_calls": assistant_tool_calls}),
-                MockEvent("gen_ai.tool.message", {"content": '{"name": "John Doe"}', "name": "lookup_user", "id": "call_prev"}),
-                MockEvent("gen_ai.choice", {"content": "User 123 is John Doe."}),
-            ]
-        )
-
-        result = exporter.export([span])
-
-        assert result == SpanExportResult.SUCCESS
-        event = mock_client.created_events[0]
-
-        # verify messages include tool message
-        assert len(event["messages"]) == 3
-
-        # user message
-        assert event["messages"][0]["role"] == "user"
-
-        # assistant with tool_calls
-        assert event["messages"][1]["role"] == "assistant"
-        assert "tool_calls" in event["messages"][1]
-
-        # tool response
-        assert event["messages"][2]["role"] == "tool"
-        assert event["messages"][2]["name"] == "lookup_user"
-        assert event["messages"][2]["tool_call_id"] == "call_prev"
-
-        # verify output
-        assert event["output"] == "User 123 is John Doe."
-
-    def test_provider_fallback_to_detect_provider(self, exporter, mock_client):
-        """Test fallback to detect_provider() when lk.llm_metrics missing provider."""
-        # llm_metrics without model_provider
-        llm_metrics = json.dumps({
-            "ttft": 0.5,
-            "duration": 2.0,
-            "metadata": {}  # no model_provider
-        })
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "claude-3-5-sonnet-20241022",
-                "gen_ai.usage.input_tokens": 100,
-                "gen_ai.usage.output_tokens": 200,
-                "lk.llm_metrics": llm_metrics,
-            },
-            events=[
-                MockEvent("gen_ai.user.message", {"content": "Test"}),
-                MockEvent("gen_ai.choice", {"content": "Response"}),
-            ]
-        )
-
-        result = exporter.export([span])
-
-        assert result == SpanExportResult.SUCCESS
-        event = mock_client.created_events[0]
-
-        # provider should be detected from model name
-        assert event["provider"] == "anthropic"
-
-    def test_model_fallback_to_llm_metrics(self, exporter, mock_client):
-        """Test fallback to lk.llm_metrics.metadata.model_name when gen_ai.request.model missing."""
-        llm_metrics = json.dumps({
-            "ttft": 0.3,
-            "duration": 1.0,
-            "metadata": {
-                "model_provider": "google",
-                "model_name": "gemini-1.5-pro"
-            }
-        })
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                # no gen_ai.request.model
                 "gen_ai.usage.input_tokens": 100,
                 "gen_ai.usage.output_tokens": 50,
                 "lk.llm_metrics": llm_metrics,
             },
-            events=[
-                MockEvent("gen_ai.user.message", {"content": "Test"}),
-                MockEvent("gen_ai.choice", {"content": "Response"}),
-            ]
+            trace_id=trace_id,
+            span_id=llm_request_span_id,
+            parent_span_id=llm_node_span_id,
         )
 
-        result = exporter.export([span])
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "Response",
+            },
+            trace_id=trace_id,
+            span_id=llm_node_span_id,
+        )
+
+        exporter.export([llm_request_span, llm_node_span])
+
+        event = mock_client.created_events[0]
+        # provider should be normalized from "api.openai.com" to "openai"
+        assert event["provider"] == "openai"
+
+
+class TestMessagesFromChatContext:
+    """Test messages extraction from lk.chat_ctx (restored familiar format)."""
+
+    def test_parses_text_content_format(self, exporter, mock_client):
+        """Test parsing lk.chat_ctx with text_content field."""
+        chat_ctx = json.dumps({
+            "items": [
+                {"type": "message", "role": "system", "text_content": "System prompt here"},
+                {"type": "message", "role": "user", "text_content": "User question here"},
+                {"type": "message", "role": "assistant", "text_content": "Previous response"},
+            ]
+        })
+
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "New response",
+            },
+        )
+
+        exporter.export([llm_node_span])
+
+        event = mock_client.created_events[0]
+        assert len(event["messages"]) == 3
+        assert event["messages"][0] == {"role": "system", "content": "System prompt here"}
+        assert event["messages"][1] == {"role": "user", "content": "User question here"}
+        assert event["messages"][2] == {"role": "assistant", "content": "Previous response"}
+
+    def test_parses_content_array_format(self, exporter, mock_client):
+        """Test parsing lk.chat_ctx with content array format."""
+        chat_ctx = json.dumps({
+            "items": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Part one"},
+                        {"type": "text", "text": "Part two"},
+                    ]
+                },
+            ]
+        })
+
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "Response",
+            },
+        )
+
+        exporter.export([llm_node_span])
+
+        event = mock_client.created_events[0]
+        assert event["messages"][0]["content"] == "Part one Part two"
+
+    def test_handles_invalid_chat_ctx_json(self, exporter, mock_client):
+        """Test handling of invalid JSON in lk.chat_ctx."""
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": "not valid json",
+                "lk.response.text": "Response",
+            },
+        )
+
+        result = exporter.export([llm_node_span])
 
         assert result == SpanExportResult.SUCCESS
         event = mock_client.created_events[0]
+        assert event["messages"] == []
 
-        # model should fallback to llm_metrics
-        assert event["model"] == "gemini-1.5-pro"
-        assert event["provider"] == "google"
 
-    def test_legacy_chat_context_fallback(self, exporter, mock_client):
-        """Test fallback to lk.chat_ctx when no GenAI events."""
+class TestToolCallsFromCache:
+    """Test tool_calls extraction from cached llm_request data."""
+
+    def test_tool_calls_from_cached_gen_ai_choice(self, exporter, mock_client):
+        """Test tool_calls are extracted from gen_ai.choice and included in event."""
         llm_metrics = json.dumps({
-            "ttft": 0.2,
+            "ttft": 0.3,
             "metadata": {"model_provider": "openai"}
         })
 
         chat_ctx = json.dumps({
-            "items": [
-                {"type": "message", "role": "system", "text_content": "You are helpful."},
-                {"type": "message", "role": "user", "text_content": "Hello!"},
-            ]
+            "items": [{"type": "message", "role": "user", "text_content": "What's the weather?"}]
         })
 
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "gen_ai.usage.input_tokens": 50,
-                "gen_ai.usage.output_tokens": 20,
-                "lk.llm_metrics": llm_metrics,
-                "lk.chat_ctx": chat_ctx,
-                "lk.response.text": "Hi there!",
-            },
-            events=[]  # no GenAI events
-        )
+        tool_calls = [
+            json.dumps({"id": "call_123", "type": "function", "function": {"name": "get_weather", "arguments": '{"location": "NYC"}'}}),
+        ]
 
-        result = exporter.export([span])
+        trace_id = 0x000000000000000000000000deadbeef
+        llm_node_span_id = 0x000000000000a001
+        llm_request_span_id = 0x000000000000c001
 
-        assert result == SpanExportResult.SUCCESS
-        event = mock_client.created_events[0]
-
-        # messages should come from lk.chat_ctx
-        assert len(event["messages"]) == 2
-        assert event["messages"][0]["role"] == "system"
-        assert event["messages"][0]["content"] == "You are helpful."
-        assert event["messages"][1]["role"] == "user"
-        assert event["messages"][1]["content"] == "Hello!"
-
-        # output should come from lk.response.text
-        assert event["output"] == "Hi there!"
-
-    def test_legacy_response_text_fallback(self, exporter, mock_client):
-        """Test fallback to lk.response.text when gen_ai.choice has no content."""
-        llm_metrics = json.dumps({
-            "ttft": 0.1,
-            "metadata": {"model_provider": "openai"}
-        })
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "gen_ai.usage.input_tokens": 30,
-                "gen_ai.usage.output_tokens": 10,
-                "lk.llm_metrics": llm_metrics,
-                "lk.response.text": "Fallback response",
-            },
-            events=[
-                MockEvent("gen_ai.user.message", {"content": "Test"}),
-                # no gen_ai.choice event
-            ]
-        )
-
-        result = exporter.export([span])
-
-        assert result == SpanExportResult.SUCCESS
-        event = mock_client.created_events[0]
-
-        # output should fallback to lk.response.text
-        assert event["output"] == "Fallback response"
-
-    def test_metadata_includes_diagnostics(self, exporter, mock_client):
-        """Test that metadata includes timing and diagnostic info."""
-        llm_metrics = json.dumps({
-            "ttft": 0.245,
-            "duration": 2.456,
-            "cancelled": True,
-            "tokens_per_second": 65.2,
-            "metadata": {"model_provider": "openai"}
-        })
-
-        span = MockSpan(
+        llm_request_span = MockSpan(
             name="llm_request",
             attributes={
                 "gen_ai.request.model": "gpt-4o",
                 "gen_ai.usage.input_tokens": 100,
                 "gen_ai.usage.output_tokens": 50,
                 "lk.llm_metrics": llm_metrics,
-                "lk.retry_count": 2,
-                "lk.job_id": "job-123",
-                "lk.room_name": "room-abc",
             },
             events=[
-                MockEvent("gen_ai.user.message", {"content": "Test"}),
-                MockEvent("gen_ai.choice", {"content": "Response"}),
-            ]
+                MockEvent("gen_ai.choice", {"content": "", "tool_calls": tool_calls}),
+            ],
+            trace_id=trace_id,
+            span_id=llm_request_span_id,
+            parent_span_id=llm_node_span_id,
         )
 
-        result = exporter.export([span])
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "",
+            },
+            trace_id=trace_id,
+            span_id=llm_node_span_id,
+        )
 
-        assert result == SpanExportResult.SUCCESS
+        exporter.export([llm_request_span, llm_node_span])
+
         event = mock_client.created_events[0]
-
-        # verify diagnostics in metadata
-        assert event["metadata"]["ttft"] == 0.245
-        assert event["metadata"]["tokens_per_second"] == 65.2
-        assert event["metadata"]["cancelled"] == True
-        assert event["metadata"]["retry_count"] == 2
-        assert event["metadata"]["job_id"] == "job-123"
-        assert event["metadata"]["room_name"] == "room-abc"
+        assert "tool_calls" in event
+        assert len(event["tool_calls"]) == 1
+        assert event["tool_calls"][0]["function"]["name"] == "get_weather"
 
 
 class TestFunctionToolSpanProcessing:
@@ -513,21 +552,12 @@ class TestFunctionToolSpanProcessing:
 
         event = mock_client.created_events[0]
 
-        # verify type
         assert event["type"] == "function_call"
-
-        # verify function details
         assert event["function_name"] == "get_weather"
         assert event["arguments"] == '{"location": "NYC", "unit": "celsius"}'
         assert event["return_value"] == '{"temperature": 22, "condition": "sunny"}'
-
-        # verify tool_call_id in metadata
         assert event["metadata"]["tool_call_id"] == "call_123"
-
-        # verify no is_error flag when False
         assert "is_error" not in event
-
-        # verify session_id
         assert event["session_id"] == "test-session-id"
 
     def test_function_tool_with_error(self, exporter, mock_client):
@@ -548,13 +578,12 @@ class TestFunctionToolSpanProcessing:
         assert result == SpanExportResult.SUCCESS
         event = mock_client.created_events[0]
 
-        # verify is_error flag is included
         assert event["is_error"] == True
         assert event["return_value"] == "Connection timeout"
 
     def test_function_tool_duration_calculation(self, exporter, mock_client):
         """Test duration is calculated from span timing."""
-        start_ns = int(datetime.now(timezone.utc).timestamp() * 1e9) - int(1.5e9)  # 1.5 seconds ago
+        start_ns = int(datetime.now(timezone.utc).timestamp() * 1e9) - int(1.5e9)
         end_ns = int(datetime.now(timezone.utc).timestamp() * 1e9)
 
         span = MockSpan(
@@ -574,7 +603,6 @@ class TestFunctionToolSpanProcessing:
         assert result == SpanExportResult.SUCCESS
         event = mock_client.created_events[0]
 
-        # duration should be approximately 1.5 seconds
         assert event["duration"] is not None
         assert 1.4 < event["duration"] < 1.6
 
@@ -582,14 +610,37 @@ class TestFunctionToolSpanProcessing:
 class TestSpanFiltering:
     """Test that only relevant spans are processed."""
 
-    def test_ignores_llm_node_span(self, exporter, mock_client):
-        """Test that llm_node spans are ignored (lacks model/tokens)."""
+    def test_llm_node_creates_event(self, exporter, mock_client):
+        """Test that llm_node spans create events."""
+        chat_ctx = json.dumps({
+            "items": [{"type": "message", "role": "user", "text_content": "Hello"}]
+        })
+
         span = MockSpan(
             name="llm_node",
             attributes={
-                "lk.chat_ctx": "{}",
-                "lk.response.text": "Response",
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "Hi!",
             }
+        )
+
+        result = exporter.export([span])
+
+        assert result == SpanExportResult.SUCCESS
+        assert len(mock_client.created_events) == 1
+        assert mock_client.created_events[0]["type"] == "llm_generation"
+
+    def test_llm_request_does_not_create_event(self, exporter, mock_client):
+        """Test that llm_request spans cache but don't create events."""
+        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
+
+        span = MockSpan(
+            name="llm_request",
+            attributes={
+                "gen_ai.request.model": "gpt-4o",
+                "lk.llm_metrics": llm_metrics,
+            },
+            events=[MockEvent("gen_ai.choice", {"content": "Response"})],
         )
 
         result = exporter.export([span])
@@ -598,7 +649,7 @@ class TestSpanFiltering:
         assert len(mock_client.created_events) == 0
 
     def test_ignores_agent_session_span(self, exporter, mock_client):
-        """Test that agent_session spans are ignored (lifecycle span)."""
+        """Test that agent_session spans are ignored."""
         span = MockSpan(
             name="agent_session",
             attributes={"lk.job_id": "job-123"}
@@ -610,7 +661,7 @@ class TestSpanFiltering:
         assert len(mock_client.created_events) == 0
 
     def test_ignores_agent_turn_span(self, exporter, mock_client):
-        """Test that agent_turn spans are ignored (parent context)."""
+        """Test that agent_turn spans are ignored."""
         span = MockSpan(
             name="agent_turn",
             attributes={"lk.generation_id": "gen-123"}
@@ -634,24 +685,37 @@ class TestSpanFiltering:
         assert result == SpanExportResult.SUCCESS
         assert len(mock_client.created_events) == 0
 
-    def test_processes_only_llm_request_and_function_tool(self, exporter, mock_client):
-        """Test that only llm_request and function_tool spans are processed."""
-        llm_metrics = json.dumps({
-            "ttft": 0.1,
-            "metadata": {"model_provider": "openai"}
-        })
+    def test_processes_llm_node_llm_request_and_function_tool(self, exporter, mock_client):
+        """Test that llm_node, llm_request, and function_tool spans are processed."""
+        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
+        chat_ctx = json.dumps({"items": [{"type": "message", "role": "user", "text_content": "Test"}]})
+
+        trace_id = 0x000000000000000000000000deadbeef
+        llm_node_span_id = 0x000000000000a001
+        llm_request_span_id = 0x000000000000c001
 
         spans = [
             MockSpan(name="agent_session", attributes={}),
             MockSpan(name="agent_turn", attributes={}),
-            MockSpan(name="llm_node", attributes={}),
             MockSpan(
                 name="llm_request",
                 attributes={
                     "gen_ai.request.model": "gpt-4o",
                     "lk.llm_metrics": llm_metrics,
                 },
-                events=[MockEvent("gen_ai.choice", {"content": "Response"})]
+                events=[MockEvent("gen_ai.choice", {"content": "Response"})],
+                trace_id=trace_id,
+                span_id=llm_request_span_id,
+                parent_span_id=llm_node_span_id,
+            ),
+            MockSpan(
+                name="llm_node",
+                attributes={
+                    "lk.chat_ctx": chat_ctx,
+                    "lk.response.text": "Response",
+                },
+                trace_id=trace_id,
+                span_id=llm_node_span_id,
             ),
             MockSpan(
                 name="function_tool",
@@ -666,6 +730,7 @@ class TestSpanFiltering:
         result = exporter.export(spans)
 
         assert result == SpanExportResult.SUCCESS
+        # 2 events: one llm_generation from llm_node, one function_call
         assert len(mock_client.created_events) == 2
         assert mock_client.created_events[0]["type"] == "llm_generation"
         assert mock_client.created_events[1]["type"] == "function_call"
@@ -693,7 +758,6 @@ class TestMetadataSpanProcessor:
         processor = _MetadataSpanProcessor({})
         mock_span = MagicMock()
 
-        # should not raise
         processor.on_end(mock_span)
 
     def test_force_flush_returns_true(self):
@@ -719,16 +783,12 @@ class TestSetupLiveKit:
             session_name="Test Voice Session",
         )
 
-        # verify session created
         mock_client.sessions.create.assert_called_once_with(
             session_id="room-123",
             session_name="Test Voice Session",
         )
 
-        # verify provider returned
         assert result == mock_provider
-
-        # verify batch processor added
         mock_provider.add_span_processor.assert_called()
 
     @patch("opentelemetry.sdk.trace.export.BatchSpanProcessor")
@@ -747,7 +807,6 @@ class TestSetupLiveKit:
             metadata=metadata,
         )
 
-        # verify two processors added (metadata + batch)
         assert mock_provider.add_span_processor.call_count == 2
 
     @patch("opentelemetry.sdk.trace.export.BatchSpanProcessor")
@@ -763,7 +822,6 @@ class TestSetupLiveKit:
             session_id="room-456",
         )
 
-        # verify default session name
         mock_client.sessions.create.assert_called_once_with(
             session_id="room-456",
             session_name="LiveKit Voice Session - room-456",
@@ -775,18 +833,16 @@ class TestExporterLifecycle:
 
     def test_shutdown_prevents_export(self, exporter, mock_client):
         """Test that shutdown prevents further exports."""
-        llm_metrics = json.dumps({
-            "ttft": 0.1,
-            "metadata": {"model_provider": "openai"}
+        chat_ctx = json.dumps({
+            "items": [{"type": "message", "role": "user", "text_content": "Test"}]
         })
 
         span = MockSpan(
-            name="llm_request",
+            name="llm_node",
             attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "lk.llm_metrics": llm_metrics,
-            },
-            events=[MockEvent("gen_ai.choice", {"content": "Response"})]
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "Response",
+            }
         )
 
         exporter.shutdown()
@@ -800,171 +856,6 @@ class TestExporterLifecycle:
         assert exporter.force_flush() == True
 
 
-class TestChatContextParsing:
-    """Test parsing of lk.chat_ctx JSON."""
-
-    def test_parses_items_with_text_content(self, exporter, mock_client):
-        """Test parsing chat context with text_content field."""
-        chat_ctx = json.dumps({
-            "items": [
-                {"type": "message", "role": "system", "text_content": "System prompt"},
-                {"type": "message", "role": "user", "text_content": "User message"},
-            ]
-        })
-
-        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "lk.llm_metrics": llm_metrics,
-                "lk.chat_ctx": chat_ctx,
-                "lk.response.text": "Response",
-            },
-            events=[]
-        )
-
-        exporter.export([span])
-
-        event = mock_client.created_events[0]
-        assert len(event["messages"]) == 2
-        assert event["messages"][0]["content"] == "System prompt"
-
-    def test_parses_items_with_content_array(self, exporter, mock_client):
-        """Test parsing chat context with content array."""
-        chat_ctx = json.dumps({
-            "items": [
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Part 1"},
-                        {"type": "text", "text": "Part 2"},
-                    ]
-                },
-            ]
-        })
-
-        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "lk.llm_metrics": llm_metrics,
-                "lk.chat_ctx": chat_ctx,
-                "lk.response.text": "Response",
-            },
-            events=[]
-        )
-
-        exporter.export([span])
-
-        event = mock_client.created_events[0]
-        assert event["messages"][0]["content"] == "Part 1 Part 2"
-
-    def test_handles_invalid_chat_ctx_json(self, exporter, mock_client):
-        """Test handling of invalid JSON in chat_ctx."""
-        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "lk.llm_metrics": llm_metrics,
-                "lk.chat_ctx": "not valid json",
-                "lk.response.text": "Response",
-            },
-            events=[]
-        )
-
-        # should not raise
-        result = exporter.export([span])
-        assert result == SpanExportResult.SUCCESS
-
-        event = mock_client.created_events[0]
-        assert event["messages"] == []
-
-
-class TestToolCallParsing:
-    """Test parsing of tool_calls in various formats."""
-
-    def test_parses_list_of_json_strings(self, exporter, mock_client):
-        """Test parsing tool_calls as list of JSON strings."""
-        tool_calls = [
-            json.dumps({"id": "1", "function": {"name": "func1"}}),
-            json.dumps({"id": "2", "function": {"name": "func2"}}),
-        ]
-
-        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "lk.llm_metrics": llm_metrics,
-            },
-            events=[
-                MockEvent("gen_ai.user.message", {"content": "Test"}),
-                MockEvent("gen_ai.choice", {"content": "", "tool_calls": tool_calls}),
-            ]
-        )
-
-        exporter.export([span])
-
-        event = mock_client.created_events[0]
-        assert len(event["tool_calls"]) == 2
-
-    def test_parses_list_of_dicts(self, exporter, mock_client):
-        """Test parsing tool_calls as list of dicts (already parsed)."""
-        tool_calls = [
-            {"id": "1", "function": {"name": "func1"}},
-            {"id": "2", "function": {"name": "func2"}},
-        ]
-
-        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "lk.llm_metrics": llm_metrics,
-            },
-            events=[
-                MockEvent("gen_ai.user.message", {"content": "Test"}),
-                MockEvent("gen_ai.choice", {"content": "", "tool_calls": tool_calls}),
-            ]
-        )
-
-        exporter.export([span])
-
-        event = mock_client.created_events[0]
-        assert len(event["tool_calls"]) == 2
-
-    def test_handles_invalid_tool_calls_json(self, exporter, mock_client):
-        """Test handling of invalid JSON in tool_calls."""
-        tool_calls = ["not valid json", "also not valid"]
-
-        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
-
-        span = MockSpan(
-            name="llm_request",
-            attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "lk.llm_metrics": llm_metrics,
-            },
-            events=[
-                MockEvent("gen_ai.user.message", {"content": "Test"}),
-                MockEvent("gen_ai.choice", {"content": "Response", "tool_calls": tool_calls}),
-            ]
-        )
-
-        # should not raise
-        result = exporter.export([span])
-        assert result == SpanExportResult.SUCCESS
-
-
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
@@ -975,9 +866,9 @@ class TestEdgeCases:
         assert result == SpanExportResult.SUCCESS
         assert len(mock_client.created_events) == 0
 
-    def test_handles_span_with_no_attributes(self, exporter, mock_client):
-        """Test handling of llm_request span with no attributes."""
-        span = MockSpan(name="llm_request", attributes={}, events=[])
+    def test_handles_llm_node_with_no_attributes(self, exporter, mock_client):
+        """Test handling of llm_node span with no attributes."""
+        span = MockSpan(name="llm_node", attributes={}, events=[])
 
         result = exporter.export([span])
 
@@ -987,40 +878,63 @@ class TestEdgeCases:
         event = mock_client.created_events[0]
         assert event["model"] == "unknown"
         assert event["provider"] == "unknown"
+        assert event["messages"] == []
 
     def test_handles_malformed_llm_metrics(self, exporter, mock_client):
-        """Test handling of malformed lk.llm_metrics."""
-        span = MockSpan(
+        """Test handling of malformed lk.llm_metrics in llm_request."""
+        chat_ctx = json.dumps({
+            "items": [{"type": "message", "role": "user", "text_content": "Test"}]
+        })
+
+        trace_id = 0x000000000000000000000000deadbeef
+        llm_node_span_id = 0x000000000000a001
+        llm_request_span_id = 0x000000000000c001
+
+        llm_request_span = MockSpan(
             name="llm_request",
             attributes={
                 "gen_ai.request.model": "gpt-4o",
                 "lk.llm_metrics": "not valid json",
             },
-            events=[MockEvent("gen_ai.choice", {"content": "Response"})]
+            trace_id=trace_id,
+            span_id=llm_request_span_id,
+            parent_span_id=llm_node_span_id,
         )
 
-        result = exporter.export([span])
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "Response",
+            },
+            trace_id=trace_id,
+            span_id=llm_node_span_id,
+        )
+
+        result = exporter.export([llm_request_span, llm_node_span])
 
         assert result == SpanExportResult.SUCCESS
         event = mock_client.created_events[0]
 
-        # should fallback to detect_provider
+        # should fallback to detect_provider from model
         assert event["provider"] == "openai"
+        assert event["model"] == "gpt-4o"
 
     def test_occurred_at_calculated_from_start_time(self, exporter, mock_client):
         """Test that occurred_at is calculated from span start time."""
         start_ns = int(datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc).timestamp() * 1e9)
         end_ns = start_ns + int(1e9)
 
-        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
+        chat_ctx = json.dumps({
+            "items": [{"type": "message", "role": "user", "text_content": "Test"}]
+        })
 
         span = MockSpan(
-            name="llm_request",
+            name="llm_node",
             attributes={
-                "gen_ai.request.model": "gpt-4o",
-                "lk.llm_metrics": llm_metrics,
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "Response",
             },
-            events=[MockEvent("gen_ai.choice", {"content": "Response"})],
             start_time=start_ns,
             end_time=end_ns,
         )
@@ -1030,6 +944,82 @@ class TestEdgeCases:
         event = mock_client.created_events[0]
         assert event["occurred_at"] is not None
         assert "2024-01-15" in event["occurred_at"]
+
+    def test_cache_cleanup_after_retrieval(self, exporter, mock_client):
+        """Test that cache is cleaned up after llm_node retrieves data."""
+        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
+        chat_ctx = json.dumps({"items": [{"type": "message", "role": "user", "text_content": "Test"}]})
+
+        trace_id = 0x000000000000000000000000deadbeef
+        llm_node_span_id = 0x000000000000a001
+        llm_request_span_id = 0x000000000000c001
+
+        llm_request_span = MockSpan(
+            name="llm_request",
+            attributes={
+                "gen_ai.request.model": "gpt-4o",
+                "lk.llm_metrics": llm_metrics,
+            },
+            trace_id=trace_id,
+            span_id=llm_request_span_id,
+            parent_span_id=llm_node_span_id,
+        )
+
+        # export llm_request - cache should be populated
+        exporter.export([llm_request_span])
+        assert len(exporter._llm_request_cache) == 1
+
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": chat_ctx,
+                "lk.response.text": "Response",
+            },
+            trace_id=trace_id,
+            span_id=llm_node_span_id,
+        )
+
+        # export llm_node - cache should be cleaned up
+        exporter.export([llm_node_span])
+        assert len(exporter._llm_request_cache) == 0
+
+    def test_output_fallback_to_cached_when_lk_response_text_empty(self, exporter, mock_client):
+        """Test output falls back to cached GenAI choice when lk.response.text is empty."""
+        llm_metrics = json.dumps({"ttft": 0.1, "metadata": {"model_provider": "openai"}})
+        chat_ctx = json.dumps({"items": [{"type": "message", "role": "user", "text_content": "Test"}]})
+
+        trace_id = 0x000000000000000000000000deadbeef
+        llm_node_span_id = 0x000000000000a001
+        llm_request_span_id = 0x000000000000c001
+
+        llm_request_span = MockSpan(
+            name="llm_request",
+            attributes={
+                "gen_ai.request.model": "gpt-4o",
+                "lk.llm_metrics": llm_metrics,
+            },
+            events=[
+                MockEvent("gen_ai.choice", {"content": "Fallback output from events"}),
+            ],
+            trace_id=trace_id,
+            span_id=llm_request_span_id,
+            parent_span_id=llm_node_span_id,
+        )
+
+        llm_node_span = MockSpan(
+            name="llm_node",
+            attributes={
+                "lk.chat_ctx": chat_ctx,
+                # no lk.response.text
+            },
+            trace_id=trace_id,
+            span_id=llm_node_span_id,
+        )
+
+        exporter.export([llm_request_span, llm_node_span])
+
+        event = mock_client.created_events[0]
+        assert event["output"] == "Fallback output from events"
 
 
 if __name__ == "__main__":
