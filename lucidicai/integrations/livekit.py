@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from ..client import LucidicAI
 
 from ..telemetry.utils.model_pricing import calculate_cost
-from ..telemetry.utils.provider import detect_provider
+from ..telemetry.utils.provider import detect_provider, normalize_provider
 
 logger = logging.getLogger("lucidicai.integrations.livekit")
 
@@ -49,16 +49,17 @@ logger = logging.getLogger("lucidicai.integrations.livekit")
 class LucidicLiveKitExporter(SpanExporter):
     """Custom OpenTelemetry exporter for LiveKit voice agent spans.
 
-    Converts LiveKit spans into Lucidic events:
-    - llm_request spans -> llm_generation events (with model, tokens, messages, output)
+    Converts LiveKit spans into Lucidic events using a hybrid approach:
+    - llm_node spans -> llm_generation events (has messages/output via lk.chat_ctx)
+    - llm_request spans -> cached for model/provider/tokens (merged into llm_node events)
     - function_tool spans -> function_call events (with name, arguments, return value)
 
-    The llm_request span contains:
-    - gen_ai.request.model: Model name
-    - gen_ai.usage.input_tokens / gen_ai.usage.output_tokens: Token counts
-    - lk.llm_metrics: JSON with ttft, duration, tokens_per_second, metadata
-    - GenAI events: gen_ai.system.message, gen_ai.user.message, gen_ai.assistant.message,
-      gen_ai.tool.message (inputs), gen_ai.choice (output with optional tool_calls)
+    The hybrid approach uses both spans because:
+    - llm_node has: lk.chat_ctx (messages), lk.response.text (output)
+    - llm_request has: gen_ai.request.model, gen_ai.usage.*, lk.llm_metrics (model/tokens/timing)
+
+    When llm_request ends, we cache its data keyed by its span_id.
+    When llm_node ends, we look up the cached data from its child llm_request and merge.
 
     The function_tool span contains:
     - lk.function_tool.id: Tool call ID
@@ -69,8 +70,8 @@ class LucidicLiveKitExporter(SpanExporter):
     """
 
     # livekit span names we care about
-    # note: llm_request has model/provider/tokens, llm_node is parent without these
-    LIVEKIT_LLM_SPANS = {"llm_request", "function_tool"}
+    # llm_node is parent with messages/output, llm_request is child with model/tokens
+    LIVEKIT_LLM_SPANS = {"llm_node", "llm_request", "function_tool"}
 
     def __init__(self, client: "LucidicAI", session_id: str):
         """Initialize the exporter.
@@ -82,6 +83,8 @@ class LucidicLiveKitExporter(SpanExporter):
         self._client = client
         self._session_id = session_id
         self._shutdown = False
+        # cache llm_request data keyed by span_id (to merge with parent llm_node)
+        self._llm_request_cache: Dict[str, Dict[str, Any]] = {}
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         """Export spans to Lucidic as events.
@@ -217,6 +220,104 @@ class LucidicLiveKitExporter(SpanExporter):
 
         return messages, output, tool_calls
 
+    def _get_span_id(self, span: ReadableSpan) -> str:
+        """Get unique span ID for cache lookup.
+
+        Uses trace_id + span_id to ensure uniqueness across traces.
+        """
+        ctx = span.context
+        if ctx:
+            return f"{ctx.trace_id:032x}:{ctx.span_id:016x}"
+        return ""
+
+    def _get_parent_span_id(self, span: ReadableSpan) -> Optional[str]:
+        """Get parent span ID for cache lookup.
+
+        Returns the trace_id + parent span_id if available.
+        """
+        if span.parent and span.parent.span_id:
+            ctx = span.context
+            if ctx:
+                return f"{ctx.trace_id:032x}:{span.parent.span_id:016x}"
+        return None
+
+    def _cache_llm_request_data(self, span: ReadableSpan) -> None:
+        """Cache data from llm_request span for merging with parent llm_node.
+
+        Extracts model, provider, tokens, and timing info from llm_request
+        and stores in cache keyed by this span's ID (child of llm_node).
+        """
+        attrs = dict(span.attributes or {})
+
+        # parse lk.llm_metrics for provider/model/timing
+        llm_info = self._parse_llm_metrics(attrs)
+
+        # extract model (gen_ai attribute takes precedence)
+        model = attrs.get("gen_ai.request.model") or llm_info.get("model") or "unknown"
+
+        # extract provider and normalize (handles hostnames like "api.openai.com")
+        raw_provider = llm_info.get("provider")
+        if raw_provider:
+            provider = normalize_provider(raw_provider)
+        else:
+            provider = detect_provider(model=model, attributes=attrs)
+
+        # extract token counts
+        input_tokens = attrs.get("gen_ai.usage.input_tokens")
+        output_tokens = attrs.get("gen_ai.usage.output_tokens")
+
+        # also extract output and tool_calls from GenAI events (as fallback)
+        _, output_from_events, tool_calls = self._parse_span_events(span)
+
+        # build cache entry
+        cache_data: Dict[str, Any] = {
+            "model": model,
+            "provider": provider,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
+
+        # include timing info from metrics
+        if llm_info.get("ttft") is not None:
+            cache_data["ttft"] = llm_info["ttft"]
+        if llm_info.get("duration") is not None:
+            cache_data["duration"] = llm_info["duration"]
+        if llm_info.get("tokens_per_second") is not None:
+            cache_data["tokens_per_second"] = llm_info["tokens_per_second"]
+        if llm_info.get("cancelled"):
+            cache_data["cancelled"] = llm_info["cancelled"]
+
+        # include output/tool_calls from events as fallback
+        if output_from_events:
+            cache_data["output"] = output_from_events
+        if tool_calls:
+            cache_data["tool_calls"] = tool_calls
+
+        # store using parent span ID (so llm_node can find it)
+        parent_id = self._get_parent_span_id(span)
+        if parent_id:
+            self._llm_request_cache[parent_id] = cache_data
+            logger.debug(f"[LiveKit] Cached llm_request data under parent {parent_id}")
+        else:
+            # fallback: store under own span ID
+            span_id = self._get_span_id(span)
+            if span_id:
+                self._llm_request_cache[span_id] = cache_data
+                logger.debug(f"[LiveKit] Cached llm_request data under own span {span_id}")
+
+    def _get_cached_llm_request_data(self, span: ReadableSpan) -> Dict[str, Any]:
+        """Get cached llm_request data for this span (llm_node).
+
+        Looks up cache using this span's ID (llm_request stored under parent ID).
+        Also cleans up the cache entry after retrieval.
+        """
+        span_id = self._get_span_id(span)
+        if span_id and span_id in self._llm_request_cache:
+            data = self._llm_request_cache.pop(span_id)
+            logger.debug(f"[LiveKit] Retrieved cached llm_request data for {span_id}")
+            return data
+        return {}
+
     def _parse_tool_calls(self, tool_calls_attr: Any) -> List[Dict[str, Any]]:
         """Parse tool_calls attribute from GenAI events.
 
@@ -249,10 +350,20 @@ class LucidicLiveKitExporter(SpanExporter):
         return parsed
 
     def _process_span(self, span: ReadableSpan) -> None:
-        """Process a single LiveKit span and create corresponding Lucidic event."""
+        """Process a single LiveKit span and create corresponding Lucidic event.
+
+        Uses hybrid approach:
+        - llm_request: cache model/provider/tokens data (don't create event)
+        - llm_node: create event merging cached llm_request data with messages/output
+        - function_tool: create function_call event
+        """
         try:
             if span.name == "llm_request":
-                event_data = self._convert_llm_span(span)
+                # cache data from llm_request to merge with parent llm_node
+                self._cache_llm_request_data(span)
+                logger.debug(f"[LiveKit] Cached llm_request data for span {self._get_span_id(span)}")
+            elif span.name == "llm_node":
+                event_data = self._convert_llm_node_span(span)
                 self._client.events.create(**event_data)
                 logger.debug(f"[LiveKit] Created llm_generation event for span {span.name}")
             elif span.name == "function_tool":
@@ -262,33 +373,38 @@ class LucidicLiveKitExporter(SpanExporter):
         except Exception as e:
             logger.error(f"[LiveKit] Failed to process span {span.name}: {e}")
 
-    def _convert_llm_span(self, span: ReadableSpan) -> Dict[str, Any]:
-        """Convert an llm_request span to llm_generation event data."""
+    def _convert_llm_node_span(self, span: ReadableSpan) -> Dict[str, Any]:
+        """Convert an llm_node span to llm_generation event data.
+
+        Merges data from cached llm_request child span (model/provider/tokens)
+        with llm_node's own data (messages from lk.chat_ctx, output from lk.response.text).
+        """
         attrs = dict(span.attributes or {})
 
-        # parse lk.llm_metrics for provider/model/timing
-        llm_info = self._parse_llm_metrics(attrs)
+        # get cached data from child llm_request span
+        cached = self._get_cached_llm_request_data(span)
 
-        # extract model (gen_ai attribute takes precedence, fallback to metrics)
-        model = attrs.get("gen_ai.request.model") or llm_info.get("model") or "unknown"
+        # extract model (from cache first, then try own attributes)
+        model = cached.get("model") or attrs.get("gen_ai.request.model") or "unknown"
 
-        # extract provider (from metrics first, then detect from model)
-        provider = llm_info.get("provider") or detect_provider(model=model, attributes=attrs)
+        # extract provider (from cache first, then detect from model)
+        provider = cached.get("provider")
+        if not provider or provider == "unknown":
+            provider = detect_provider(model=model, attributes=attrs)
 
-        # extract messages, output, and tool_calls from span events (llm_request uses GenAI events)
-        messages, output, tool_calls = self._parse_span_events(span)
+        # extract messages from lk.chat_ctx (primary source for llm_node)
+        messages = self._parse_chat_context(attrs.get("lk.chat_ctx"))
 
-        # fallback to lk.chat_ctx if no events (backwards compatibility)
-        if not messages:
-            messages = self._parse_chat_context(attrs.get("lk.chat_ctx"))
+        # extract output from lk.response.text (primary source for llm_node)
+        output = attrs.get("lk.response.text", "")
 
-        # fallback to lk.response.text if no output from events
-        if not output:
-            output = attrs.get("lk.response.text", "")
+        # fallback to cached output from llm_request events if no output
+        if not output and cached.get("output"):
+            output = cached["output"]
 
-        # extract token counts
-        input_tokens = attrs.get("gen_ai.usage.input_tokens")
-        output_tokens = attrs.get("gen_ai.usage.output_tokens")
+        # get token counts from cache
+        input_tokens = cached.get("input_tokens")
+        output_tokens = cached.get("output_tokens")
 
         # calculate cost using existing pricing utility
         cost = None
@@ -299,11 +415,11 @@ class LucidicLiveKitExporter(SpanExporter):
             }
             cost = calculate_cost(model, token_usage)
 
-        # build metadata with diagnostics from llm_metrics
-        metadata = self._build_llm_metadata(attrs, llm_info)
+        # build metadata with diagnostics
+        metadata = self._build_llm_node_metadata(attrs, cached)
 
-        # calculate duration (prefer from metrics, fallback to span timing)
-        duration = llm_info.get("duration")
+        # calculate duration (prefer from cache, fallback to span timing)
+        duration = cached.get("duration")
         if duration is None and span.start_time and span.end_time:
             duration = (span.end_time - span.start_time) / 1e9
 
@@ -329,9 +445,9 @@ class LucidicLiveKitExporter(SpanExporter):
             "metadata": metadata,
         }
 
-        # include tool_calls if present (LLM requested function calls)
-        if tool_calls:
-            result["tool_calls"] = tool_calls
+        # include tool_calls if present in cache (LLM requested function calls)
+        if cached.get("tool_calls"):
+            result["tool_calls"] = cached["tool_calls"]
 
         return result
 
@@ -423,37 +539,32 @@ class LucidicLiveKitExporter(SpanExporter):
             logger.debug(f"[LiveKit] Failed to parse chat context: {e}")
             return []
 
-    def _build_llm_metadata(self, attrs: Dict[str, Any], llm_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Build metadata dict with diagnostics from llm_request span attributes.
-
-        Note: llm_request spans have limited attributes. Most metadata (job_id, room_name,
-        generation_id, etc.) are on parent spans (agent_session, agent_turn) and are only
-        available if a MetadataSpanProcessor propagates them.
+    def _build_llm_node_metadata(self, attrs: Dict[str, Any], cached: Dict[str, Any]) -> Dict[str, Any]:
+        """Build metadata dict with diagnostics from llm_node span and cached llm_request data.
 
         Args:
-            attrs: Span attributes dictionary
-            llm_info: Parsed lk.llm_metrics data
+            attrs: llm_node span attributes dictionary
+            cached: Cached data from child llm_request span
 
         Returns:
             Cleaned metadata dict with available diagnostics
         """
         metadata: Dict[str, Any] = {}
 
-        # timing metrics from lk.llm_metrics (actually available on llm_request)
-        if llm_info.get("ttft") is not None:
-            metadata["ttft"] = llm_info["ttft"]
-        if llm_info.get("tokens_per_second") is not None:
-            metadata["tokens_per_second"] = llm_info["tokens_per_second"]
-        if llm_info.get("cancelled"):
-            metadata["cancelled"] = llm_info["cancelled"]
+        # timing metrics from cached llm_request (from lk.llm_metrics)
+        if cached.get("ttft") is not None:
+            metadata["ttft"] = cached["ttft"]
+        if cached.get("tokens_per_second") is not None:
+            metadata["tokens_per_second"] = cached["tokens_per_second"]
+        if cached.get("cancelled"):
+            metadata["cancelled"] = cached["cancelled"]
 
-        # retry count if available (set on llm_request_run, may be propagated)
+        # retry count if available
         retry_count = attrs.get("lk.retry_count")
         if retry_count is not None and retry_count > 0:
             metadata["retry_count"] = retry_count
 
-        # attributes that may be available via MetadataSpanProcessor
-        # (set by user or propagated from parent spans)
+        # attributes that may be available on llm_node or via MetadataSpanProcessor
         optional_attrs = {
             "job_id": "lk.job_id",
             "room_name": "lk.room_name",

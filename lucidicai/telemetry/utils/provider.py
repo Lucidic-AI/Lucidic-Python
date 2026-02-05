@@ -8,6 +8,18 @@ Consolidates provider detection logic from:
 from typing import Any, Dict, Optional
 
 
+# hostname to provider mapping (for LiveKit which returns hostnames like "api.openai.com")
+HOSTNAME_TO_PROVIDER = {
+    "api.openai.com": "openai",
+    "api.anthropic.com": "anthropic",
+    "generativelanguage.googleapis.com": "google",
+    "api.groq.com": "groq",
+    "api.cohere.ai": "cohere",
+    "api.mistral.ai": "mistral",
+    "api.deepseek.com": "deepseek",
+}
+
+
 # Provider patterns: provider name -> list of substrings to match
 PROVIDER_PATTERNS = {
     "anthropic": ["claude", "anthropic"],
@@ -75,3 +87,33 @@ def detect_provider(
                 return provider
 
     return "unknown"
+
+
+def normalize_provider(provider: Optional[str]) -> str:
+    """Normalize provider name, converting hostnames to standard provider names.
+
+    Handles LiveKit's provider format which returns hostnames like "api.openai.com"
+    instead of standard provider names like "openai".
+
+    Args:
+        provider: Provider string (may be hostname or provider name)
+
+    Returns:
+        Normalized provider name (e.g., "openai") or original if not recognized
+    """
+    if not provider:
+        return "unknown"
+
+    provider_lower = provider.lower()
+
+    # check if it's a known hostname
+    if provider_lower in HOSTNAME_TO_PROVIDER:
+        return HOSTNAME_TO_PROVIDER[provider_lower]
+
+    # check if hostname contains known provider patterns
+    for hostname, normalized in HOSTNAME_TO_PROVIDER.items():
+        if hostname in provider_lower or provider_lower in hostname:
+            return normalized
+
+    # already a valid provider name or unknown
+    return provider_lower
