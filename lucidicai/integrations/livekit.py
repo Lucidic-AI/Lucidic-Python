@@ -40,19 +40,37 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace import TracerProvider
     from ..client import LucidicAI
 
+from ..telemetry.utils.model_pricing import calculate_cost
+from ..telemetry.utils.provider import detect_provider
+
 logger = logging.getLogger("lucidicai.integrations.livekit")
 
 
 class LucidicLiveKitExporter(SpanExporter):
     """Custom OpenTelemetry exporter for LiveKit voice agent spans.
 
-    Converts LiveKit spans (llm_node, function_tool) into Lucidic events
-    with full metadata including latency diagnostics, EOU detection,
-    and tool context.
+    Converts LiveKit spans into Lucidic events:
+    - llm_request spans -> llm_generation events (with model, tokens, messages, output)
+    - function_tool spans -> function_call events (with name, arguments, return value)
+
+    The llm_request span contains:
+    - gen_ai.request.model: Model name
+    - gen_ai.usage.input_tokens / gen_ai.usage.output_tokens: Token counts
+    - lk.llm_metrics: JSON with ttft, duration, tokens_per_second, metadata
+    - GenAI events: gen_ai.system.message, gen_ai.user.message, gen_ai.assistant.message,
+      gen_ai.tool.message (inputs), gen_ai.choice (output with optional tool_calls)
+
+    The function_tool span contains:
+    - lk.function_tool.id: Tool call ID
+    - lk.function_tool.name: Function name
+    - lk.function_tool.arguments: JSON arguments
+    - lk.function_tool.output: Return value
+    - lk.function_tool.is_error: Error flag
     """
 
     # livekit span names we care about
-    LIVEKIT_LLM_SPANS = {"llm_node", "function_tool"}
+    # note: llm_request has model/provider/tokens, llm_node is parent without these
+    LIVEKIT_LLM_SPANS = {"llm_request", "function_tool"}
 
     def __init__(self, client: "LucidicAI", session_id: str):
         """Initialize the exporter.
@@ -90,10 +108,150 @@ class LucidicLiveKitExporter(SpanExporter):
         """Check if span is a LiveKit LLM-related span we should process."""
         return span.name in self.LIVEKIT_LLM_SPANS
 
+    def _parse_llm_metrics(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse lk.llm_metrics JSON to extract provider, model, and timing info.
+
+        Args:
+            attrs: Span attributes dictionary
+
+        Returns:
+            Dict with 'provider', 'model', 'ttft', 'tokens_per_second' keys if found
+        """
+        llm_metrics_json = attrs.get("lk.llm_metrics")
+        if not llm_metrics_json:
+            return {}
+
+        try:
+            if isinstance(llm_metrics_json, str):
+                metrics = json.loads(llm_metrics_json)
+            else:
+                metrics = llm_metrics_json
+
+            result = {}
+            metadata = metrics.get("metadata", {})
+
+            if metadata.get("model_provider"):
+                result["provider"] = metadata["model_provider"]
+            if metadata.get("model_name"):
+                result["model"] = metadata["model_name"]
+
+            # extract timing and performance metrics
+            if metrics.get("ttft") is not None:
+                result["ttft"] = metrics["ttft"]
+            if metrics.get("duration") is not None:
+                result["duration"] = metrics["duration"]
+            if metrics.get("tokens_per_second") is not None:
+                result["tokens_per_second"] = metrics["tokens_per_second"]
+            if metrics.get("cancelled") is not None:
+                result["cancelled"] = metrics["cancelled"]
+
+            return result
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.debug(f"[LiveKit] Failed to parse llm_metrics: {e}")
+            return {}
+
+    def _parse_span_events(self, span: ReadableSpan) -> tuple[List[Dict[str, Any]], str, List[Dict[str, Any]]]:
+        """Parse span events to extract messages, output, and tool calls.
+
+        llm_request spans have GenAI events:
+        - gen_ai.system.message, gen_ai.user.message, gen_ai.assistant.message (input)
+        - gen_ai.tool.message (tool output)
+        - gen_ai.choice (output/completion with optional tool_calls)
+
+        Args:
+            span: The OpenTelemetry span
+
+        Returns:
+            Tuple of (messages list, output string, tool_calls list)
+        """
+        messages: List[Dict[str, Any]] = []
+        output = ""
+        tool_calls: List[Dict[str, Any]] = []
+
+        # map event names to roles
+        event_to_role = {
+            "gen_ai.system.message": "system",
+            "gen_ai.user.message": "user",
+            "gen_ai.assistant.message": "assistant",
+            "gen_ai.tool.message": "tool",
+        }
+
+        if not span.events:
+            return messages, output, tool_calls
+
+        for event in span.events:
+            event_name = event.name
+            event_attrs = dict(event.attributes or {})
+
+            if event_name in event_to_role:
+                # message event
+                role = event_to_role[event_name]
+                msg: Dict[str, Any] = {"role": role}
+
+                content = event_attrs.get("content", "")
+                if content:
+                    msg["content"] = content
+
+                # handle tool_calls in assistant messages (input tool calls)
+                if event_name == "gen_ai.assistant.message" and "tool_calls" in event_attrs:
+                    msg["tool_calls"] = self._parse_tool_calls(event_attrs["tool_calls"])
+
+                # handle tool message metadata
+                if event_name == "gen_ai.tool.message":
+                    if "name" in event_attrs:
+                        msg["name"] = event_attrs["name"]
+                    if "id" in event_attrs:
+                        msg["tool_call_id"] = event_attrs["id"]
+
+                messages.append(msg)
+
+            elif event_name == "gen_ai.choice":
+                # completion/output event
+                content = event_attrs.get("content", "")
+                if content:
+                    output = content
+
+                # extract tool_calls from completion if present
+                if "tool_calls" in event_attrs:
+                    tool_calls = self._parse_tool_calls(event_attrs["tool_calls"])
+
+        return messages, output, tool_calls
+
+    def _parse_tool_calls(self, tool_calls_attr: Any) -> List[Dict[str, Any]]:
+        """Parse tool_calls attribute from GenAI events.
+
+        Tool calls are stored as a list of JSON strings.
+
+        Args:
+            tool_calls_attr: The tool_calls attribute value (list of JSON strings)
+
+        Returns:
+            List of parsed tool call dicts
+        """
+        if not tool_calls_attr:
+            return []
+
+        parsed = []
+        try:
+            # tool_calls is a list of JSON strings
+            if isinstance(tool_calls_attr, (list, tuple)):
+                for tc in tool_calls_attr:
+                    if isinstance(tc, str):
+                        parsed.append(json.loads(tc))
+                    elif isinstance(tc, dict):
+                        parsed.append(tc)
+            elif isinstance(tool_calls_attr, str):
+                # single JSON string
+                parsed.append(json.loads(tool_calls_attr))
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.debug(f"[LiveKit] Failed to parse tool_calls: {e}")
+
+        return parsed
+
     def _process_span(self, span: ReadableSpan) -> None:
         """Process a single LiveKit span and create corresponding Lucidic event."""
         try:
-            if span.name == "llm_node":
+            if span.name == "llm_request":
                 event_data = self._convert_llm_span(span)
                 self._client.events.create(**event_data)
                 logger.debug(f"[LiveKit] Created llm_generation event for span {span.name}")
@@ -105,21 +263,48 @@ class LucidicLiveKitExporter(SpanExporter):
             logger.error(f"[LiveKit] Failed to process span {span.name}: {e}")
 
     def _convert_llm_span(self, span: ReadableSpan) -> Dict[str, Any]:
-        """Convert an llm_node span to llm_generation event data."""
+        """Convert an llm_request span to llm_generation event data."""
         attrs = dict(span.attributes or {})
 
-        # extract messages from chat context
-        messages = self._parse_chat_context(attrs.get("lk.chat_ctx"))
+        # parse lk.llm_metrics for provider/model/timing
+        llm_info = self._parse_llm_metrics(attrs)
 
-        # extract output text
-        output = attrs.get("lk.response.text", "")
+        # extract model (gen_ai attribute takes precedence, fallback to metrics)
+        model = attrs.get("gen_ai.request.model") or llm_info.get("model") or "unknown"
 
-        # build metadata with diagnostics
-        metadata = self._build_metadata(attrs)
+        # extract provider (from metrics first, then detect from model)
+        provider = llm_info.get("provider") or detect_provider(model=model, attributes=attrs)
 
-        # calculate duration
-        duration = None
-        if span.start_time and span.end_time:
+        # extract messages, output, and tool_calls from span events (llm_request uses GenAI events)
+        messages, output, tool_calls = self._parse_span_events(span)
+
+        # fallback to lk.chat_ctx if no events (backwards compatibility)
+        if not messages:
+            messages = self._parse_chat_context(attrs.get("lk.chat_ctx"))
+
+        # fallback to lk.response.text if no output from events
+        if not output:
+            output = attrs.get("lk.response.text", "")
+
+        # extract token counts
+        input_tokens = attrs.get("gen_ai.usage.input_tokens")
+        output_tokens = attrs.get("gen_ai.usage.output_tokens")
+
+        # calculate cost using existing pricing utility
+        cost = None
+        if input_tokens is not None and output_tokens is not None:
+            token_usage = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+            cost = calculate_cost(model, token_usage)
+
+        # build metadata with diagnostics from llm_metrics
+        metadata = self._build_llm_metadata(attrs, llm_info)
+
+        # calculate duration (prefer from metrics, fallback to span timing)
+        duration = llm_info.get("duration")
+        if duration is None and span.start_time and span.end_time:
             duration = (span.end_time - span.start_time) / 1e9
 
         # extract timing for occurred_at
@@ -129,18 +314,26 @@ class LucidicLiveKitExporter(SpanExporter):
                 span.start_time / 1e9, tz=timezone.utc
             ).isoformat()
 
-        return {
+        result: Dict[str, Any] = {
             "type": "llm_generation",
             "session_id": self._session_id,
-            "model": attrs.get("gen_ai.request.model", "unknown"),
+            "provider": provider,
+            "model": model,
             "messages": messages,
             "output": output,
-            "input_tokens": attrs.get("gen_ai.usage.input_tokens"),
-            "output_tokens": attrs.get("gen_ai.usage.output_tokens"),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost": cost,
             "duration": duration,
             "occurred_at": occurred_at,
             "metadata": metadata,
         }
+
+        # include tool_calls if present (LLM requested function calls)
+        if tool_calls:
+            result["tool_calls"] = tool_calls
+
+        return result
 
     def _convert_function_span(self, span: ReadableSpan) -> Dict[str, Any]:
         """Convert a function_tool span to function_call event data."""
@@ -158,17 +351,16 @@ class LucidicLiveKitExporter(SpanExporter):
                 span.start_time / 1e9, tz=timezone.utc
             ).isoformat()
 
-        # build metadata (subset for function calls)
-        metadata = {
-            "job_id": attrs.get("lk.job_id"),
-            "room_name": attrs.get("lk.room_name") or attrs.get("room_id"),
-            "agent_name": attrs.get("lk.agent_name"),
-            "generation_id": attrs.get("lk.generation_id"),
-            "tool_call_id": attrs.get("lk.function_tool.id"),
-        }
-        metadata = self._clean_none_values(metadata)
+        # extract function call details (these are the attributes actually on function_tool span)
+        tool_call_id = attrs.get("lk.function_tool.id")
+        is_error = attrs.get("lk.function_tool.is_error", False)
 
-        return {
+        # build metadata with tool call id
+        metadata: Dict[str, Any] = {}
+        if tool_call_id:
+            metadata["tool_call_id"] = tool_call_id
+
+        result: Dict[str, Any] = {
             "type": "function_call",
             "session_id": self._session_id,
             "function_name": attrs.get("lk.function_tool.name", "unknown"),
@@ -176,8 +368,16 @@ class LucidicLiveKitExporter(SpanExporter):
             "return_value": attrs.get("lk.function_tool.output"),
             "duration": duration,
             "occurred_at": occurred_at,
-            "metadata": metadata,
         }
+
+        # include is_error flag if the tool execution failed
+        if is_error:
+            result["is_error"] = True
+
+        if metadata:
+            result["metadata"] = metadata
+
+        return result
 
     def _parse_chat_context(self, chat_ctx_json: Optional[str]) -> List[Dict[str, str]]:
         """Parse LiveKit's lk.chat_ctx JSON into Lucidic messages format.
@@ -223,49 +423,61 @@ class LucidicLiveKitExporter(SpanExporter):
             logger.debug(f"[LiveKit] Failed to parse chat context: {e}")
             return []
 
-    def _build_metadata(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-        """Build metadata dict with diagnostics from span attributes.
+    def _build_llm_metadata(self, attrs: Dict[str, Any], llm_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Build metadata dict with diagnostics from llm_request span attributes.
+
+        Note: llm_request spans have limited attributes. Most metadata (job_id, room_name,
+        generation_id, etc.) are on parent spans (agent_session, agent_turn) and are only
+        available if a MetadataSpanProcessor propagates them.
 
         Args:
             attrs: Span attributes dictionary
+            llm_info: Parsed lk.llm_metrics data
 
         Returns:
-            Cleaned metadata dict with nested diagnostics
+            Cleaned metadata dict with available diagnostics
         """
-        metadata = {
-            # identity & tracking
-            "job_id": attrs.get("lk.job_id"),
-            "room_name": attrs.get("lk.room_name") or attrs.get("room_id"),
-            "agent_name": attrs.get("lk.agent_name"),
-            "participant_id": attrs.get("lk.participant_id"),
-            "generation_id": attrs.get("lk.generation_id"),
-            "parent_generation_id": attrs.get("lk.parent_generation_id"),
-            "speech_id": attrs.get("lk.speech_id"),
-            "interrupted": attrs.get("lk.interrupted"),
-            # diagnostics (nested)
-            "diagnostics": {
-                "latency": {
-                    "llm_ttft": attrs.get("llm_node_ttft"),
-                    "tts_ttfb": attrs.get("tts_node_ttfb"),
-                    "e2e_latency": attrs.get("e2e_latency"),
-                    "transcription_delay": attrs.get("lk.transcription_delay"),
-                    "end_of_turn_delay": attrs.get("lk.end_of_turn_delay"),
-                },
-                "eou": {
-                    "probability": attrs.get("lk.eou.probability"),
-                    "threshold": attrs.get("lk.eou.unlikely_threshold"),
-                    "delay": attrs.get("lk.eou.endpointing_delay"),
-                    "language": attrs.get("lk.eou.language"),
-                },
-                "tools": {
-                    "function_tools": attrs.get("lk.function_tools"),
-                    "provider_tools": attrs.get("lk.provider_tools"),
-                    "tool_sets": attrs.get("lk.tool_sets"),
-                },
-                "session_options": attrs.get("lk.session_options"),
-            },
+        metadata: Dict[str, Any] = {}
+
+        # timing metrics from lk.llm_metrics (actually available on llm_request)
+        if llm_info.get("ttft") is not None:
+            metadata["ttft"] = llm_info["ttft"]
+        if llm_info.get("tokens_per_second") is not None:
+            metadata["tokens_per_second"] = llm_info["tokens_per_second"]
+        if llm_info.get("cancelled"):
+            metadata["cancelled"] = llm_info["cancelled"]
+
+        # retry count if available (set on llm_request_run, may be propagated)
+        retry_count = attrs.get("lk.retry_count")
+        if retry_count is not None and retry_count > 0:
+            metadata["retry_count"] = retry_count
+
+        # attributes that may be available via MetadataSpanProcessor
+        # (set by user or propagated from parent spans)
+        optional_attrs = {
+            "job_id": "lk.job_id",
+            "room_name": "lk.room_name",
+            "room_id": "room_id",
+            "agent_name": "lk.agent_name",
+            "participant_id": "lk.participant_id",
+            "generation_id": "lk.generation_id",
+            "parent_generation_id": "lk.parent_generation_id",
+            "speech_id": "lk.speech_id",
+            "interrupted": "lk.interrupted",
         }
-        return self._clean_none_values(metadata)
+
+        for key, attr_name in optional_attrs.items():
+            value = attrs.get(attr_name)
+            if value is not None:
+                metadata[key] = value
+
+        # prefer room_name over room_id
+        if "room_id" in metadata and "room_name" not in metadata:
+            metadata["room_name"] = metadata.pop("room_id")
+        elif "room_id" in metadata:
+            del metadata["room_id"]
+
+        return metadata
 
     def _clean_none_values(self, d: Dict[str, Any]) -> Dict[str, Any]:
         """Recursively remove None values and empty dicts.

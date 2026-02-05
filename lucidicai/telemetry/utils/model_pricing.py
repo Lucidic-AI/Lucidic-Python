@@ -92,8 +92,8 @@ MODEL_PRICING = {
     # Google Gemini 2.5 Series (2025) - Verified
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0},  # Up to 200k tokens
     "gemini-2.5-pro-preview": {"input": 1.25, "output": 10.0},
-    "gemini-2.5-flash": {"input": 0.15, "output": 0.6},  # Non-thinking
-    "gemini-2.5-flash-preview": {"input": 0.15, "output": 0.6},
+    "gemini-2.5-flash": {"input": 0.30, "output": 2.5},  # Non-thinking
+    "gemini-2.5-flash-preview": {"input": 0.30, "output": 2.5},
     
     # Google Gemini 2.0 Series - Verified
     "gemini-2.0-flash": {"input": 0.1, "output": 0.4},
