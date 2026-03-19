@@ -41,7 +41,7 @@ from .api.resources.prompt import Prompt
 from .integrations.livekit import setup_livekit
 
 # Version
-__version__ = "3.4.3"
+__version__ = "3.4.4"
 
 # All exports
 __all__ = [
