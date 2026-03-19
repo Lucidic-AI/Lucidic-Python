@@ -122,7 +122,7 @@ class Session:
             logger.debug(
                 f"[Session] update() called - session_id={self._session_id[:8]}..., updates={updates}"
             )
-            self._client.sessions.update(self._session_id, updates)
+            self._client.sessions.update(self._session_id, **updates)
             logger.debug(f"[Session] update() completed for session {self._session_id[:8]}...")
         else:
             logger.debug(f"[Session] update() called with no updates for session {self._session_id[:8]}...")
@@ -164,7 +164,7 @@ class Session:
             logger.debug(
                 f"[Session] aupdate() called - session_id={self._session_id[:8]}..., updates={updates}"
             )
-            await self._client.sessions.aupdate(self._session_id, updates)
+            await self._client.sessions.aupdate(self._session_id, **updates)
             logger.debug(f"[Session] aupdate() completed for session {self._session_id[:8]}...")
         else:
             logger.debug(f"[Session] aupdate() called with no updates for session {self._session_id[:8]}...")
