@@ -31,6 +31,7 @@ from .api.resources.experiment import ExperimentResource
 from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
 from .api.resources.evals import EvalsResource
+from .api.resources.mock_call import MockCallResource
 from .core.config import SDKConfig
 from .core.errors import LucidicError
 from .session_obj import Session
@@ -158,6 +159,7 @@ class LucidicAI:
             "prompts": PromptResource(self._http, self._config, self._production),
             "feature_flags": FeatureFlagResource(self._http, self._config.agent_id, self._production),
             "evals": EvalsResource(self._http, self._production),
+            "mock_calls": MockCallResource(self._http, self._production),
         }
 
         # Active sessions for this client
@@ -294,6 +296,26 @@ class LucidicAI:
             client.evals.emit(result="excellent", name="quality")
         """
         return self._resources["evals"]
+
+    @property
+    def mock_calls(self) -> MockCallResource:
+        """Access mock-call resource for fixture-backed tool dispatch.
+
+        Used by client agents under test mode to swap real external calls
+        (DB queries, API requests) for replays against pre-built fixtures.
+        Resolves the active session's DatasetItem → Dataset → Resource →
+        Fixture chain on the backend.
+
+        Example:
+            # In a test-mode-gated branch
+            rows = client.mock_calls.create("query_sql", sql="SELECT * FROM users")
+
+            # Sentinel-style alternative for unsupported SQL
+            rows = client.mock_calls.create_or_none("query_sql", sql=user_query)
+            if rows is None:
+                return "I can't run that query against the test fixture."
+        """
+        return self._resources["mock_calls"]
 
     # ==================== Decorators ====================
 

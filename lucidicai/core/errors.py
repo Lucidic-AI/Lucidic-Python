@@ -35,6 +35,23 @@ class FeatureFlagError(LucidicError):
         super().__init__(f"Failed to fetch feature flag: {message}")
 
 
+class LucidicUnsupportedSQLError(LucidicError):
+    """Raised when the backend's mock_call dispatch rejects a SQL statement
+    (parse / transpile failure, READ_ONLY mutation, oversize result, etc.).
+
+    Maps to HTTP 422 from /sdk/mock-call. Carries the structured error body so
+    user code can branch on `source_dialect` (e.g., "this is a Postgres-only
+    syntax we can't run against the fixture") without parsing the message string.
+
+    Use `client.mock_calls.create_or_none(...)` if you'd rather get `None` than
+    catch this exception — useful for agents that prefer sentinel-style handling.
+    """
+    def __init__(self, detail: str, source_dialect: str):
+        super().__init__(f"Unsupported SQL ({source_dialect}): {detail}")
+        self.detail = detail
+        self.source_dialect = source_dialect
+
+
 def install_error_handler():
     """Install global handler to create ERROR_TRACEBACK events for uncaught exceptions."""
     from ..sdk.event import create_event
