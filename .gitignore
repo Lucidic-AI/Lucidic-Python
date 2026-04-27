@@ -176,5 +176,6 @@ cython_debug/
 .pypirc
 
 CLAUDE.md
+.claude/*
 
 otel_test/*
