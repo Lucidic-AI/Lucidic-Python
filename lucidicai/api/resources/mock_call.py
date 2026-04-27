@@ -11,9 +11,17 @@ Typical usage in a client agent:
     else:
         rows = self.db.execute(user_query)
 
-The `create_or_none` variant returns `None` instead of raising on a 422
-(unsupported SQL) — useful for agents that prefer sentinel handling over
-exceptions.
+Callers that prefer a sentinel over an exception on unsupported SQL can wrap
+the call themselves:
+
+    try:
+        rows = client.mock_calls.create("query_sql", sql=user_query)
+    except lucidicai.LucidicUnsupportedSQLError:
+        rows = None
+
+We deliberately don't ship a `create_or_none` wrapper — the try/except makes
+the swallowed exception explicit at the call site, and a second method would
+duplicate surface area for ~3 lines of saved code.
 """
 import logging
 from typing import Any, Dict, Optional
@@ -124,36 +132,6 @@ class MockCallResource:
                 raise unsupported from exc
             raise LucidicError(_server_error_message(exc)) from exc
 
-    def create_or_none(
-        self,
-        tool_name: str,
-        *,
-        session_id: Optional[str] = None,
-        client_event_id: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Optional[Dict[str, Any]]:
-        """Same as `create` but returns `None` instead of raising on HTTP 422.
-
-        Useful for agents that prefer sentinel handling over exceptions:
-
-            rows = client.mock_calls.create_or_none("query_sql", sql=user_sql)
-            if rows is None:
-                return "I can't run that query against the test fixture."
-            return summarize(rows)
-
-        Other 4xx/5xx errors still raise `LucidicError` — the silent path is
-        only for "this SQL isn't supported," not for misconfiguration.
-        """
-        try:
-            return self.create(
-                tool_name,
-                session_id=session_id,
-                client_event_id=client_event_id,
-                **kwargs,
-            )
-        except LucidicUnsupportedSQLError:
-            return None
-
     # ==================== Async ====================
 
     async def acreate(
@@ -176,25 +154,6 @@ class MockCallResource:
             if unsupported is not None:
                 raise unsupported from exc
             raise LucidicError(_server_error_message(exc)) from exc
-
-    async def acreate_or_none(
-        self,
-        tool_name: str,
-        *,
-        session_id: Optional[str] = None,
-        client_event_id: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Optional[Dict[str, Any]]:
-        """Async version of `create_or_none`."""
-        try:
-            return await self.acreate(
-                tool_name,
-                session_id=session_id,
-                client_event_id=client_event_id,
-                **kwargs,
-            )
-        except LucidicUnsupportedSQLError:
-            return None
 
     # ==================== Internals ====================
 
