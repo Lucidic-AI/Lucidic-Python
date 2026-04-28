@@ -32,6 +32,7 @@ from .core.errors import (
     InvalidOperationError,
     PromptError,
     FeatureFlagError,
+    LucidicUnsupportedSQLError,
 )
 
 # Prompt object
@@ -56,6 +57,7 @@ __all__ = [
     "InvalidOperationError",
     "PromptError",
     "FeatureFlagError",
+    "LucidicUnsupportedSQLError",
     # Prompt object
     "Prompt",
     # Integrations
