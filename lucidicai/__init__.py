@@ -49,6 +49,9 @@ from .core.errors import (
 # Prompt object
 from .api.resources.prompt import Prompt
 
+# Tool dispatch (v2 tool-backed)
+from .sdk.tools import mockable
+
 # Integrations
 from .integrations.livekit import setup_livekit
 
@@ -82,6 +85,8 @@ __all__ = [
     "LucidicUnsupportedSQLError",
     # Prompt object
     "Prompt",
+    # Tool dispatch (v2 tool-backed)
+    "mockable",
     # Integrations
     "setup_livekit",
     # Version

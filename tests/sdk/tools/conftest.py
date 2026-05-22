@@ -15,9 +15,26 @@ import pytest
 from lucidicai.api.client import HttpClient
 from lucidicai.api.resources.mock_call import MockCallResource
 from lucidicai.core.config import NetworkConfig, SDKConfig
+from lucidicai.sdk.context import current_session_id
+from lucidicai.sdk.tools.context import current_mock_context
 
 
 _STUB_BASE_URL = "https://stub.lucidic.test"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_context_vars():
+    """Clear cross-cutting contextvars between every test in tests/sdk/tools.
+
+    Without this, a test that binds ``current_session_id`` (via a
+    real session creation) leaks the value into the next test —
+    creating order-dependent failures that are hard to track.
+    """
+    current_session_id.set(None)
+    current_mock_context.set(None)
+    yield
+    current_session_id.set(None)
+    current_mock_context.set(None)
 
 
 @pytest.fixture
