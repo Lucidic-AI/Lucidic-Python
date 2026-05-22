@@ -3,3 +3,7 @@
 # Dev / test dependencies. Install with `pip install -r requirements-dev.txt`.
 pytest>=8.0
 pytest-asyncio>=0.23
+# Mock httpx calls in tests — declarative `respx.mock` API plays well with
+# our resource/transport split (mock backend at the HTTP boundary, exercise
+# typed-exception translation + envelope parsing without a live server).
+respx>=0.21

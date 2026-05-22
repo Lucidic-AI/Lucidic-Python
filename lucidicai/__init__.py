@@ -32,6 +32,17 @@ from .core.errors import (
     InvalidOperationError,
     PromptError,
     FeatureFlagError,
+    # mock_call dispatch error family (LUC-607)
+    LucidicMockCallError,
+    LucidicToolDriftError,
+    LucidicToolBlockedError,
+    LucidicUnknownToolError,
+    LucidicSessionNotInitializedError,
+    LucidicSessionNotFoundError,
+    LucidicMissingDatasetItemError,
+    LucidicToolConfigError,
+    LucidicImplError,
+    LucidicMissingImplError,
     LucidicUnsupportedSQLError,
 )
 
@@ -57,6 +68,17 @@ __all__ = [
     "InvalidOperationError",
     "PromptError",
     "FeatureFlagError",
+    # mock_call dispatch error family (LUC-607)
+    "LucidicMockCallError",
+    "LucidicToolDriftError",
+    "LucidicToolBlockedError",
+    "LucidicUnknownToolError",
+    "LucidicSessionNotInitializedError",
+    "LucidicSessionNotFoundError",
+    "LucidicMissingDatasetItemError",
+    "LucidicToolConfigError",
+    "LucidicImplError",
+    "LucidicMissingImplError",
     "LucidicUnsupportedSQLError",
     # Prompt object
     "Prompt",
