@@ -32,6 +32,7 @@ from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
 from .api.resources.evals import EvalsResource
 from .api.resources.mock_call import MockCallResource
+from .sdk.tools.resource import ToolsResource
 from .core.config import SDKConfig
 from .core.errors import LucidicError
 from .session_obj import Session
@@ -162,6 +163,23 @@ class LucidicAI:
             "mock_calls": MockCallResource(self._http, self._production),
         }
 
+        # LUC-608: client.tools — namespace for @mockable + adapter
+        # registration. ToolsResource is constructed BEFORE the buffer
+        # is drained so the client.tools property resolves correctly.
+        self._resources["tools"] = ToolsResource(client=self)
+
+        # Drain any @mockable decorations that ran before this client
+        # existed (the typical "decorate at module import, instantiate
+        # client in main()" pattern). Multi-client edge case: whichever
+        # client constructs first claims the buffer.
+        from .sdk.tools.registry import drain_buffer_into
+        drained = drain_buffer_into(self)
+        if drained:
+            logger.debug(
+                f"[LucidicAI] drained {drained} pre-init @mockable decoration(s) "
+                f"into client.tools registry"
+            )
+
         # Active sessions for this client
         self._sessions: Dict[str, Session] = {}
         self._session_lock = threading.Lock()
@@ -216,6 +234,25 @@ class LucidicAI:
     def is_valid(self) -> bool:
         """Check if the client is properly configured."""
         return self._valid
+
+    @property
+    def tools(self) -> ToolsResource:
+        """Access the client's tool registry + mock dispatch surface (LUC-608).
+
+        ``@client.tools.mockable`` decorates a function; ``client.tools.sync()``
+        flushes the registry to the backend. See ``ToolsResource`` for the
+        full API.
+        """
+        return self._resources["tools"]
+
+    def _has_tools_resource(self) -> bool:
+        """True when ``self.tools`` is wired up.
+
+        ``SessionResource`` uses this to gate the auto-call to
+        ``ToolsResource._init_session`` — production-mode clients that
+        fail validation skip ``_resources`` setup entirely.
+        """
+        return "tools" in self._resources
 
     @property
     def experiments(self) -> ExperimentResource:

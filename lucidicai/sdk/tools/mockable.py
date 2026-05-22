@@ -2,10 +2,16 @@
 
 Decoration captures the function's signature, docstring, and source-hash
 into a ``ToolSurface``, registers it (via ``register_tool``), and returns
-a wrapper that — in the **v1** of this ticket — simply runs the original
-function. The wrapper consults ``_current_mock_context()`` in LUC-577c to
-decide whether to route the call through the backend; until that ticket
-lands, the wrapper is effectively a no-op fast path.
+a wrapper that consults ``_current_mock_context()`` at call time.
+
+- **No mock context** (normal observability sessions or no session at
+  all): wrapper runs the original function — one contextvar lookup,
+  zero overhead beyond that.
+- **Mock context active** (session was bound via
+  ``ToolsResource._init_session`` after a tool-backed session start):
+  wrapper routes the call through the transport layer
+  (``emit_call_through_backend`` / ``aemit_call_through_backend``)
+  which handles tier dispatch, PASS_THROUGH fallback, and drift.
 
 Sync + async are detected at decoration time via
 ``inspect.iscoroutinefunction``. Both wrappers attach the captured
@@ -19,9 +25,11 @@ names, and an early SDK-side reject produces a much better error.
 """
 import functools
 import inspect
+import uuid
 from typing import Any, Callable, TypeVar
 
 from ...core.errors import LucidicError
+from .context import _current_mock_context
 from .registry import (
     ToolSurface,
     _compute_source_hash,
@@ -29,6 +37,7 @@ from .registry import (
     _stringify_annotation,
     register_tool,
 )
+from .transport import aemit_call_through_backend, emit_call_through_backend
 
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -115,17 +124,40 @@ def mockable(func: F) -> F:
 
         @functools.wraps(func)
         async def awrapper(*args: Any, **kwargs: Any) -> Any:
-            # v1 fast path — context check goes here in 577c. Until then
-            # the wrapper is transparent: zero behavior change for the user.
-            return await func(*args, **kwargs)
+            ctx = _current_mock_context()
+            if ctx is None:
+                # Fast path: no mock context bound to this task. One
+                # contextvar lookup, then run the user's function
+                # unchanged. Hit every tool call in production sessions
+                # that aren't part of a tool-backed eval run.
+                return await func(*args, **kwargs)
+            return await aemit_call_through_backend(
+                client=ctx.client,
+                session_id=ctx.session_id,
+                tool_name=surface.name,
+                args=args,
+                kwargs=kwargs,
+                real_fn=func,
+                client_event_id=str(uuid.uuid4()),
+            )
 
         awrapper.__lucidic_surface__ = surface  # type: ignore[attr-defined]
         return awrapper  # type: ignore[return-value]
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        # v1 fast path — context check goes here in 577c.
-        return func(*args, **kwargs)
+        ctx = _current_mock_context()
+        if ctx is None:
+            return func(*args, **kwargs)
+        return emit_call_through_backend(
+            client=ctx.client,
+            session_id=ctx.session_id,
+            tool_name=surface.name,
+            args=args,
+            kwargs=kwargs,
+            real_fn=func,
+            client_event_id=str(uuid.uuid4()),
+        )
 
     wrapper.__lucidic_surface__ = surface  # type: ignore[attr-defined]
     return wrapper  # type: ignore[return-value]
