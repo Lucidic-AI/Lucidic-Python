@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Dev / test dependencies. Install with `pip install -r requirements-dev.txt`.
+pytest>=8.0
+pytest-asyncio>=0.23
