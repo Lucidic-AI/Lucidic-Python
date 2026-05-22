@@ -110,6 +110,59 @@ class ToolsResource:
         """
         self._registry[surface.name] = surface
 
+    # ==================== Framework adapters (LUC-578/579/580) ====================
+
+    def register_openai(self, tools: List[Dict[str, Any]]) -> List[ToolSurface]:
+        """Canonical instance-bound version of ``register_openai_tools``.
+
+        Walks the ``tools=`` list typically passed to
+        ``openai.chat.completions.create`` and registers each
+        function-typed entry into this client's registry. See
+        ``lucidicai.sdk.tools.adapters.openai.register_openai_tools``
+        for the full contract.
+        """
+        from .adapters.openai import register_openai_tools
+
+        return register_openai_tools(tools, client=self._client)
+
+    def dispatch_openai(
+        self,
+        call: Any,
+        impls: Dict[str, Callable],
+        *,
+        client_event_id: Optional[str] = None,
+    ) -> Any:
+        """Canonical instance-bound version of ``dispatch_openai_tool_call``.
+
+        Routes one OpenAI tool_call through the mock-call backend when
+        a ``MockContext`` is bound, otherwise invokes ``impls[name]``.
+        See ``lucidicai.sdk.tools.adapters.openai.dispatch_openai_tool_call``
+        for the full behavior matrix.
+        """
+        from .adapters.openai import dispatch_openai_tool_call
+
+        return dispatch_openai_tool_call(
+            call, impls,
+            client=self._client,
+            client_event_id=client_event_id,
+        )
+
+    async def adispatch_openai(
+        self,
+        call: Any,
+        impls: Dict[str, Callable],
+        *,
+        client_event_id: Optional[str] = None,
+    ) -> Any:
+        """Async sibling of ``dispatch_openai``."""
+        from .adapters.openai import adispatch_openai_tool_call
+
+        return await adispatch_openai_tool_call(
+            call, impls,
+            client=self._client,
+            client_event_id=client_event_id,
+        )
+
     def snapshot(self) -> List[ToolSurface]:
         """All registered surfaces in stable name order.
 

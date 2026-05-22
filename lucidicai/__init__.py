@@ -51,6 +51,11 @@ from .api.resources.prompt import Prompt
 
 # Tool dispatch (v2 tool-backed)
 from .sdk.tools import mockable
+from .sdk.tools.adapters import (
+    adispatch_openai_tool_call,
+    dispatch_openai_tool_call,
+    register_openai_tools,
+)
 
 # Integrations
 from .integrations.livekit import setup_livekit
@@ -87,6 +92,10 @@ __all__ = [
     "Prompt",
     # Tool dispatch (v2 tool-backed)
     "mockable",
+    # OpenAI adapter (LUC-579)
+    "adispatch_openai_tool_call",
+    "dispatch_openai_tool_call",
+    "register_openai_tools",
     # Integrations
     "setup_livekit",
     # Version
