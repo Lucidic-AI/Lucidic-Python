@@ -1,27 +1,33 @@
-"""Mock call resource — runtime fixture-backed tool call dispatch (LUC-483).
+"""Mock call resource — `POST /sdk/mock-call` HTTP layer.
 
-The backend (`POST /sdk/mock-call`, LUC-481) resolves the active session through
-its DatasetItem → Dataset → Resource → Fixture, runs the `tool_name` against
-the fixture, and returns the result. This resource is the SDK-side counterpart.
+Two public methods per envelope-style preference:
 
-Typical usage in a client agent:
+- **`call()` / `acall()`** (new in LUC-607) — thin transport. Returns the
+  parsed v2 success body ``{return_value, tier, was_mocked}`` so the
+  caller can inspect `was_mocked` and branch. Raises typed
+  `LucidicMockCallError` subclasses on non-2xx. Consumed by the internal
+  `sdk/tools/transport.py::emit_call_through_backend` helper that backs
+  `@mockable` and the framework adapters.
 
-    if os.getenv("LUCIDIC_TEST_MODE"):
-        rows = client.mock_calls.create("query_sql", sql=user_query)
-    else:
-        rows = self.db.execute(user_query)
+- **`create()` / `acreate()`** (legacy, LUC-483-era) — kept for the
+  explicit-mock pattern customers built around M2:
 
-Callers that prefer a sentinel over an exception on unsupported SQL can wrap
-the call themselves:
+      if os.getenv("LUCIDIC_TEST_MODE"):
+          rows = client.mock_calls.create("query_sql", sql=user_query)
 
-    try:
-        rows = client.mock_calls.create("query_sql", sql=user_query)
-    except lucidicai.LucidicUnsupportedSQLError:
-        rows = None
+  Returns `body["return_value"]` directly (matching the original
+  "you get the tool's output" semantic). Logs a WARNING + returns None
+  on PASS_THROUGH — getting fallback when you explicitly asked for a
+  mock means the tool's dashboard tier is misconfigured.
 
-We deliberately don't ship a `create_or_none` wrapper — the try/except makes
-the swallowed exception explicit at the call site, and a second method would
-duplicate surface area for ~3 lines of saved code.
+Backend contract (`api/views/sdk_mock_call.py`, frozen):
+
+- Request body: ``{session_id, tool_name, kwargs, client_event_id?}``
+- Success (200): ``{return_value, tier, was_mocked}`` uniform shape across
+  all 200 paths (PASS_THROUGH carries ``return_value=null, was_mocked=false``).
+- Errors: ``{"error": {"code": str, "detail": str, ...code-specific}}``
+  at the corresponding HTTP status. See ``core/errors.py`` for the full
+  code→class lookup.
 """
 import logging
 from typing import Any, Dict, Optional
@@ -29,7 +35,10 @@ from typing import Any, Dict, Optional
 import httpx
 
 from ..client import HttpClient
-from ...core.errors import LucidicError, LucidicUnsupportedSQLError
+from ...core.errors import (
+    LucidicMockCallError,
+    error_class_for_code,
+)
 
 logger = logging.getLogger("Lucidic")
 
@@ -40,54 +49,138 @@ def _truncate_id(id_str: Optional[str]) -> str:
     return f"{id_str[:8]}..." if len(id_str) > 8 else id_str
 
 
-def _parse_unsupported_sql(exc: httpx.HTTPStatusError) -> Optional[LucidicUnsupportedSQLError]:
-    """If the response is a 422 with the documented `unsupported_sql` envelope,
-    build a typed exception. Otherwise return None so the caller can fall
-    through to a generic LucidicError.
+def _exception_from_http_error(exc: httpx.HTTPStatusError) -> LucidicMockCallError:
+    """Translate a non-2xx response into the appropriate typed exception.
 
-    The backend contract (LUC-481) guarantees:
-        HTTP 422 → {"error": "unsupported_sql", "detail": str, "source_dialect": str}
-    """
-    if exc.response.status_code != 422:
-        return None
-    try:
-        body = exc.response.json()
-    except ValueError:
-        return None
-    if not isinstance(body, dict) or body.get("error") != "unsupported_sql":
-        return None
-    return LucidicUnsupportedSQLError(
-        detail=body.get("detail", ""),
-        source_dialect=body.get("source_dialect", ""),
-    )
+    Backend envelope (LUC-584) is uniform: ``{"error": {"code": str,
+    "detail": str, ...code-specific keys...}}``. Look up the class by
+    `code` via ``error_class_for_code`` (returns the base class for
+    unknown codes — forward-compat with backend additions).
 
-
-def _server_error_message(exc: httpx.HTTPStatusError) -> str:
-    """Best-effort extraction of a human-readable error message from a non-422
-    HTTP error. Falls back to the raw status code if the body isn't JSON-shaped.
+    Falls back to ``LucidicMockCallError`` with a synthetic detail when
+    the body isn't parseable as the documented envelope (truncated
+    responses, proxy errors that don't pass the JSON through, etc.).
     """
     try:
         body = exc.response.json()
-        if isinstance(body, dict):
-            for key in ("error", "detail", "message"):
-                if isinstance(body.get(key), str):
-                    return body[key]
     except ValueError:
-        pass
-    return f"HTTP {exc.response.status_code}: {exc.response.text or 'no body'}"
+        return LucidicMockCallError(
+            code="malformed_response",
+            detail=f"HTTP {exc.response.status_code}: {exc.response.text or 'no body'}",
+        )
+
+    err = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(err, dict) or "code" not in err:
+        return LucidicMockCallError(
+            code="malformed_response",
+            detail=f"HTTP {exc.response.status_code}: {body!r}",
+        )
+
+    code = err["code"]
+    detail = err.get("detail", "")
+    extra = {k: v for k, v in err.items() if k not in ("code", "detail")}
+    cls = error_class_for_code(code)
+
+    # Each typed subclass that adds attributes does so via its own
+    # __init__ keyword params. Pass the extra dict through; classes that
+    # don't recognize a key still accept it via the base's **extra
+    # channel and stash it as an attribute.
+    #
+    # When `cls is LucidicMockCallError` (unknown code → forward-compat
+    # fallback), pass the actual code through so the exception carries
+    # the backend's wire value instead of the class-level default.
+    try:
+        if cls is LucidicMockCallError:
+            return cls(detail, code=code, **extra)
+        return cls(detail, **extra)
+    except TypeError:
+        # Defensive: if a subclass added a stricter __init__ in the
+        # future and rejects an unknown kwarg, fall back to the base.
+        return LucidicMockCallError(code=code, detail=detail, **extra)
 
 
 class MockCallResource:
-    """Handle SDK mock-call dispatch against fixture-backed datasets."""
+    """SDK-side handle for POST /sdk/mock-call.
+
+    Constructed once per `LucidicAI` client (see `client.py:_resources`).
+    Thread-safe through the underlying `HttpClient`.
+    """
 
     def __init__(self, http: HttpClient, production: bool = False):
         self.http = http
-        # production flag is accepted for parity with other resources; mock_call
-        # never silently swallows errors — the response body IS the user's data,
-        # not observability, so failures must surface even in production mode.
+        # production flag is accepted for parity with other resources;
+        # mock_call never silently swallows errors — the response body
+        # IS the user's data, not observability, so failures must
+        # surface even in production mode.
         self._production = production
 
-    # ==================== Sync ====================
+    # ==================== call() / acall() — thin transport (new) ====================
+
+    def call(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        kwargs: Dict[str, Any],
+        client_event_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Dispatch one mock-call and return the parsed v2 success body.
+
+        Always returns a dict with keys ``return_value``, ``tier``,
+        ``was_mocked``. Raises a typed ``LucidicMockCallError`` subclass
+        on any non-2xx response.
+
+        Unlike ``create()``, ``session_id`` is required (the transport
+        layer in ``sdk/tools/transport.py`` resolves it from the bound
+        mock context and passes it explicitly). Use ``create()`` for the
+        legacy contextvar-lookup behavior.
+        """
+        body: Dict[str, Any] = {
+            "session_id": session_id,
+            "tool_name": tool_name,
+            "kwargs": kwargs,
+        }
+        if client_event_id is not None:
+            body["client_event_id"] = client_event_id
+
+        logger.debug(
+            "[MockCallResource] dispatch tool_name=%r session=%s",
+            tool_name, _truncate_id(session_id),
+        )
+
+        try:
+            return self.http.post("sdk/mock-call", body)
+        except httpx.HTTPStatusError as exc:
+            raise _exception_from_http_error(exc) from exc
+
+    async def acall(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        kwargs: Dict[str, Any],
+        client_event_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Async version of ``call``."""
+        body: Dict[str, Any] = {
+            "session_id": session_id,
+            "tool_name": tool_name,
+            "kwargs": kwargs,
+        }
+        if client_event_id is not None:
+            body["client_event_id"] = client_event_id
+
+        logger.debug(
+            "[MockCallResource] dispatch (async) tool_name=%r session=%s",
+            tool_name, _truncate_id(session_id),
+        )
+
+        try:
+            return await self.http.apost("sdk/mock-call", body)
+        except httpx.HTTPStatusError as exc:
+            raise _exception_from_http_error(exc) from exc
+
+    # ==================== create() / acreate() — legacy LUC-483 API ====================
 
     def create(
         self,
@@ -96,43 +189,56 @@ class MockCallResource:
         session_id: Optional[str] = None,
         client_event_id: Optional[str] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Dispatch a single mock call against the active session's fixture.
+    ) -> Any:
+        """Legacy explicit-mock dispatch.
+
+        Returns the tool's ``return_value`` directly (matching the
+        original LUC-483 "you get the tool's output" semantic). For
+        tier=SQL_TEMPLATE the return shape is
+        ``{"columns": [...], "rows": [[...]], "row_count": int}``;
+        other tiers return whatever the executor produces.
+
+        PASS_THROUGH handling: backend returns ``was_mocked=false`` and
+        ``return_value=null`` when the tool's dashboard tier is
+        PASS_THROUGH. Legacy callers explicitly asked for a mock, so
+        getting fallback is almost certainly a config mismatch — we log
+        a WARNING and return None. If you want fallback-with-real-execution
+        semantics, use ``@mockable`` instead; the transport layer there
+        runs the real function for PASS_THROUGH.
 
         Args:
-            tool_name: Identifier matching `Resource.tool_name` on the backend.
-            session_id: Override the session id pulled from context. Useful for
-                cross-thread or cross-async-task dispatch where the ContextVar
-                isn't propagated.
-            client_event_id: Override the auto-generated client-side event id.
-                Lets the SDK retry idempotently — backend uses this as the
-                FUNCTION_CALL event's idempotency key.
-            **kwargs: Handler-specific arguments. For `SQLHandler` (the only
-                handler in M2), pass `sql="SELECT ..."`.
+            tool_name: Identifier matching ``Tool.name`` for the active
+                session's agent.
+            session_id: Override the session id from the SDK context.
+                Useful for cross-thread or cross-async-task dispatch
+                where the ContextVar isn't propagated.
+            client_event_id: Override the auto-generated client-side
+                event id. Backend uses this as the FUNCTION_CALL event's
+                idempotency key.
+            **kwargs: Tool-specific arguments matching ``Tool.signature``.
 
         Returns:
-            Handler output. For SQL: `{"columns": [...], "rows": [[...]],
-            "row_count": int}`.
+            The tool's return value (any JSON-serializable shape), or
+            None when there's no active session or the call hit
+            PASS_THROUGH.
 
         Raises:
-            LucidicUnsupportedSQLError: backend returned HTTP 422 (parse,
-                transpile, READ_ONLY mutation, or oversize result).
-            LucidicError: any other 4xx/5xx (missing session, no fixture,
-                ambiguous tool_name, server error, etc.).
+            LucidicMockCallError or subclass: any non-2xx from the
+                backend. Common subclasses: ``LucidicToolDriftError``,
+                ``LucidicUnknownToolError``, ``LucidicUnsupportedSQLError``,
+                ``LucidicToolBlockedError``, ``LucidicSessionNotInitializedError``.
         """
-        body = self._build_body(tool_name, session_id, client_event_id, kwargs)
-        if body is None:
-            return {}
+        resolved_session_id = self._resolve_session_id(session_id)
+        if resolved_session_id is None:
+            return None
 
-        try:
-            return self.http.post("sdk/mock-call", body)
-        except httpx.HTTPStatusError as exc:
-            unsupported = _parse_unsupported_sql(exc)
-            if unsupported is not None:
-                raise unsupported from exc
-            raise LucidicError(_server_error_message(exc)) from exc
-
-    # ==================== Async ====================
+        body = self.call(
+            session_id=resolved_session_id,
+            tool_name=tool_name,
+            kwargs=dict(kwargs),
+            client_event_id=client_event_id,
+        )
+        return self._unwrap_legacy(tool_name, body)
 
     async def acreate(
         self,
@@ -141,39 +247,33 @@ class MockCallResource:
         session_id: Optional[str] = None,
         client_event_id: Optional[str] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Async version of `create`. See `create` for full documentation."""
-        body = self._build_body(tool_name, session_id, client_event_id, kwargs)
-        if body is None:
-            return {}
+    ) -> Any:
+        """Async version of ``create``. See ``create`` for full docs."""
+        resolved_session_id = self._resolve_session_id(session_id)
+        if resolved_session_id is None:
+            return None
 
-        try:
-            return await self.http.apost("sdk/mock-call", body)
-        except httpx.HTTPStatusError as exc:
-            unsupported = _parse_unsupported_sql(exc)
-            if unsupported is not None:
-                raise unsupported from exc
-            raise LucidicError(_server_error_message(exc)) from exc
+        body = await self.acall(
+            session_id=resolved_session_id,
+            tool_name=tool_name,
+            kwargs=dict(kwargs),
+            client_event_id=client_event_id,
+        )
+        return self._unwrap_legacy(tool_name, body)
 
-    # ==================== Internals ====================
+    # ==================== internals ====================
 
-    def _build_body(
-        self,
-        tool_name: str,
-        session_id: Optional[str],
-        client_event_id: Optional[str],
-        kwargs: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        """Resolve session_id from context if not given, build the request body.
+    def _resolve_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """Resolve session_id from the legacy contextvar fallback.
 
-        Returns None when there's no active session — the caller short-circuits
-        with an empty result rather than hitting the backend with a guaranteed
-        4xx. Mirrors EvalsResource.emit's "no session, no-op" behavior.
+        Mirrors the LUC-483 behavior: if no session is bound and no
+        explicit ``session_id`` was passed, log + short-circuit with
+        None rather than hitting the backend with a guaranteed 4xx.
         """
         from ...sdk.context import current_session_id
 
-        resolved_session_id = session_id or current_session_id.get(None)
-        if not resolved_session_id:
+        resolved = session_id or current_session_id.get(None)
+        if not resolved:
             logger.debug("[MockCallResource] No active session — skipping dispatch")
             if not self._production:
                 logger.warning(
@@ -181,16 +281,24 @@ class MockCallResource:
                     "session_id override; returning empty result"
                 )
             return None
+        return resolved
 
-        logger.debug(
-            f"[MockCallResource] dispatch tool_name={tool_name!r} "
-            f"session={_truncate_id(resolved_session_id)}"
-        )
-        body: Dict[str, Any] = {
-            "session_id": resolved_session_id,
-            "tool_name": tool_name,
-            "kwargs": kwargs,
-        }
-        if client_event_id is not None:
-            body["client_event_id"] = client_event_id
-        return body
+    def _unwrap_legacy(self, tool_name: str, body: Dict[str, Any]) -> Any:
+        """Extract the tool return value for the legacy ``create()`` API.
+
+        Logs a WARNING when the backend served PASS_THROUGH — explicit
+        callers shouldn't be hitting that path. Future-proofing: if the
+        backend ever omits ``was_mocked``, treat its absence as "mocked"
+        for backwards compat (no false-positive warnings on stale
+        backends).
+        """
+        was_mocked = body.get("was_mocked", True)
+        if not was_mocked:
+            tier = body.get("tier", "?")
+            logger.warning(
+                "mock_calls.create(%r) hit tier=%s and was not mocked; "
+                "return_value is None. Check the tool's tier in the dashboard "
+                "or use @mockable for fallback-with-real-execution semantics.",
+                tool_name, tier,
+            )
+        return body.get("return_value")
