@@ -28,6 +28,11 @@ All adapters share the helpers in ``..registry`` (``ToolSurface``,
 dispatch behavior are uniform across frameworks.
 """
 
+from .anthropic import (
+    adispatch_anthropic_tool_call,
+    dispatch_anthropic_tool_call,
+    register_anthropic_tools,
+)
 from .openai import (
     adispatch_openai_tool_call,
     dispatch_openai_tool_call,
@@ -36,7 +41,12 @@ from .openai import (
 
 
 __all__ = [
+    # OpenAI (LUC-579)
     "adispatch_openai_tool_call",
     "dispatch_openai_tool_call",
     "register_openai_tools",
+    # Anthropic (LUC-580)
+    "adispatch_anthropic_tool_call",
+    "dispatch_anthropic_tool_call",
+    "register_anthropic_tools",
 ]
