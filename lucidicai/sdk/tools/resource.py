@@ -163,6 +163,60 @@ class ToolsResource:
             client_event_id=client_event_id,
         )
 
+    # ----- Anthropic adapter (LUC-580) -----
+
+    def register_anthropic(self, tools: List[Dict[str, Any]]) -> List[ToolSurface]:
+        """Canonical instance-bound version of ``register_anthropic_tools``.
+
+        Walks the ``tools=`` list typically passed to
+        ``anthropic.Anthropic().messages.create`` and registers each
+        entry into this client's registry. See
+        ``lucidicai.sdk.tools.adapters.anthropic.register_anthropic_tools``
+        for the full contract.
+        """
+        from .adapters.anthropic import register_anthropic_tools
+
+        return register_anthropic_tools(tools, client=self._client)
+
+    def dispatch_anthropic(
+        self,
+        block: Any,
+        impls: Dict[str, Callable],
+        *,
+        client_event_id: Optional[str] = None,
+    ) -> Any:
+        """Canonical instance-bound version of ``dispatch_anthropic_tool_call``.
+
+        Routes one Anthropic ``tool_use`` block through the mock-call
+        backend when a ``MockContext`` is bound, otherwise invokes
+        ``impls[name]``. See
+        ``lucidicai.sdk.tools.adapters.anthropic.dispatch_anthropic_tool_call``
+        for the full behavior matrix.
+        """
+        from .adapters.anthropic import dispatch_anthropic_tool_call
+
+        return dispatch_anthropic_tool_call(
+            block, impls,
+            client=self._client,
+            client_event_id=client_event_id,
+        )
+
+    async def adispatch_anthropic(
+        self,
+        block: Any,
+        impls: Dict[str, Callable],
+        *,
+        client_event_id: Optional[str] = None,
+    ) -> Any:
+        """Async sibling of ``dispatch_anthropic``."""
+        from .adapters.anthropic import adispatch_anthropic_tool_call
+
+        return await adispatch_anthropic_tool_call(
+            block, impls,
+            client=self._client,
+            client_event_id=client_event_id,
+        )
+
     def snapshot(self) -> List[ToolSurface]:
         """All registered surfaces in stable name order.
 

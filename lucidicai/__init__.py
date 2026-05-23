@@ -52,8 +52,11 @@ from .api.resources.prompt import Prompt
 # Tool dispatch (v2 tool-backed)
 from .sdk.tools import mockable
 from .sdk.tools.adapters import (
+    adispatch_anthropic_tool_call,
     adispatch_openai_tool_call,
+    dispatch_anthropic_tool_call,
     dispatch_openai_tool_call,
+    register_anthropic_tools,
     register_openai_tools,
 )
 
@@ -96,6 +99,10 @@ __all__ = [
     "adispatch_openai_tool_call",
     "dispatch_openai_tool_call",
     "register_openai_tools",
+    # Anthropic adapter (LUC-580)
+    "adispatch_anthropic_tool_call",
+    "dispatch_anthropic_tool_call",
+    "register_anthropic_tools",
     # Integrations
     "setup_livekit",
     # Version
