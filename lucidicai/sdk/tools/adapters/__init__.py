@@ -33,6 +33,7 @@ from .anthropic import (
     dispatch_anthropic_tool_call,
     register_anthropic_tools,
 )
+from .langchain import register_langchain_tools
 from .openai import (
     adispatch_openai_tool_call,
     dispatch_openai_tool_call,
@@ -49,4 +50,6 @@ __all__ = [
     "adispatch_anthropic_tool_call",
     "dispatch_anthropic_tool_call",
     "register_anthropic_tools",
+    # LangChain (LUC-578)
+    "register_langchain_tools",
 ]

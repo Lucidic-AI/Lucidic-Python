@@ -217,6 +217,26 @@ class ToolsResource:
             client_event_id=client_event_id,
         )
 
+    # ----- LangChain adapter (LUC-578) -----
+
+    def register_langchain_tools(self, tools: List[Any]) -> List[ToolSurface]:
+        """Canonical instance-bound version of ``register_langchain_tools``.
+
+        Walks a list of LangChain ``BaseTool`` instances. For each:
+        extracts the surface, registers it into this client's registry,
+        and transparently replaces ``tool.func`` (and ``tool.coroutine``
+        if present) with a mockable wrapper. After this call, normal
+        LangChain dispatch routes through our backend when a
+        ``MockContext`` is bound — no user-side ``dispatch_*`` helper
+        needed (LangChain owns the dispatch loop).
+
+        See ``lucidicai.sdk.tools.adapters.langchain.register_langchain_tools``
+        for the full contract.
+        """
+        from .adapters.langchain import register_langchain_tools
+
+        return register_langchain_tools(tools, client=self._client)
+
     def snapshot(self) -> List[ToolSurface]:
         """All registered surfaces in stable name order.
 
