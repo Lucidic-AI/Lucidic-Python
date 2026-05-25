@@ -96,40 +96,33 @@ def _capture_surface(func: Callable) -> ToolSurface:
     )
 
 
-def mockable(func: F) -> F:
-    """Mark ``func`` as a mockable tool.
+def make_mockable_wrapper(surface: ToolSurface, func: Callable) -> Callable:
+    """Build the mockable dispatch wrapper for ``func`` against ``surface``.
 
-    Captures the surface at decoration time (raises ``LucidicError`` on
-    invalid input) and returns a wrapper that — in the v1 of this ticket
-    — runs the original function unchanged. The dispatch-intercept layer
-    is wired into this wrapper by LUC-577c once the
-    ``_current_mock_context()`` machinery exists.
+    Decoupled from ``mockable`` so framework adapters (LUC-578 LangChain)
+    can reuse the same wrapper logic when they already have a captured
+    surface (from the framework's own tool spec) and an underlying
+    Python callable from the framework that needs to be wrapped.
 
-    Sniffs ``async def`` via ``inspect.iscoroutinefunction`` and returns
-    the matching wrapper. Attaches ``__lucidic_surface__: ToolSurface``
-    to the wrapper for introspection.
+    Behavior matches the ``@mockable`` decorator:
 
-    Example::
+    - **No mock context**: wrapper runs ``func`` unchanged.
+    - **Mock context active**: routes through transport (sync or async
+      depending on ``func`` shape).
 
-        @mockable
-        def query_unread_emails(sender: str, limit: int = 50) -> list[dict]:
-            ...
+    Marks the wrapper with ``__lucidic_surface__`` (the ``ToolSurface``)
+    and ``__lucidic_wrapped__ = True`` (idempotency sentinel — adapters
+    use this to skip re-wrapping already-wrapped tools).
 
-        query_unread_emails.__lucidic_surface__  # → ToolSurface(name="query_unread_emails", ...)
+    Sniffs async via ``inspect.iscoroutinefunction(func)``. Async funcs
+    get an async wrapper; sync funcs get a sync wrapper.
     """
-    surface = _capture_surface(func)
-    register_tool(surface)
-
     if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)
         async def awrapper(*args: Any, **kwargs: Any) -> Any:
             ctx = _current_mock_context()
             if ctx is None:
-                # Fast path: no mock context bound to this task. One
-                # contextvar lookup, then run the user's function
-                # unchanged. Hit every tool call in production sessions
-                # that aren't part of a tool-backed eval run.
                 return await func(*args, **kwargs)
             return await aemit_call_through_backend(
                 client=ctx.client,
@@ -142,7 +135,8 @@ def mockable(func: F) -> F:
             )
 
         awrapper.__lucidic_surface__ = surface  # type: ignore[attr-defined]
-        return awrapper  # type: ignore[return-value]
+        awrapper.__lucidic_wrapped__ = True  # type: ignore[attr-defined]
+        return awrapper
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -160,4 +154,29 @@ def mockable(func: F) -> F:
         )
 
     wrapper.__lucidic_surface__ = surface  # type: ignore[attr-defined]
-    return wrapper  # type: ignore[return-value]
+    wrapper.__lucidic_wrapped__ = True  # type: ignore[attr-defined]
+    return wrapper
+
+
+def mockable(func: F) -> F:
+    """Mark ``func`` as a mockable tool.
+
+    Captures the surface at decoration time (raises ``LucidicError`` on
+    invalid input), registers it, and returns a dispatch wrapper that
+    consults ``_current_mock_context()`` at call time.
+
+    Sniffs ``async def`` via ``inspect.iscoroutinefunction`` and returns
+    the matching wrapper. Attaches ``__lucidic_surface__: ToolSurface``
+    to the wrapper for introspection.
+
+    Example::
+
+        @mockable
+        def query_unread_emails(sender: str, limit: int = 50) -> list[dict]:
+            ...
+
+        query_unread_emails.__lucidic_surface__  # → ToolSurface(name="query_unread_emails", ...)
+    """
+    surface = _capture_surface(func)
+    register_tool(surface)
+    return make_mockable_wrapper(surface, func)  # type: ignore[return-value]

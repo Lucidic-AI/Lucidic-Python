@@ -57,6 +57,7 @@ from .sdk.tools.adapters import (
     dispatch_anthropic_tool_call,
     dispatch_openai_tool_call,
     register_anthropic_tools,
+    register_langchain_tools,
     register_openai_tools,
 )
 
@@ -103,6 +104,8 @@ __all__ = [
     "adispatch_anthropic_tool_call",
     "dispatch_anthropic_tool_call",
     "register_anthropic_tools",
+    # LangChain adapter (LUC-578)
+    "register_langchain_tools",
     # Integrations
     "setup_livekit",
     # Version
