@@ -37,6 +37,7 @@ prefer kwargs at call sites; LangChain / OpenAI / Anthropic adapters
 already invoke with kwargs natively.
 """
 import logging
+import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
 import httpx
@@ -46,12 +47,21 @@ from ...core.errors import (
     LucidicMockCallError,
     LucidicToolDriftError,
 )
+from .call_log import record_call
 
 if TYPE_CHECKING:
     from ...client import LucidicAI
 
 
 logger = logging.getLogger("Lucidic")
+
+
+def _elapsed_ms(t0: float) -> int:
+    return int((time.perf_counter() - t0) * 1000)
+
+
+def _short_hash(value: Optional[str]) -> str:
+    return (value[:12] + "..") if value else "<none>"
 
 
 # Dashboard URL to surface in drift warnings. Kept generic — the
@@ -175,6 +185,7 @@ def emit_call_through_backend(
     payload_kwargs = _effective_kwargs(args, kwargs)
     resource = client._resources["mock_calls"]  # type: ignore[index]
 
+    t0 = time.perf_counter()
     try:
         body = resource.call(
             session_id=session_id,
@@ -184,20 +195,51 @@ def emit_call_through_backend(
         )
     except LucidicToolDriftError as exc:
         _log_drift_warning(tool_name, session_id, exc)
+        record_call(
+            session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+            outcome="DRIFT->local", elapsed_ms=_elapsed_ms(t0),
+            extra=f"session_hash={_short_hash(exc.session_hash)} "
+                  f"current_hash={_short_hash(exc.current_hash)}",
+        )
         return _run_fallback_sync(real_fn, args, kwargs, tool_name, "tool_drift")
     except httpx.RequestError as exc:
         # Connect/timeout/read errors that fail before a response exists.
         # Wrap so callers see the uniform mock_call error family.
+        record_call(
+            session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+            outcome="ERROR", error=f"network_error: {type(exc).__name__}: {exc}",
+            elapsed_ms=_elapsed_ms(t0),
+        )
         raise LucidicMockCallError(
             code="network_error",
             detail=f"{type(exc).__name__}: {exc}",
         ) from exc
-    # All other LucidicMockCallError subclasses propagate as-is.
+    except LucidicMockCallError as exc:
+        # Typed backend failures (impl_error, tool_blocked, unsupported_sql,
+        # unknown_tool, session_not_initialized, ...) propagate to the caller —
+        # but record them first so the mock log shows the failure in real time.
+        record_call(
+            session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+            outcome="ERROR", error=f"{exc.code}: {exc.detail}",
+            elapsed_ms=_elapsed_ms(t0),
+        )
+        raise
 
     if body.get("was_mocked", True):
-        return body.get("return_value")
+        rv = body.get("return_value")
+        record_call(
+            session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+            outcome="MOCKED", tier=body.get("tier"), result=rv, has_result=True,
+            elapsed_ms=_elapsed_ms(t0),
+        )
+        return rv
     # PASS_THROUGH — backend declined to mock; run the real function.
     tier = body.get("tier", "?")
+    record_call(
+        session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+        outcome="PASS_THROUGH", tier=tier, extra="(ran real fn)",
+        elapsed_ms=_elapsed_ms(t0),
+    )
     return _run_fallback_sync(real_fn, args, kwargs, tool_name, f"tier={tier}")
 
 
@@ -221,6 +263,7 @@ async def aemit_call_through_backend(
     payload_kwargs = _effective_kwargs(args, kwargs)
     resource = client._resources["mock_calls"]  # type: ignore[index]
 
+    t0 = time.perf_counter()
     try:
         body = await resource.acall(
             session_id=session_id,
@@ -230,14 +273,43 @@ async def aemit_call_through_backend(
         )
     except LucidicToolDriftError as exc:
         _log_drift_warning(tool_name, session_id, exc)
+        record_call(
+            session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+            outcome="DRIFT->local", elapsed_ms=_elapsed_ms(t0),
+            extra=f"session_hash={_short_hash(exc.session_hash)} "
+                  f"current_hash={_short_hash(exc.current_hash)}",
+        )
         return await _run_fallback_async(real_fn, args, kwargs, tool_name, "tool_drift")
     except httpx.RequestError as exc:
+        record_call(
+            session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+            outcome="ERROR", error=f"network_error: {type(exc).__name__}: {exc}",
+            elapsed_ms=_elapsed_ms(t0),
+        )
         raise LucidicMockCallError(
             code="network_error",
             detail=f"{type(exc).__name__}: {exc}",
         ) from exc
+    except LucidicMockCallError as exc:
+        record_call(
+            session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+            outcome="ERROR", error=f"{exc.code}: {exc.detail}",
+            elapsed_ms=_elapsed_ms(t0),
+        )
+        raise
 
     if body.get("was_mocked", True):
-        return body.get("return_value")
+        rv = body.get("return_value")
+        record_call(
+            session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+            outcome="MOCKED", tier=body.get("tier"), result=rv, has_result=True,
+            elapsed_ms=_elapsed_ms(t0),
+        )
+        return rv
     tier = body.get("tier", "?")
+    record_call(
+        session_id=session_id, tool_name=tool_name, kwargs=payload_kwargs,
+        outcome="PASS_THROUGH", tier=tier, extra="(ran real fn)",
+        elapsed_ms=_elapsed_ms(t0),
+    )
     return await _run_fallback_async(real_fn, args, kwargs, tool_name, f"tier={tier}")

@@ -23,13 +23,15 @@ syncs exactly once per registry change, not per session.
 """
 import hashlib
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ...api.resources.agent_tools_sync import SyncAgentToolsResource
 from ...api.resources.session_init_fixtures import SessionInitFixturesResource
-from ...core.errors import LucidicError
-from .context import MockContext, bind_mock_context
+from ...core.errors import LucidicError, LucidicMissingImplError
+from .context import MockContext, _current_mock_context, bind_mock_context
 from .registry import ToolSurface
+from .transport import aemit_call_through_backend, emit_call_through_backend
 
 if TYPE_CHECKING:
     from ...client import LucidicAI
@@ -217,6 +219,87 @@ class ToolsResource:
             client_event_id=client_event_id,
         )
 
+    # ----- Generic dispatch (MCP / opaque tools) -----
+
+    def dispatch(
+        self,
+        tool_name: str,
+        kwargs: Dict[str, Any],
+        *,
+        real_fn: Optional[Callable[..., Any]] = None,
+        client_event_id: Optional[str] = None,
+    ) -> Any:
+        """Route a tool call through the mock-call backend by name.
+
+        For tools whose source isn't decoratable (MCP servers, third-party
+        SDKs, RPC stubs) — Tool rows are CRUDed manually in the dashboard
+        and the user's own dispatch shim calls this method.
+
+        Behavior:
+
+        - No ``MockContext`` bound (not a tool-backed session): runs
+          ``real_fn(**kwargs)``. Raises ``LucidicMissingImplError`` if
+          ``real_fn`` is None.
+        - ``MockContext`` bound: hands off to
+          ``emit_call_through_backend`` — the standard tier-routing /
+          drift-fallback / PASS_THROUGH-fallback matrix applies.
+
+        ``real_fn`` is the local fallback callable. The transport calls
+        it as ``real_fn(**kwargs)`` on PASS_THROUGH / drift; users
+        typically pass a lambda that forwards to the MCP client::
+
+            client.tools.dispatch(
+                "search_emails",
+                {"query": "foo"},
+                real_fn=lambda **kw: mcp.call_tool("search_emails", kw),
+            )
+        """
+        ctx = _current_mock_context()
+        if ctx is None:
+            if real_fn is None:
+                raise LucidicMissingImplError(
+                    tool_name=tool_name,
+                    reason="no_mock_context_and_no_real_fn",
+                )
+            return real_fn(**kwargs)
+        return emit_call_through_backend(
+            client=self._client,
+            session_id=ctx.session_id,
+            tool_name=tool_name,
+            args=(),
+            kwargs=kwargs,
+            real_fn=real_fn,
+            client_event_id=client_event_id or str(uuid.uuid4()),
+        )
+
+    async def adispatch(
+        self,
+        tool_name: str,
+        kwargs: Dict[str, Any],
+        *,
+        real_fn: Optional[Callable[..., Any]] = None,
+        client_event_id: Optional[str] = None,
+    ) -> Any:
+        """Async sibling of ``dispatch``. ``real_fn`` must be an async
+        callable when provided (the async transport awaits it)."""
+        ctx = _current_mock_context()
+        if ctx is None:
+            if real_fn is None:
+                raise LucidicMissingImplError(
+                    tool_name=tool_name,
+                    reason="no_mock_context_and_no_real_fn",
+                )
+            return await real_fn(**kwargs)
+        return await aemit_call_through_backend(
+            client=self._client,
+            session_id=ctx.session_id,
+            tool_name=tool_name,
+            args=(),
+            kwargs=kwargs,
+            real_fn=real_fn,
+            client_event_id=client_event_id or str(uuid.uuid4()),
+        )
+
     # ----- LangChain adapter (LUC-578) -----
 
     def register_langchain_tools(self, tools: List[Any]) -> List[ToolSurface]:
@@ -312,8 +395,9 @@ class ToolsResource:
 
         1. Backend returns ``initialized=True``: session is tool-backed
            and ready. Bind ``MockContext(session_id, client)`` for
-           ``@mockable`` to consult. Fire the debounced auto-sync so
-           the registry is on the backend before any ``mock_call``.
+           ``@mockable`` to consult. (The debounced auto-sync runs up
+           front, before the fixture-state snapshot — see the ordering
+           note in the body for why that prevents first-call drift.)
 
         2. Backend returns ``initialized=False`` (no DatasetItem on
            server side, mismatch, no Resources/Tools to snapshot):
@@ -330,6 +414,19 @@ class ToolsResource:
         init failures. The session is observability-functional even
         without tool state.
         """
+        # Sync the tool catalog to the backend BEFORE materializing the
+        # session's fixture state. session-init-fixtures snapshots
+        # Session.tool_version_snapshot from the tools' *current* backend
+        # source_hashes; syncing *after* that snapshot (the old order) would
+        # rewrite those hashes, so the very first mock_call of a fresh process
+        # would 409 tool_drift against its own just-written snapshot (LUC-591).
+        # Syncing first makes the snapshot capture the post-sync hashes — the
+        # first tool-backed session now dispatches cleanly. Debounced: a no-op
+        # when the registry fingerprint is unchanged. Also ensures the backend
+        # already knows the tools, avoiding a transient unknown_tool 404 on an
+        # immediate mock_call.
+        self._maybe_sync_on_session_start()
+
         try:
             result = self._init_fixtures_api.init(session_id)
         except LucidicError as exc:
@@ -349,7 +446,7 @@ class ToolsResource:
             )
             return
 
-        # Bind MockContext so @mockable wrappers route through transport
+        # Bind MockContext so @mockable wrappers route through transport.
         bind_mock_context(MockContext(session_id=session_id, client=self._client))
         logger.debug(
             "[ToolsResource] bound MockContext for session %s "
@@ -359,15 +456,15 @@ class ToolsResource:
             len(result.get("tools_snapshotted", [])),
         )
 
-        # First-session-start sync trigger (debounced). Done after
-        # MockContext binds so any mockable call that fires immediately
-        # after session creation has the backend already aware of the
-        # tools (avoids a transient unknown_tool 404).
-        self._maybe_sync_on_session_start()
-
     async def _ainit_session(self, session_id: str) -> None:
         """Async sibling of ``_init_session``. Mirrors all the same
-        contracts including the no-raise guarantee."""
+        contracts including the no-raise guarantee and the sync-before-
+        snapshot ordering (see ``_init_session`` for the drift rationale)."""
+        # Sync before snapshotting so the backend snapshot captures the
+        # post-sync source_hashes (prevents first-call tool_drift, LUC-591).
+        # _maybe_async_sync_on_session_start swallows LucidicError internally.
+        await self._maybe_async_sync_on_session_start()
+
         try:
             result = await self._init_fixtures_api.ainit(session_id)
         except LucidicError as exc:
@@ -385,11 +482,6 @@ class ToolsResource:
             return
 
         bind_mock_context(MockContext(session_id=session_id, client=self._client))
-        # Sync is best-effort here; await the async version
-        try:
-            await self._maybe_async_sync_on_session_start()
-        except LucidicError as exc:
-            logger.warning("[ToolsResource] auto-sync failed: %s", exc)
 
     # ==================== Internals ====================
 
@@ -447,10 +539,20 @@ def _surface_to_wire(surface: ToolSurface) -> Dict[str, Any]:
     The dataclass field names happen to match the serializer's fields
     1:1; the explicit mapping here documents the contract and keeps a
     seam for future shape drift.
+
+    Wire coercion: the SDK tracks ``signature.return_type=None`` when the
+    SDK can't infer one (OpenAI / Anthropic specs don't carry a top-level
+    return type; @mockable on a fn with no annotation; LangChain tool with
+    no annotation). Backend's ``SyncAgentToolsSerializer.return_type`` is
+    a CharField that allows blank but not null, so we coerce here at the
+    boundary rather than scrubbing producers.
     """
+    sig = dict(surface.signature or {})
+    if sig.get("return_type") is None:
+        sig["return_type"] = ""
     return {
         "name": surface.name,
-        "signature": surface.signature,
+        "signature": sig,
         "docstring": surface.docstring,
         "return_shape": surface.return_shape,
         "source_hash": surface.source_hash,
