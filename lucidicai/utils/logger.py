@@ -6,10 +6,14 @@ LUCIDIC_DEBUG and LUCIDIC_VERBOSE environment variables.
 import os
 import logging
 from typing import Any, Optional
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file.
+# usecwd=True anchors the search at the consumer's working directory.
+# The default walks up from this file's location, which for an editable
+# install of the SDK finds the SDK's own .env first and leaks dev-test
+# settings (e.g. LUCIDIC_DEBUG=True) into consumers.
+load_dotenv(find_dotenv(usecwd=True))
 
 # Configure base logger
 logging.basicConfig(
