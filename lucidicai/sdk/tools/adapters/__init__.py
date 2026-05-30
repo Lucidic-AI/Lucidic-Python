@@ -34,6 +34,11 @@ from .anthropic import (
     register_anthropic_tools,
 )
 from .langchain import register_langchain_tools
+from .mcp import (
+    adispatch_mcp_tool_call,
+    dispatch_mcp_tool_call,
+    register_mcp_tools,
+)
 from .openai import (
     adispatch_openai_tool_call,
     dispatch_openai_tool_call,
@@ -52,4 +57,8 @@ __all__ = [
     "register_anthropic_tools",
     # LangChain (LUC-578)
     "register_langchain_tools",
+    # MCP (LUC-EnterpriseOps integration)
+    "adispatch_mcp_tool_call",
+    "dispatch_mcp_tool_call",
+    "register_mcp_tools",
 ]
