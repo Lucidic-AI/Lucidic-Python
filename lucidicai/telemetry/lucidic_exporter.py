@@ -29,12 +29,39 @@ class LucidicSpanExporter(SpanExporter):
     Supports multi-client routing via client registry.
     """
 
+    # warn loudly (but only a few times per process) when an LLM span yields no
+    # extractable content - this is the silent-failure mode behind LUC-667.
+    _MAX_DROP_WARNINGS = 5
+
     def __init__(self):
         """Initialize the exporter."""
         self._shutdown = False
         # Client registry for multi-client support
         self._client_registry: Dict[str, "LucidicAI"] = {}
         self._registry_lock = threading.Lock()
+        self._dropped_span_warnings = 0
+
+    def _warn_dropped_span(self, span: ReadableSpan, attributes: Dict[str, Any]) -> None:
+        """emit a loud, actionable warning the first few times a span is dropped."""
+        self._dropped_span_warnings += 1
+        if self._dropped_span_warnings > self._MAX_DROP_WARNINGS:
+            verbose(f"[Telemetry] Skipping span {span.name} with no meaningful content")
+            return
+        genai_keys = sorted(
+            k for k in attributes if isinstance(k, str) and (k.startswith("gen_ai.") or k.startswith("llm."))
+        )
+        scope = getattr(span, "instrumentation_scope", None)
+        scope_desc = ""
+        if scope is not None:
+            scope_desc = f" (instrumentation: {getattr(scope, 'name', '?')} {getattr(scope, 'version', '') or ''})"
+        warning(
+            f"[Telemetry] Dropped LLM span '{span.name}'{scope_desc}: extracted 0 messages, 0 tool calls. "
+            f"This usually means the instrumentation emits a span shape this SDK version does not read yet "
+            f"(e.g. a newer OTel GenAI semantic-convention). Span gen_ai/llm keys: {genai_keys}. "
+            f"Upgrade lucidicai or pin the instrumentation package."
+        )
+        if self._dropped_span_warnings == self._MAX_DROP_WARNINGS:
+            warning("[Telemetry] Further dropped-span warnings will be suppressed this process.")
 
     def register_client(self, client: "LucidicAI") -> None:
         """Register a client for span routing.
@@ -82,21 +109,6 @@ class LucidicSpanExporter(SpanExporter):
 
             attributes = dict(span.attributes or {})
 
-            # Debug: Check what attributes we have for responses.create
-            if span.name == "openai.responses.create":
-                debug(f"[Telemetry] responses.create span has {len(attributes)} attributes")
-                # Check for specific attributes we're interested in
-                has_prompts = any(k.startswith('gen_ai.prompt') for k in attributes.keys())
-                has_completions = any(k.startswith('gen_ai.completion') for k in attributes.keys())
-                debug(f"[Telemetry] Has prompt attrs: {has_prompts}, Has completion attrs: {has_completions}")
-
-            # Skip spans that are likely duplicates or incomplete
-            # Check if this is a responses.parse span that was already handled
-            if span.name == "openai.responses.create" and not attributes.get("lucidic.instrumented"):
-                # This might be from incorrect standard instrumentation
-                verbose(f"[Telemetry] Skipping potentially duplicate responses span without our marker")
-                return
-
             # Resolve session id
             target_session_id = attributes.get('lucidic.session_id')
             if not target_session_id:
@@ -135,18 +147,11 @@ class LucidicSpanExporter(SpanExporter):
             # Typed fields using extract utilities
             model = extract_model(attributes) or 'unknown'
             provider = detect_provider(model=model, attributes=attributes)
-            messages = extract_prompts(attributes) or []
+            messages = extract_prompts(span, attributes) or []
             params = self._extract_params(attributes)
             output_text = extract_completions(span, attributes)
             tool_calls = extract_tool_calls(span, attributes)
             debug(f"[Telemetry] Extracted tool calls: {tool_calls}")
-
-            # Debug for responses.create
-            if span.name == "openai.responses.create":
-                debug(f"[Telemetry] Extracted messages: {messages}")
-                debug(f"[Telemetry] Extracted output: {output_text}")
-                debug(f"[Telemetry] Extracted tool calls: {tool_calls}")
-
 
             # see if tool calls need to be used instead of output_text
             if not output_text or output_text == "Response received" or not tool_calls:
@@ -157,7 +162,7 @@ class LucidicSpanExporter(SpanExporter):
 
                 # Only use "Response received" if we have other meaningful data
                 if not messages and not tool_calls and not attributes.get("lucidic.instrumented"):
-                    verbose(f"[Telemetry] Skipping span {span.name} with no meaningful content")
+                    self._warn_dropped_span(span, attributes)
                     return
                 # Use a more descriptive default if we must
                 if not output_text:

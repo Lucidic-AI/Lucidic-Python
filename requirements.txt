@@ -13,9 +13,11 @@ opentelemetry-sdk
 opentelemetry-instrumentation
 
 # OpenLLMetry instrumentations
-opentelemetry-instrumentation-openai
-opentelemetry-instrumentation-anthropic
-opentelemetry-instrumentation-langchain
+# LUC-667: floor-pinned; these control the span shape Lucidic consumes. <0.53.4 predates
+# fixes we rely on. the extractor reads both legacy flat and new gen_ai.*.messages shapes.
+opentelemetry-instrumentation-openai>=0.53.4
+opentelemetry-instrumentation-anthropic>=0.53.4
+opentelemetry-instrumentation-langchain>=0.53.4
 opentelemetry-semantic-conventions-ai
 opentelemetry-instrumentation-google-generativeai
 opentelemetry-instrumentation-vertexai
