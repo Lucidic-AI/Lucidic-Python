@@ -90,6 +90,30 @@ def _tool_calls_from_parts(parts: Any) -> List[Dict[str, Any]]:
     return calls
 
 
+def _tool_responses_from_parts(parts: Any) -> str:
+    """render tool_call_response parts (the tool RESULTS fed back to the model).
+
+    the new semconv represents a tool result as a part {type: "tool_call_response",
+    id, response}. without this, role=tool / tool_result history messages flatten to
+    empty content.
+    """
+    out = []
+    for p in parts or []:
+        if isinstance(p, dict) and p.get("type") == "tool_call_response":
+            resp = p.get("response", p.get("content", ""))
+            if not isinstance(resp, str):
+                try:
+                    resp = json.dumps(resp)
+                except (ValueError, TypeError):
+                    resp = str(resp)
+            if resp:
+                out.append(resp)
+    if not out:
+        return ""
+    header = "Tool Result:" if len(out) == 1 else "Tool Results:"
+    return header + "\n" + "\n".join(out)
+
+
 def _messages_from_new_attr(attrs: Dict[str, Any], key: str) -> Optional[List[Dict]]:
     """build [{role, content}] from a new-shape gen_ai.*.messages JSON attribute.
 
@@ -111,6 +135,9 @@ def _messages_from_new_attr(attrs: Dict[str, Any], key: str) -> Optional[List[Di
         tool_calls = _tool_calls_from_parts(parts)
         if not content and tool_calls:
             content = _format_tool_calls(tool_calls)
+        if not content:
+            # tool RESULT messages (role=tool) carry a tool_call_response part, not text
+            content = _tool_responses_from_parts(parts)
         if content:
             had_content = True
         messages.append({"role": role, "content": content})

@@ -163,6 +163,25 @@ def test_prompts_new_json_anthropic_part_order():
     assert msgs == [{"role": "user", "content": "Say the single word: hello."}]
 
 
+def test_prompts_captures_tool_result_in_history():
+    """tool RESULTS (role=tool, parts=[{type:tool_call_response, response}]) must not be empty."""
+    span = FakeSpan("openai.response", {
+        "gen_ai.provider.name": "azure.ai.openai",
+        "gen_ai.input.messages": json.dumps([
+            {"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]},
+            {"role": "assistant", "parts": [{"type": "tool_call", "name": "get_weather",
+                                             "id": "call_1", "arguments": {"city": "Paris"}}]},
+            {"role": "tool", "parts": [{"type": "tool_call_response", "id": "call_1",
+                                        "response": '{"temp_c": 18, "sky": "clear"}'}]},
+        ]),
+    })
+    msgs = extract_prompts(span, span.attributes)
+    assert [m["role"] for m in msgs] == ["user", "assistant", "tool"]
+    assert "get_weather" in msgs[1]["content"]            # assistant tool call rendered
+    tool_msg = msgs[2]["content"]
+    assert tool_msg and "18" in tool_msg and "clear" in tool_msg  # tool RESULT captured, not empty
+
+
 def test_prompts_ignores_azure_prompt_filter_noise():
     """the only gen_ai.prompt.* key on a new-shape span is azure noise; must not be read as a message."""
     span = FakeSpan("openai.chat", {
