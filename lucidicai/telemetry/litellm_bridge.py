@@ -102,6 +102,61 @@ def _extract_output_text(message: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _normalize_history(messages: Any) -> Any:
+    """render the input message history into readable {role, content} (mirrors the OTel path).
+
+    litellm passes raw OpenAI-format messages: an assistant tool-call turn has content=None plus
+    a `tool_calls` field (which a content-only renderer shows as null), and tool results are
+    role=tool (OpenAI) or tool_use/tool_result content blocks (Anthropic). We fold tool calls and
+    tool results into the content string so the history isn't blank.
+    """
+    if not isinstance(messages, list):
+        return messages
+    out = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        role = m.get("role", "user")
+        content = m.get("content")
+
+        # list content: multimodal text + anthropic tool_use / tool_result blocks
+        if isinstance(content, list):
+            texts, tool_uses, tool_results = [], [], []
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                t = b.get("type")
+                if t == "text":
+                    texts.append(b.get("text", ""))
+                elif t == "tool_use":
+                    tool_uses.append({"name": b.get("name"), "arguments": b.get("input")})
+                elif t == "tool_result":
+                    r = b.get("content")
+                    tool_results.append(r if isinstance(r, str) else json.dumps(r))
+            content = "\n".join(t for t in texts if t)
+            if not content and tool_uses:
+                content = _format_tool_calls(tool_uses)
+            if not content and tool_results:
+                content = "Tool Result:\n" + "\n".join(tool_results)
+                role = "tool"
+
+        # OpenAI-format assistant tool call with empty content -> render the tool call(s)
+        if content in (None, "") and m.get("tool_calls"):
+            tcs = [{"name": (tc.get("function") or {}).get("name"),
+                    "arguments": (tc.get("function") or {}).get("arguments")}
+                   for tc in m.get("tool_calls") if isinstance(tc, dict)]
+            if tcs:
+                content = _format_tool_calls(tcs)
+
+        # OpenAI-format tool result -> prefix for consistency with the OTel path
+        if role == "tool" and isinstance(content, str) and content and not content.startswith("Tool Result"):
+            content = "Tool Result:\n" + content
+
+        out.append({"role": role, "content": content if content is not None else ""})
+    return out
+
+
 def _extract_usage(resp: Optional[Dict], slo: Optional[Dict]) -> Dict[str, Any]:
     """flat tokens + cache(read/creation) + reasoning, defensively, from the dumped usage."""
     usage = _as_dict((resp or {}).get("usage")) or {}
@@ -261,7 +316,8 @@ class LucidicLiteLLMCallback(CustomLogger):
 
             call_type = (slo or {}).get("call_type") or kwargs.get("call_type") or "completion"
             model = (slo or {}).get("model") or kwargs.get("model") or pre.get("model") or "unknown"
-            messages = (slo or {}).get("messages") or kwargs.get("messages") or pre.get("messages") or []
+            messages = _normalize_history(
+                (slo or {}).get("messages") or kwargs.get("messages") or pre.get("messages") or [])
             provider = _resolve_provider(slo, kwargs, model)
 
             resp = _response_dict(slo, response_obj)

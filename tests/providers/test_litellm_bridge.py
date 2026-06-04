@@ -215,6 +215,39 @@ def test_response_obj_fallback_when_slo_absent():
     assert ev["provider"] == "openai"
 
 
+def test_history_renders_assistant_tool_call_and_tool_result():
+    """turn-2 history: assistant tool-call turn (content=None) and tool result must not be blank."""
+    slo = _slo_chat()
+    slo["messages"] = [
+        {"role": "user", "content": "Weather in Paris? Call get_weather."},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"temp_c": 18}'},
+    ]
+    ev = _run_success(slo)
+    hist = ev["messages"]
+    assert [m["role"] for m in hist] == ["user", "assistant", "tool"]
+    assert "get_weather" in hist[1]["content"] and hist[1]["content"]  # rendered, not null
+    assert hist[2]["content"].startswith("Tool Result:") and "18" in hist[2]["content"]
+
+
+def test_history_renders_anthropic_block_content():
+    """anthropic-style list content (tool_use / tool_result blocks) is rendered."""
+    slo = _slo_chat()
+    slo["custom_llm_provider"] = "anthropic"
+    slo["messages"] = [
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "get_weather",
+                                           "input": {"city": "Paris"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": '{"temp_c": 18}'}]},
+    ]
+    ev = _run_success(slo)
+    hist = ev["messages"]
+    assert "get_weather" in hist[1]["content"]
+    assert hist[2]["role"] == "tool" and "18" in hist[2]["content"]
+
+
 def test_failure_emits_error_event():
     cb = LucidicLiteLLMCallback()
     kwargs = {"litellm_call_id": "c3", "model": "gpt-4o",
