@@ -182,6 +182,23 @@ def test_prompts_captures_tool_result_in_history():
     assert tool_msg and "18" in tool_msg and "clear" in tool_msg  # tool RESULT captured, not empty
 
 
+def test_anthropic_tool_result_normalized_to_tool_role():
+    """anthropic puts the tool result in a 'user' message; normalize it to role 'tool'."""
+    span = FakeSpan("anthropic.chat", {
+        "gen_ai.provider.name": "anthropic",
+        "gen_ai.input.messages": json.dumps([
+            {"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]},
+            {"role": "assistant", "parts": [{"type": "tool_call", "id": "toolu_1", "name": "get_weather",
+                                             "arguments": {"city": "Paris"}}]},
+            {"role": "user", "parts": [{"type": "tool_call_response", "id": "toolu_1",
+                                        "response": '{"temp_c": 18}'}]},
+        ]),
+    })
+    msgs = extract_prompts(span, span.attributes)
+    assert msgs[2]["role"] == "tool"          # normalized from anthropic's "user"
+    assert "18" in msgs[2]["content"]
+
+
 def test_prompts_ignores_azure_prompt_filter_noise():
     """the only gen_ai.prompt.* key on a new-shape span is azure noise; must not be read as a message."""
     span = FakeSpan("openai.chat", {

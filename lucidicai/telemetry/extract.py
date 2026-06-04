@@ -136,8 +136,13 @@ def _messages_from_new_attr(attrs: Dict[str, Any], key: str) -> Optional[List[Di
         if not content and tool_calls:
             content = _format_tool_calls(tool_calls)
         if not content:
-            # tool RESULT messages (role=tool) carry a tool_call_response part, not text
-            content = _tool_responses_from_parts(parts)
+            # tool RESULT messages carry a tool_call_response part, not text. providers differ
+            # on the role (openai uses "tool", anthropic puts the result in a "user" message),
+            # so normalize a pure tool-result message to role="tool" for consistency.
+            tool_response = _tool_responses_from_parts(parts)
+            if tool_response:
+                content = tool_response
+                role = "tool"
         if content:
             had_content = True
         messages.append({"role": role, "content": content})
