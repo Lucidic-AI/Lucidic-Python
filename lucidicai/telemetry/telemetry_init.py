@@ -50,6 +50,24 @@ def check_content_capture_env() -> None:
         )
 
 
+def _warn_litellm_double_instrumentation(providers: list) -> None:
+    """warn when litellm + a raw openai provider are both enabled (LUC-677).
+
+    litellm routes OpenAI/Azure calls through the real openai SDK, which openllmetry's
+    OpenAIInstrumentor also wraps -> the same call is captured twice (litellm callback +
+    openai span). Anthropic/Bedrock/Vertex use litellm's own httpx and are NOT doubled.
+    We allow both paths (the user may want the raw-SDK spans too) but warn loudly.
+    """
+    p = set(providers or [])
+    if "litellm" in p and ("openai" in p or "azure" in p):
+        logger.warning(
+            "[Telemetry] Both 'litellm' and 'openai' are enabled. OpenAI/Azure calls made "
+            "THROUGH litellm will be captured twice (litellm callback + openai instrumentation). "
+            "Drop 'openai' from providers if you only call OpenAI via litellm. "
+            "(Anthropic/Bedrock/Vertex via litellm are not affected.)"
+        )
+
+
 def instrument_providers(providers: list, tracer_provider: TracerProvider, existing_instrumentors: Dict[str, Any]) -> Dict[str, Any]:
     """
     Instrument the requested providers with the given TracerProvider.
@@ -72,6 +90,9 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
         check_content_capture_env()
 
     # Normalize provider names
+    _warn_litellm_double_instrumentation(providers)
+
+
     canonical = set()
     for p in providers or []:
         if p in ("google_generativeai",):
