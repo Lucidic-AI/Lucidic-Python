@@ -215,9 +215,18 @@ def _params_from_json_schema(schema: dict) -> list[dict]:
     for prop_name, prop_schema in (schema.get("properties") or {}).items():
         if not isinstance(prop_schema, dict):
             prop_schema = {}
+        # JSON Schema allows "type" to be a string OR a list of strings (the
+        # standard convention for nullable params: ["string", "null"]). The
+        # backend's SyncAgentToolsSerializer requires a string — coerce by
+        # dropping "null" and taking the first remaining type. Falls back to
+        # "any" if the list is empty or contains only "null".
+        prop_type = prop_schema.get("type", "any")
+        if isinstance(prop_type, list):
+            non_null = [t for t in prop_type if t != "null"]
+            prop_type = non_null[0] if non_null else "any"
         out.append({
             "name": prop_name,
-            "type": prop_schema.get("type", "any"),
+            "type": prop_type,
             "default": prop_schema.get("default"),
             "required": prop_name in required,
         })
