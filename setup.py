@@ -7,6 +7,7 @@ setup(
     install_requires=[
         "requests>=2.25.1",
         "urllib3",
+        "httpx>=0.27.0",
         "boto3",
         "python-dotenv",
         "langchain",
