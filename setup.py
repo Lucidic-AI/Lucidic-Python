@@ -18,9 +18,13 @@ setup(
         "opentelemetry-api",
         "opentelemetry-sdk",
         "opentelemetry-instrumentation",
-        "opentelemetry-instrumentation-openai",
-        "opentelemetry-instrumentation-anthropic",
-        "opentelemetry-instrumentation-langchain",
+        # LUC-667: floor pins on the openllmetry instrumentation packages. these control the
+        # span shape Lucidic consumes; <0.53.4 predates fixes we rely on. the extractor reads
+        # both the legacy flat and the new gen_ai.input/output.messages shapes, so newer
+        # versions are supported without a ceiling.
+        "opentelemetry-instrumentation-openai>=0.53.4",
+        "opentelemetry-instrumentation-anthropic>=0.53.4",
+        "opentelemetry-instrumentation-langchain>=0.53.4",
         "opentelemetry-semantic-conventions-ai",
         # "pydantic_ai",
     ],

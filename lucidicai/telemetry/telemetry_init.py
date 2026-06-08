@@ -16,6 +16,58 @@ _global_instrumentors = {}
 _instrumentation_lock = threading.Lock()
 
 
+_content_capture_checked = False
+
+
+def check_content_capture_env() -> None:
+    """warn once if message-content capture is likely disabled (LUC-667).
+
+    openllmetry emits prompt/completion content by default (TRACELOOP_TRACE_CONTENT=true).
+    The official opentelemetry-instrumentation-openai-v2 path, however, keeps content OFF
+    unless OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT is set - in which case Lucidic
+    would receive spans with no messages. Surface that as an actionable hint.
+    """
+    global _content_capture_checked
+    if _content_capture_checked:
+        return
+    _content_capture_checked = True
+
+    import os
+    trace_content = os.getenv("TRACELOOP_TRACE_CONTENT")
+    genai_capture = os.getenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT")
+
+    # explicit opt-out is the only way content is off for the openllmetry path
+    if trace_content is not None and trace_content.lower() in ("false", "0", "no"):
+        logger.warning(
+            "[Telemetry] TRACELOOP_TRACE_CONTENT is disabled - prompt/completion content "
+            "will be missing from Lucidic events. Unset it or set TRACELOOP_TRACE_CONTENT=true."
+        )
+    # for the official genai instrumentation, content is off unless explicitly enabled
+    if genai_capture is not None and genai_capture.lower() in ("false", "0", "no"):
+        logger.warning(
+            "[Telemetry] OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT is disabled - "
+            "LLM message content will not be captured. Set it to 'span_and_event' to capture content."
+        )
+
+
+def _warn_litellm_double_instrumentation(providers: list) -> None:
+    """warn when litellm + a raw openai provider are both enabled (LUC-677).
+
+    litellm routes OpenAI/Azure calls through the real openai SDK, which openllmetry's
+    OpenAIInstrumentor also wraps -> the same call is captured twice (litellm callback +
+    openai span). Anthropic/Bedrock/Vertex use litellm's own httpx and are NOT doubled.
+    We allow both paths (the user may want the raw-SDK spans too) but warn loudly.
+    """
+    p = set(providers or [])
+    if "litellm" in p and ("openai" in p or "azure" in p):
+        logger.warning(
+            "[Telemetry] Both 'litellm' and 'openai' are enabled. OpenAI/Azure calls made "
+            "THROUGH litellm will be captured twice (litellm callback + openai instrumentation). "
+            "Drop 'openai' from providers if you only call OpenAI via litellm. "
+            "(Anthropic/Bedrock/Vertex via litellm are not affected.)"
+        )
+
+
 def instrument_providers(providers: list, tracer_provider: TracerProvider, existing_instrumentors: Dict[str, Any]) -> Dict[str, Any]:
     """
     Instrument the requested providers with the given TracerProvider.
@@ -33,7 +85,14 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
     global _global_instrumentors
     new_instrumentors = {}
 
+    # surface content-capture misconfiguration early (LUC-667)
+    if providers:
+        check_content_capture_env()
+
     # Normalize provider names
+    _warn_litellm_double_instrumentation(providers)
+
+
     canonical = set()
     for p in providers or []:
         if p in ("google_generativeai",):
@@ -56,21 +115,13 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
                 _global_instrumentors["openai"] = inst
                 new_instrumentors["openai"] = inst
 
-                # Clean up any problematic instrumentation from standard library
-                from .openai_uninstrument import clean_openai_instrumentation
-                clean_openai_instrumentation()
+                # NOTE (LUC-667): openllmetry's OpenAIInstrumentor natively instruments the
+                # Responses API (responses.create / responses.parse), including tool calls and
+                # tool definitions. We rely on it directly. The previous custom openai_patch +
+                # clean_openai_instrumentation() stripped that working instrumentation and
+                # captured no tool calls (every tool turn became "Response received").
 
-                # Add patch for responses API methods (not covered by standard instrumentation)
-                import os
-                if os.getenv('LUCIDIC_DISABLE_RESPONSES_PATCH', 'false').lower() != 'true':
-                    from .openai_patch import get_responses_patcher
-                    patcher = get_responses_patcher(tracer_provider)
-                    patcher.patch()
-                    _global_instrumentors["openai_responses_patch"] = patcher
-                else:
-                    logger.info("[Telemetry] Skipping responses API patch (disabled via LUCIDIC_DISABLE_RESPONSES_PATCH)")
-
-                logger.info("[Telemetry] Instrumented OpenAI (including responses.parse, responses.create, beta.chat.completions.parse)")
+                logger.info("[Telemetry] Instrumented OpenAI (chat.completions + responses API via openllmetry)")
             except Exception as e:
                 logger.error(f"Failed to instrument OpenAI: {e}")
 

@@ -2,7 +2,7 @@ import os
 import logging
 import time
 from typing import Union, List, Dict, Any, Optional, overload, Tuple, Literal
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 from ..init import get_http
 from ...core.errors import APIKeyVerificationError, FeatureFlagError
@@ -135,7 +135,7 @@ def get_feature_flag(
         )
     """
 
-    load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
     
     # Determine if single or batch
     is_single = isinstance(flag_name, str)
@@ -482,7 +482,7 @@ async def aget_feature_flag(
         )
     """
 
-    load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
     
     # Determine if single or batch
     is_single = isinstance(flag_name, str)
