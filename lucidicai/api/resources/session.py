@@ -54,6 +54,7 @@ class SessionResource:
         tags: Optional[List[str]] = None,
         experiment_id: Optional[str] = None,
         datasetitem_id: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
         evaluators: Optional[List[str]] = None,
         auto_end: Optional[bool] = None,
         production_monitoring: bool = False,
@@ -69,6 +70,7 @@ class SessionResource:
             tags: List of tags for filtering/grouping.
             experiment_id: Link session to an experiment.
             datasetitem_id: Link session to a dataset item.
+            checkpoint_id: Load an immutable Training Modules checkpoint.
             evaluators: List of evaluator names to run.
             auto_end: Override client's auto_end setting for this session.
             production_monitoring: Enable lightweight production monitoring.
@@ -118,6 +120,8 @@ class SessionResource:
             session_params["experiment_id"] = experiment_id
         if datasetitem_id:
             session_params["datasetitem_id"] = datasetitem_id
+        if checkpoint_id:
+            session_params["checkpoint_id"] = checkpoint_id
         if evaluators:
             session_params["evaluators"] = evaluators
         if production_monitoring:
@@ -178,6 +182,7 @@ class SessionResource:
         tags: Optional[List[str]] = None,
         experiment_id: Optional[str] = None,
         datasetitem_id: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
         evaluators: Optional[List[str]] = None,
         auto_end: Optional[bool] = None,
         production_monitoring: bool = False,
@@ -219,6 +224,8 @@ class SessionResource:
             session_params["experiment_id"] = experiment_id
         if datasetitem_id:
             session_params["datasetitem_id"] = datasetitem_id
+        if checkpoint_id:
+            session_params["checkpoint_id"] = checkpoint_id
         if evaluators:
             session_params["evaluators"] = evaluators
         if production_monitoring:

@@ -45,6 +45,7 @@ from .core.errors import (
     LucidicMissingImplError,
     LucidicUnsupportedSQLError,
 )
+from .sdk.training_modules import TrainingModulesResource
 
 # Prompt object
 from .api.resources.prompt import Prompt
@@ -65,7 +66,7 @@ from .sdk.tools.adapters import (
 from .integrations.livekit import setup_livekit
 
 # Version
-__version__ = "3.6.0"
+__version__ = "3.7.0"
 
 # All exports
 __all__ = [
@@ -92,6 +93,7 @@ __all__ = [
     "LucidicImplError",
     "LucidicMissingImplError",
     "LucidicUnsupportedSQLError",
+    "TrainingModulesResource",
     # Prompt object
     "Prompt",
     # Tool dispatch (v2 tool-backed)
