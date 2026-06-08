@@ -32,17 +32,40 @@ from .core.errors import (
     InvalidOperationError,
     PromptError,
     FeatureFlagError,
+    # mock_call dispatch error family (LUC-607)
+    LucidicMockCallError,
+    LucidicToolDriftError,
+    LucidicToolBlockedError,
+    LucidicUnknownToolError,
+    LucidicSessionNotInitializedError,
+    LucidicSessionNotFoundError,
+    LucidicMissingDatasetItemError,
+    LucidicToolConfigError,
+    LucidicImplError,
+    LucidicMissingImplError,
     LucidicUnsupportedSQLError,
 )
 
 # Prompt object
 from .api.resources.prompt import Prompt
 
+# Tool dispatch (v2 tool-backed)
+from .sdk.tools import mockable
+from .sdk.tools.adapters import (
+    adispatch_anthropic_tool_call,
+    adispatch_openai_tool_call,
+    dispatch_anthropic_tool_call,
+    dispatch_openai_tool_call,
+    register_anthropic_tools,
+    register_langchain_tools,
+    register_openai_tools,
+)
+
 # Integrations
 from .integrations.livekit import setup_livekit
 
 # Version
-__version__ = "3.5.0"
+__version__ = "3.6.0"
 
 # All exports
 __all__ = [
@@ -57,9 +80,32 @@ __all__ = [
     "InvalidOperationError",
     "PromptError",
     "FeatureFlagError",
+    # mock_call dispatch error family (LUC-607)
+    "LucidicMockCallError",
+    "LucidicToolDriftError",
+    "LucidicToolBlockedError",
+    "LucidicUnknownToolError",
+    "LucidicSessionNotInitializedError",
+    "LucidicSessionNotFoundError",
+    "LucidicMissingDatasetItemError",
+    "LucidicToolConfigError",
+    "LucidicImplError",
+    "LucidicMissingImplError",
     "LucidicUnsupportedSQLError",
     # Prompt object
     "Prompt",
+    # Tool dispatch (v2 tool-backed)
+    "mockable",
+    # OpenAI adapter (LUC-579)
+    "adispatch_openai_tool_call",
+    "dispatch_openai_tool_call",
+    "register_openai_tools",
+    # Anthropic adapter (LUC-580)
+    "adispatch_anthropic_tool_call",
+    "dispatch_anthropic_tool_call",
+    "register_anthropic_tools",
+    # LangChain adapter (LUC-578)
+    "register_langchain_tools",
     # Integrations
     "setup_livekit",
     # Version

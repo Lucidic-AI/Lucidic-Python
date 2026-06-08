@@ -158,6 +158,15 @@ class SessionResource:
             )
             shutdown_manager.register_session(real_session_id, state)
 
+        # LUC-608: when the user passes datasetitem_id they intend tool-backed
+        # dispatch. Init per-session fixture state + bind MockContext so
+        # subsequent @mockable calls in this session route through the backend.
+        # ToolsResource._init_session NEVER raises — session creation must not
+        # be blocked by tool-init failures, and the session works as normal
+        # observability without it.
+        if datasetitem_id and self._client._has_tools_resource():
+            self._client.tools._init_session(real_session_id)
+
         logger.debug(f"[SessionResource] Created session {real_session_id[:8]}...")
         return session
 
@@ -244,6 +253,10 @@ class SessionResource:
                 auto_end=auto_end,
             )
             shutdown_manager.register_session(real_session_id, state)
+
+        # LUC-608: see create() for full rationale. Async sibling.
+        if datasetitem_id and self._client._has_tools_resource():
+            await self._client.tools._ainit_session(real_session_id)
 
         logger.debug(f"[SessionResource] Created async session {real_session_id[:8]}...")
         return session
