@@ -181,8 +181,12 @@ class SDKConfig:
                       Falls back to LUCIDIC_BASE_URL env var.
             **overrides: Additional configuration overrides
         """
-        from dotenv import load_dotenv
-        load_dotenv()
+        from dotenv import load_dotenv, find_dotenv
+        # usecwd=True anchors the search at the consumer's working directory.
+        # The default walks up from this file's location, which for an
+        # editable install of the SDK finds the SDK's own .env first — that
+        # leaks dev-test settings (e.g. LUCIDIC_DEBUG=True) into consumers.
+        load_dotenv(find_dotenv(usecwd=True))
 
         debug = os.getenv("LUCIDIC_DEBUG", "False").lower() == "true"
 
