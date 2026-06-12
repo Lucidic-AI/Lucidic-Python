@@ -32,6 +32,7 @@ from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
 from .api.resources.evals import EvalsResource
 from .api.resources.mock_call import MockCallResource
+from .sdk.training_modules.resource import TrainingModulesResource
 from .sdk.tools.resource import ToolsResource
 from .core.config import SDKConfig
 from .core.errors import LucidicError
@@ -163,6 +164,8 @@ class LucidicAI:
             "mock_calls": MockCallResource(self._http, self._production),
         }
 
+        self._resources["training_modules"] = TrainingModulesResource(client=self)
+
         # LUC-608: client.tools — namespace for @mockable + adapter
         # registration. ToolsResource is constructed BEFORE the buffer
         # is drained so the client.tools property resolves correctly.
@@ -244,6 +247,16 @@ class LucidicAI:
         full API.
         """
         return self._resources["tools"]
+
+    @property
+    def training_modules(self) -> TrainingModulesResource:
+        """Access checkpoint-backed Training Module tools.
+
+        Use ``client.training_modules.tools()`` to discover module tool
+        schemas for the active session, and ``client.training_modules.call()``
+        to submit + poll a module inference as a normal tool result.
+        """
+        return self._resources["training_modules"]
 
     def _has_tools_resource(self) -> bool:
         """True when ``self.tools`` is wired up.

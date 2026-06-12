@@ -2,11 +2,12 @@ from setuptools import setup, find_packages
 
 setup(
     name="lucidicai",
-    version="3.6.0",
+    version="3.7.0",
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
         "urllib3",
+        "httpx>=0.27.0",
         "boto3",
         "python-dotenv",
         "langchain",
