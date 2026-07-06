@@ -12,6 +12,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("Lucidic")
 
 
+def _current_session_id() -> Optional[str]:
+    """The active session id (LUC-795), so a prompt fetch resolves through the
+    session's bound/pre-linked checkpoint. Never let context lookup break a fetch.
+    """
+    try:
+        from ...sdk.context import current_session_id
+        return current_session_id.get(None)
+    except Exception:
+        return None
+
+
 @dataclass
 class Prompt:
     """Represents a prompt retrieved from the Lucidic prompt database."""
@@ -56,7 +67,10 @@ class PromptResource:
         self.http = http
         self._config = config
         self._production = production
-        self._cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        # LUC-795: keyed by (prompt_name, label, checkpoint_id, session_id) so entries
+        # for different sessions/checkpoints never collide. prompt_name stays first so
+        # _invalidate_cache(prompt_name) still matches by k[0].
+        self._cache: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
 
     def _invalidate_cache(self, prompt_name: str, label: Optional[str] = None) -> None:
         """Invalidate cached prompt entries.
@@ -73,7 +87,7 @@ class PromptResource:
             for k in keys_to_remove:
                 del self._cache[k]
 
-    def _is_cache_valid(self, cache_key: Tuple[str, str], cache_ttl: int) -> bool:
+    def _is_cache_valid(self, cache_key: Tuple[Any, ...], cache_ttl: int) -> bool:
         """Check if a cached prompt is still valid.
 
         Args:
@@ -98,6 +112,8 @@ class PromptResource:
         variables: Optional[Dict[str, Any]] = None,
         label: str = "production",
         cache_ttl: int = 0,
+        checkpoint_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Prompt:
         """Get a prompt from the prompt database.
 
@@ -107,27 +123,46 @@ class PromptResource:
             label: Prompt version label (default: "production").
             cache_ttl: Cache TTL in seconds. 0 = no cache, -1 = cache indefinitely,
                        positive value = seconds before refetching.
+            checkpoint_id: Explicitly resolve against a loaded checkpoint (LUC-795).
+                           Rarely needed inside a session — the active session already
+                           carries its checkpoint server-side. Defaults to None.
+            session_id: Override the session context. Defaults to the active session,
+                        so a session running a checkpoint gets that checkpoint's
+                        trained prompt version (else normal label resolution).
 
         Returns:
             A Prompt object with raw_content, content (with variables replaced),
             and metadata. Use str(prompt) for backward-compatible string access.
         """
         try:
-            cache_key = (prompt_name, label)
+            # LUC-795: resolve the session context so a session running a checkpoint
+            # gets that checkpoint's trained prompt version. The backend overrides the
+            # label only for prompts the checkpoint trained and falls back to the label
+            # otherwise, so this is safe for non-checkpoint sessions.
+            resolved_session_id = session_id if session_id is not None else _current_session_id()
+            cache_key = (prompt_name, label, checkpoint_id, resolved_session_id)
 
             # Check cache
             if self._is_cache_valid(cache_key, cache_ttl):
                 raw_content = self._cache[cache_key]["content"]
                 metadata = self._cache[cache_key]["metadata"]
             else:
-                response = self.http.get(
-                    "sdk/prompts",
-                    {"prompt_name": prompt_name, "label": label, "agent_id": self._config.agent_id},
-                )
+                params: Dict[str, Any] = {
+                    "prompt_name": prompt_name,
+                    "label": label,
+                    "agent_id": self._config.agent_id,
+                }
+                if checkpoint_id is not None:
+                    params["checkpoint_id"] = checkpoint_id
+                if resolved_session_id is not None:
+                    params["session_id"] = resolved_session_id
+                response = self.http.get("sdk/prompts", params)
                 raw_content = response.get("prompt_content", "")
                 metadata = response.get("metadata", {})
 
-                # Store in cache if caching is enabled
+                # Store in cache if caching is enabled. checkpoint/session-scoped
+                # entries resolve to immutable versions, so a positive/indefinite ttl
+                # needs no invalidation.
                 if cache_ttl != 0:
                     self._cache[cache_key] = {
                         "content": raw_content,
@@ -151,27 +186,37 @@ class PromptResource:
         variables: Optional[Dict[str, Any]] = None,
         label: str = "production",
         cache_ttl: int = 0,
+        checkpoint_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Prompt:
         """Get a prompt from the prompt database (asynchronous).
 
         See get() for full documentation.
         """
         try:
-            cache_key = (prompt_name, label)
+            # LUC-795: resolve the session context (see get()).
+            resolved_session_id = session_id if session_id is not None else _current_session_id()
+            cache_key = (prompt_name, label, checkpoint_id, resolved_session_id)
 
             # Check cache
             if self._is_cache_valid(cache_key, cache_ttl):
                 raw_content = self._cache[cache_key]["content"]
                 metadata = self._cache[cache_key]["metadata"]
             else:
-                response = await self.http.aget(
-                    "sdk/prompts",
-                    {"prompt_name": prompt_name, "label": label, "agent_id": self._config.agent_id},
-                )
+                params: Dict[str, Any] = {
+                    "prompt_name": prompt_name,
+                    "label": label,
+                    "agent_id": self._config.agent_id,
+                }
+                if checkpoint_id is not None:
+                    params["checkpoint_id"] = checkpoint_id
+                if resolved_session_id is not None:
+                    params["session_id"] = resolved_session_id
+                response = await self.http.aget("sdk/prompts", params)
                 raw_content = response.get("prompt_content", "")
                 metadata = response.get("metadata", {})
 
-                # Store in cache if caching is enabled
+                # Store in cache if caching is enabled (immutable when context-scoped).
                 if cache_ttl != 0:
                     self._cache[cache_key] = {
                         "content": raw_content,
