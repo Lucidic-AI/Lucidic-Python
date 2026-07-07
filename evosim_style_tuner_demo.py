@@ -49,8 +49,8 @@ def train() -> None:
         "module_selections": [
             {
                 "module_key": "style_tuner",
+                "target_prompt": TARGET_PROMPT,  # first-party edit-site field (LUC-799)
                 "config": {
-                    "target_prompt": TARGET_PROMPT,
                     "session_specs": [{}, {}],  # 2 rollout sessions
                     "window": 2,
                     "dispatch_chunk": 2,
