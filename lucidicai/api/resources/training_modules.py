@@ -28,22 +28,39 @@ class TrainingModulesAPIResource:
     def __init__(self, http: HttpClient):
         self.http = http
 
-    def list_tools(self, *, session_id: str) -> Dict[str, Any]:
-        """Return module tools available to the session's loaded checkpoint."""
+    def list_tools(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        prompt_name: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return module tools for a session's checkpoint or an explicit checkpoint.
+
+        Each tool carries its ``edit_site`` (the prompt it's exposed at). Pass
+        ``prompt_name`` to scope to a single edit site server-side (LUC-801), and
+        ``checkpoint_id`` to introspect a checkpoint without a live session.
+        """
         try:
             return self.http.get(
                 "sdk/training-modules/tools",
-                {"session_id": session_id},
+                _tools_params(session_id=session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id),
             )
         except httpx.HTTPStatusError as exc:
             raise LucidicError(_format_training_module_error(exc)) from exc
 
-    async def alist_tools(self, *, session_id: str) -> Dict[str, Any]:
+    async def alist_tools(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        prompt_name: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Async sibling of ``list_tools``."""
         try:
             return await self.http.aget(
                 "sdk/training-modules/tools",
-                {"session_id": session_id},
+                _tools_params(session_id=session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id),
             )
         except httpx.HTTPStatusError as exc:
             raise LucidicError(_format_training_module_error(exc)) from exc
@@ -121,6 +138,27 @@ class TrainingModulesAPIResource:
             )
         except httpx.HTTPStatusError as exc:
             raise LucidicError(_format_training_module_error(exc)) from exc
+
+
+def _tools_params(
+    *,
+    session_id: Optional[str],
+    prompt_name: Optional[str],
+    checkpoint_id: Optional[str],
+) -> Dict[str, Any]:
+    """Build the /sdk/training-modules/tools query params, omitting unset ones.
+
+    The backend resolves the checkpoint from ``checkpoint_id`` (preferred) or
+    ``session_id``, and ``prompt_name`` scopes to one edit site.
+    """
+    params: Dict[str, Any] = {}
+    if checkpoint_id is not None:
+        params["checkpoint_id"] = checkpoint_id
+    if session_id is not None:
+        params["session_id"] = session_id
+    if prompt_name is not None:
+        params["prompt_name"] = prompt_name
+    return params
 
 
 def _format_training_module_error(exc: httpx.HTTPStatusError) -> str:
