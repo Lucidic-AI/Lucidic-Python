@@ -50,30 +50,68 @@ class TrainingModulesResource:
 
     # ==================== Tool Discovery ====================
 
-    def tools(self, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List module tools available to a session's loaded checkpoint.
+    def tools(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        prompt_name: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List module tools, each annotated with its ``edit_site``.
 
-        ``session_id`` defaults to the active Lucidic session context, so
-        this works naturally inside ``with client.sessions.create(...)``.
+        Resolves against an explicit ``checkpoint_id`` (introspection) or, by
+        default, the active session's loaded checkpoint (so this works naturally
+        inside ``with client.sessions.create(...)``). Pass ``prompt_name`` -- the
+        prompt at the current LLM call -- to get just the tools that live at that
+        edit site (LUC-801); server-side scoped, so nothing else leaks in.
         """
-        resolved_session_id = self._resolve_session_id(session_id)
-        body = self._api.list_tools(session_id=resolved_session_id)
+        body = self._api.list_tools(
+            **self._tools_kwargs(session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id)
+        )
         return list(body.get("tools") or [])
 
-    async def atools(self, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def atools(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        prompt_name: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Async sibling of ``tools``."""
-        resolved_session_id = self._resolve_session_id(session_id)
-        body = await self._api.alist_tools(session_id=resolved_session_id)
+        body = await self._api.alist_tools(
+            **self._tools_kwargs(session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id)
+        )
         return list(body.get("tools") or [])
+
+    def _tools_kwargs(
+        self,
+        session_id: Optional[str],
+        *,
+        prompt_name: Optional[str],
+        checkpoint_id: Optional[str],
+    ) -> Dict[str, Any]:
+        # checkpoint_id introspects a checkpoint directly (no session needed);
+        # otherwise resolve the active session so the call works inside a
+        # `with client.sessions.create(...)` block.
+        if checkpoint_id is not None:
+            return {"checkpoint_id": checkpoint_id, "prompt_name": prompt_name}
+        return {"session_id": self._resolve_session_id(session_id), "prompt_name": prompt_name}
 
     def openai_tools(
         self,
         session_id: Optional[str] = None,
         *,
+        prompt_name: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Return checkpoint module tools as OpenAI function specs."""
-        module_tools = tools if tools is not None else self.tools(session_id)
+        """Return checkpoint module tools as OpenAI function specs.
+
+        Accepts the same ``prompt_name``/``checkpoint_id`` scoping as ``tools``.
+        """
+        module_tools = tools if tools is not None else self.tools(
+            session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id
+        )
         return [
             {
                 "type": "function",
@@ -91,20 +129,31 @@ class TrainingModulesResource:
         self,
         session_id: Optional[str] = None,
         *,
+        prompt_name: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Async sibling of ``openai_tools``."""
-        module_tools = tools if tools is not None else await self.atools(session_id)
+        module_tools = tools if tools is not None else await self.atools(
+            session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id
+        )
         return self.openai_tools(tools=module_tools)
 
     def anthropic_tools(
         self,
         session_id: Optional[str] = None,
         *,
+        prompt_name: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Return checkpoint module tools as Anthropic tool specs."""
-        module_tools = tools if tools is not None else self.tools(session_id)
+        """Return checkpoint module tools as Anthropic tool specs.
+
+        Accepts the same ``prompt_name``/``checkpoint_id`` scoping as ``tools``.
+        """
+        module_tools = tools if tools is not None else self.tools(
+            session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id
+        )
         return [
             {
                 "name": tool["tool_name"],
@@ -119,10 +168,14 @@ class TrainingModulesResource:
         self,
         session_id: Optional[str] = None,
         *,
+        prompt_name: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Async sibling of ``anthropic_tools``."""
-        module_tools = tools if tools is not None else await self.atools(session_id)
+        module_tools = tools if tools is not None else await self.atools(
+            session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id
+        )
         return self.anthropic_tools(tools=module_tools)
 
     # ==================== Inference ====================
