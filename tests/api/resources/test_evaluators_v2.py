@@ -88,14 +88,13 @@ class TestEvalsDistribution:
 
 
 class TestAgentIdGuard:
-    @respx.mock
-    def test_list_omits_agent_id_when_none(self, http):
-        # No configured agent + none passed -> agent_id is omitted (not sent as
-        # an empty string), matching the sibling-resource convention.
-        route = respx.get(_EVALUATORS).mock(
-            return_value=httpx.Response(200, json={"results": [], "next": None}))
-        list(EvaluatorsResource(http, agent_id=None).list())
-        assert "agent_id" not in route.calls.last.request.url.params
+    def test_list_without_agent_id_raises(self, http):
+        # No configured agent + none passed -> a clear AgentIdRequiredError
+        # (raised eagerly at the .list() call, before any HTTP), not a backend
+        # 400 or an empty-string param (LUC-926).
+        from lucidicai.core.errors import AgentIdRequiredError
+        with pytest.raises(AgentIdRequiredError):
+            EvaluatorsResource(http, agent_id=None).list()
 
 
 class TestAsync:

@@ -6,6 +6,7 @@ from ..client import HttpClient
 from ..models.base import CursorPage
 from ..models.experiment import Experiment
 from ..pagination import apaginate, paginate
+from ...core.errors import require_agent_id
 
 logger = logging.getLogger("Lucidic")
 
@@ -56,6 +57,9 @@ class ExperimentResource:
         if LLM_numeric_evaluators:
             evaluator_names.extend(LLM_numeric_evaluators)
 
+        # LUC-926: an experiment must belong to an agent — raise before the
+        # swallow rather than POST a null agent_id.
+        require_agent_id(self._agent_id, "experiments.create")
         try:
             response = self.http.post(
                 "createexperiment",
@@ -92,6 +96,8 @@ class ExperimentResource:
         if LLM_numeric_evaluators:
             evaluator_names.extend(LLM_numeric_evaluators)
 
+        # LUC-926: same guard as create() — raise before the swallow.
+        require_agent_id(self._agent_id, "experiments.create")
         try:
             response = await self.http.apost(
                 "createexperiment",
@@ -176,7 +182,9 @@ class ExperimentResource:
     def _list_params(
         self, agent_id: Optional[str], ordering: Optional[str], page_size: Optional[int]
     ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {"agent_id": agent_id or self._agent_id}
+        params: Dict[str, Any] = {
+            "agent_id": require_agent_id(agent_id or self._agent_id, "experiments.list"),
+        }
         if ordering is not None:
             params["ordering"] = ordering
         if page_size is not None:

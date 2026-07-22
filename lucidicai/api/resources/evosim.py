@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 from ..client import HttpClient
-from ...core.errors import LucidicError
+from ...core.errors import LucidicError, require_agent_id
 
 logger = logging.getLogger("Lucidic")
 
@@ -43,10 +43,11 @@ class EvoSimResource:
         Returns:
             Backend response describing the run (successful or failed)
         """
+        # LUC-926: a training run needs an agent; raise before the swallow.
+        require_agent_id(self._agent_id, "evosim.train")
         try:
             payload = _load_training_config(config_json_file)
-            if self._agent_id:
-                payload.setdefault("agent_id", self._agent_id)
+            payload.setdefault("agent_id", self._agent_id)
             return self.http.post("sdk/evosim/training-run", payload)
         except Exception as e:
             if self._production:
@@ -56,10 +57,10 @@ class EvoSimResource:
 
     async def atrain(self, config_json_file: Union[str, Path]) -> Dict[str, Any]:
         """Async sibling of ``train``."""
+        require_agent_id(self._agent_id, "evosim.train")
         try:
             payload = _load_training_config(config_json_file)
-            if self._agent_id:
-                payload.setdefault("agent_id", self._agent_id)
+            payload.setdefault("agent_id", self._agent_id)
             return await self.http.apost("sdk/evosim/training-run", payload)
         except Exception as e:
             if self._production:

@@ -148,6 +148,39 @@ class FeatureFlagError(LucidicError):
         super().__init__(f"Failed to fetch feature flag: {message}")
 
 
+class AgentIdRequiredError(LucidicError):
+    """Raised when an operation needs an ``agent_id`` but the client was created
+    without one (LUC-926).
+
+    ``agent_id`` is optional at construction so org-/id-scoped work (agents,
+    projects, usage, and any get-by-id) can run without one. Operations that are
+    inherently agent-scoped — telemetry ingestion, prompt fetch, and the
+    list-by-agent reads — raise this instead. It is raised **even in production**
+    (not routed through the telemetry error-swallow): a missing agent_id is a
+    deterministic setup mistake, so silently no-op'ing would just lose data.
+    """
+
+    def __init__(self, operation: str):
+        super().__init__(
+            f"{operation} requires an agent_id, but this client was created "
+            f"without one. Provide it via LucidicAI(agent_id=...), the "
+            f"LUCIDIC_AGENT_ID env var, or (where the method accepts it) pass "
+            f"agent_id=... to the call."
+        )
+
+
+def require_agent_id(agent_id: Optional[str], operation: str) -> str:
+    """Return ``agent_id`` if present, else raise ``AgentIdRequiredError``.
+
+    The single guard for every agent-scoped operation. Call at the top of the
+    operation, before any HTTP request or error-swallowing, so the failure is
+    immediate and loud.
+    """
+    if not agent_id:
+        raise AgentIdRequiredError(operation)
+    return agent_id
+
+
 # ---------------------------------------------------------------------------
 # mock_call dispatch errors (LUC-607)
 # ---------------------------------------------------------------------------
