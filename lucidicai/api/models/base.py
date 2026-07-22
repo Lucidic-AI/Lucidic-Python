@@ -14,7 +14,7 @@ owning model's ``from_dict`` override.
 ``CursorPage`` lives here too since it is the paginated container of models;
 the iteration helpers that walk ``next`` live in ``api/pagination.py``.
 """
-import dataclasses
+from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from urllib.parse import parse_qs, urlparse
 
@@ -39,7 +39,7 @@ class APIModel:
                 f"{cls.__name__}.from_dict expected a dict, got "
                 f"{type(data).__name__}"
             )
-        field_names = {f.name for f in dataclasses.fields(cls)}
+        field_names = {f.name for f in fields(cls)}
         known = {k: v for k, v in data.items() if k in field_names}
         extra = {k: v for k, v in data.items() if k not in field_names}
         obj = cls(**known)
@@ -59,7 +59,7 @@ class APIModel:
 
     def to_dict(self) -> Dict[str, Any]:
         """Shallow dict of the declared dataclass fields (excludes ``extra``)."""
-        return dataclasses.asdict(self)
+        return asdict(self)
 
 
 def _extract_cursor(url: Optional[str]) -> Optional[str]:
@@ -71,7 +71,7 @@ def _extract_cursor(url: Optional[str]) -> Optional[str]:
     return values[0] if values else None
 
 
-@dataclasses.dataclass
+@dataclass
 class CursorPage:
     """One page of a cursor-paginated list endpoint.
 

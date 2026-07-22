@@ -1,5 +1,5 @@
 """LUC-905 — typed response-model base."""
-import dataclasses
+from dataclasses import dataclass
 from typing import List, Optional
 
 import pytest
@@ -7,7 +7,7 @@ import pytest
 from lucidicai.api.models.base import APIModel
 
 
-@dataclasses.dataclass
+@dataclass
 class _Agent(APIModel):
     agent_id: str
     name: Optional[str] = None

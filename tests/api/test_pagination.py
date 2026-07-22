@@ -1,5 +1,5 @@
 """LUC-902 — cursor-pagination lazy iterator."""
-import dataclasses
+from dataclasses import dataclass
 from typing import Optional
 
 import pytest
@@ -8,7 +8,7 @@ from lucidicai.api.models.base import APIModel, CursorPage, _extract_cursor
 from lucidicai.api.pagination import apaginate, paginate
 
 
-@dataclasses.dataclass
+@dataclass
 class _Item(APIModel):
     id: str
     name: Optional[str] = None
