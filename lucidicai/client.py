@@ -25,6 +25,8 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from .api.client import HttpClient
 from .api.resources.agents import AgentsResource
+from .api.resources.evaluator_results import EvaluatorResultsResource
+from .api.resources.evaluators import EvaluatorsResource
 from .api.resources.session import SessionResource
 from .api.resources.event import EventResource
 from .api.resources.dataset import DatasetResource
@@ -157,6 +159,8 @@ class LucidicAI:
         # Initialize API resources
         self._resources: Dict[str, Any] = {
             "agents": AgentsResource(self._http),
+            "evaluators": EvaluatorsResource(self._http, self._config.agent_id),
+            "evaluator_results": EvaluatorResultsResource(self._http),
             "sessions": SessionResource(self._http, self, self._config, self._production),
             "events": EventResource(self._http, self._production),
             "datasets": DatasetResource(self._http, self._config.agent_id, self._production),
@@ -252,6 +256,26 @@ class LucidicAI:
         follow-up.)
         """
         return self._resources["agents"]
+
+    @property
+    def evaluators(self) -> EvaluatorsResource:
+        """Access evaluator reads (LUC-910): ``list()`` / ``get(id)``,
+        ``evals(id)`` (one evaluator's result distribution), and ``result(id)``
+        (a single evaluator result by id).
+
+        Distinct from ``client.evals`` (ad-hoc score ``emit``).
+        """
+        return self._resources["evaluators"]
+
+    @property
+    def evaluator_results(self) -> EvaluatorResultsResource:
+        """Read a single evaluator result by its id (LUC-910):
+        ``client.evaluator_results.get(eval_id)``.
+
+        Keyed by an ``EvalResult`` id — distinct from the evaluator-keyed reads
+        on ``client.evaluators``.
+        """
+        return self._resources["evaluator_results"]
 
     @property
     def tools(self) -> ToolsResource:
