@@ -1,6 +1,7 @@
 """Typed response models for the Lucidic SDK read surface (LUC-905)."""
 from .agent import Agent, AgentToolCatalog, CatalogTool
 from .base import APIModel, CursorPage
+from .experiment import Experiment
 from .session import (
     EvalResult,
     Event,
@@ -16,6 +17,7 @@ __all__ = [
     "Agent",
     "AgentToolCatalog",
     "CatalogTool",
+    "Experiment",
     "Session",
     "SessionTrace",
     "Event",
