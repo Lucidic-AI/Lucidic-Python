@@ -8,10 +8,123 @@ class LucidicError(Exception):
     pass
 
 
-class APIKeyVerificationError(LucidicError):
-    """Exception for API key verification errors"""
-    def __init__(self, message):
-        super().__init__(f"Could not verify Lucidic API key: {message}")
+# ---------------------------------------------------------------------------
+# HTTP / API errors (LUC-900)
+# ---------------------------------------------------------------------------
+#
+# Every non-2xx response from the Lucidic API is decoded once, centrally, in
+# ``HttpClient._handle_response`` and raised as one of the typed exceptions
+# below (all subclasses of ``LucidicError``, so ``except LucidicError`` still
+# catches everything). The backend error envelope is one of:
+#
+#   {"error": "<message>"}                       -> message
+#   {"error": "Validation failed", "details": …} -> message + details
+#   {"errors": {<field>: [...]}}                 -> ValidationError(details=…)
+#   {"detail": "<message>"}                      -> message (DRF default)
+#   {"error": {"code": str, ...}}                -> mock-call family (below)
+#
+# ``exception_from_response`` does the decoding; ``_STATUS_TO_CLASS`` maps
+# status codes to the generic classes.
+
+
+class LucidicAPIError(LucidicError):
+    """Base for a typed non-2xx response from the Lucidic API.
+
+    Carries the HTTP ``status_code``, the decoded ``response_body`` (when the
+    body was JSON), the raw ``response_text``, and any field-level ``details``
+    so callers can inspect a failure without re-parsing the response.
+    """
+
+    # Subclasses pin their canonical status; the base leaves it None.
+    status_code: Optional[int] = None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        details: Any = None,
+        response_body: Any = None,
+        response_text: Optional[str] = None,
+    ):
+        if status_code is not None:
+            self.status_code = status_code
+        self.details = details
+        self.response_body = response_body
+        self.response_text = response_text
+        super().__init__(message)
+
+
+class ValidationError(LucidicAPIError):
+    """400 / 422 — invalid input. ``details`` carries field-level errors when
+    the backend returns ``{"errors": {...}}`` or ``{"details": {...}}``."""
+    status_code = 400
+
+
+class AuthError(LucidicAPIError):
+    """401 — missing or invalid API key."""
+    status_code = 401
+
+
+class APIKeyVerificationError(AuthError):
+    """Exception for API key verification errors.
+
+    Kept as a distinct type + message for the init/verify path and for
+    back-compat with callers that ``except APIKeyVerificationError``; it is now
+    an ``AuthError`` subclass so ``except AuthError`` catches it too.
+    """
+    def __init__(self, message, **kwargs: Any):
+        super().__init__(f"Could not verify Lucidic API key: {message}", **kwargs)
+
+
+class InsufficientScopeError(LucidicAPIError):
+    """403 — the API key lacks the required capability scope.
+
+    ``required_scope`` names the missing ``resource:verb`` when the backend
+    reports it, so the message can tell the user which preset/key to mint.
+    """
+    status_code = 403
+
+    def __init__(self, message: str, *, required_scope: Optional[str] = None, **kwargs: Any):
+        self.required_scope = required_scope
+        super().__init__(message, **kwargs)
+
+
+class NotFoundError(LucidicAPIError):
+    """404 — resource not found, **or** an agent-bound key that can't see it
+    (the backend returns 404 rather than 403 to avoid leaking existence)."""
+    status_code = 404
+
+
+class ConflictError(LucidicAPIError):
+    """409 — conflict, typically a duplicate (unique-constraint) violation."""
+    status_code = 409
+
+
+class RateLimitError(LucidicAPIError):
+    """429 — throttled. Raised only after the transport's retry budget is
+    exhausted; ``retry_after`` carries the server's hint when present."""
+    status_code = 429
+
+    def __init__(self, message: str, *, retry_after: Optional[float] = None, **kwargs: Any):
+        self.retry_after = retry_after
+        super().__init__(message, **kwargs)
+
+
+class ServiceUnavailableError(LucidicAPIError):
+    """503 — temporarily unavailable (Temporal / S3 degraded, or a workflow
+    couldn't start). Retryable; raised only after the transport's retry budget
+    is exhausted. ``retry_after`` carries the server's hint when present."""
+    status_code = 503
+
+    def __init__(self, message: str, *, retry_after: Optional[float] = None, **kwargs: Any):
+        self.retry_after = retry_after
+        super().__init__(message, **kwargs)
+
+
+class APIError(LucidicAPIError):
+    """Any other non-2xx (5xx, unmapped codes, or an unparseable/malformed
+    body). The catch-all so callers always get a typed ``LucidicAPIError``."""
 
 class LucidicNotInitializedError(LucidicError):
     """Exception for calling Lucidic functions before Lucidic Client is initialized (lai.init())"""
@@ -239,6 +352,98 @@ def error_class_for_code(code: str) -> Type[LucidicMockCallError]:
     generic `LucidicError`.
     """
     return _CODE_TO_CLASS.get(code, LucidicMockCallError)
+
+
+# ---------------------------------------------------------------------------
+# Central non-2xx decoding (LUC-900)
+# ---------------------------------------------------------------------------
+
+# Status -> generic typed exception. The mock-call ``{"error": {"code"}}``
+# family is matched by *shape*, not status, before this map is consulted.
+_STATUS_TO_CLASS: dict[int, Type[LucidicAPIError]] = {
+    400: ValidationError,
+    401: APIKeyVerificationError,  # back-compat: keep the verify-key type on 401
+    403: InsufficientScopeError,
+    404: NotFoundError,
+    409: ConflictError,
+    422: ValidationError,
+    429: RateLimitError,
+    503: ServiceUnavailableError,
+}
+
+
+def _mock_error_from_envelope(err: dict) -> LucidicMockCallError:
+    """Build the typed mock-call exception from a decoded
+    ``{"code": str, "detail": str, ...code-specific}`` error object.
+
+    Mirrors the forward-compat handling of the former
+    ``mock_call._exception_from_http_error``: unknown codes fall back to the
+    base ``LucidicMockCallError`` carrying the wire ``code``.
+    """
+    # Caller guarantees "code" is present (matched by shape before dispatch).
+    code = err["code"]
+    detail = err.get("detail", "")
+    extra = {k: v for k, v in err.items() if k not in ("code", "detail")}
+    cls = error_class_for_code(code)
+    try:
+        if cls is LucidicMockCallError:
+            return cls(detail, code=code, **extra)
+        return cls(detail, **extra)
+    except TypeError:
+        # Defensive: a subclass with a stricter __init__ rejecting an unknown
+        # kwarg still degrades to the base class.
+        return LucidicMockCallError(code=code, detail=detail, **extra)
+
+
+def exception_from_response(
+    status_code: int,
+    body: Any,
+    text: str = "",
+    *,
+    retry_after: Optional[float] = None,
+) -> LucidicError:
+    """Decode a non-2xx response into a typed exception.
+
+    Shapes handled, in priority order: the mock-call ``{"error": {"code"}}``
+    family, ``{"errors": {...}}`` validation dicts, ``{"error": "..."}`` (with
+    optional ``details``), DRF ``{"detail": "..."}``, then a text fallback.
+    Unknown/absent status codes yield ``APIError`` so callers always get a
+    typed ``LucidicAPIError``.
+    """
+    details: Any = None
+    message: Optional[str] = None
+
+    if isinstance(body, dict):
+        err = body.get("error")
+        # Mock-call family is keyed by shape (a nested dict with a "code"),
+        # which no generic endpoint returns — safe to match regardless of path.
+        if isinstance(err, dict) and "code" in err:
+            return _mock_error_from_envelope(err)
+        if isinstance(body.get("errors"), dict):
+            details = body["errors"]
+            message = "Validation failed"
+        elif isinstance(err, str):
+            message = err
+            if isinstance(body.get("details"), (dict, list)):
+                details = body["details"]
+        elif isinstance(body.get("detail"), str):
+            message = body["detail"]
+
+    if message is None:
+        message = text or f"HTTP {status_code}"
+
+    cls = _STATUS_TO_CLASS.get(status_code, APIError)
+    kwargs: dict = {
+        "status_code": status_code,
+        "details": details,
+        "response_body": body if isinstance(body, dict) else None,
+        "response_text": text,
+    }
+    if cls in (RateLimitError, ServiceUnavailableError):
+        kwargs["retry_after"] = retry_after
+    if cls is InsufficientScopeError and isinstance(body, dict):
+        kwargs["required_scope"] = body.get("required_scope")
+    return cls(message, **kwargs)
 
 
 def install_error_handler():

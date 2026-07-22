@@ -32,13 +32,8 @@ Backend contract (`api/views/sdk_mock_call.py`, frozen):
 import logging
 from typing import Any, Dict, Optional
 
-import httpx
-
 from ..client import HttpClient
-from ...core.errors import (
-    LucidicMockCallError,
-    error_class_for_code,
-)
+from ...core.errors import APIError, LucidicMockCallError
 
 logger = logging.getLogger("Lucidic")
 
@@ -49,54 +44,20 @@ def _truncate_id(id_str: Optional[str]) -> str:
     return f"{id_str[:8]}..." if len(id_str) > 8 else id_str
 
 
-def _exception_from_http_error(exc: httpx.HTTPStatusError) -> LucidicMockCallError:
-    """Translate a non-2xx response into the appropriate typed exception.
+def _as_mock_error(exc: APIError) -> LucidicMockCallError:
+    """Wrap a generic/untyped API error as a mock-call ``malformed_response``.
 
-    Backend envelope (LUC-584) is uniform: ``{"error": {"code": str,
-    "detail": str, ...code-specific keys...}}``. Look up the class by
-    `code` via ``error_class_for_code`` (returns the base class for
-    unknown codes — forward-compat with backend additions).
-
-    Falls back to ``LucidicMockCallError`` with a synthetic detail when
-    the body isn't parseable as the documented envelope (truncated
-    responses, proxy errors that don't pass the JSON through, etc.).
+    The central decoder (LUC-900) already produces the typed
+    ``LucidicMockCallError`` family for the ``{"error": {"code"}}`` envelope
+    (propagated untouched), and specific typed errors for recognized statuses
+    — ``InsufficientScopeError`` / ``AuthError`` / ``RateLimitError`` /
+    ``ValidationError`` etc. — which callers should see with their type and
+    fields intact, so those propagate too. Only a bare ``APIError`` (an
+    unparseable / proxy body, or an unmapped status) is wrapped here, so
+    ``sdk/tools/transport.py`` can still ``except LucidicMockCallError`` for the
+    genuinely-malformed case.
     """
-    try:
-        body = exc.response.json()
-    except ValueError:
-        return LucidicMockCallError(
-            code="malformed_response",
-            detail=f"HTTP {exc.response.status_code}: {exc.response.text or 'no body'}",
-        )
-
-    err = body.get("error") if isinstance(body, dict) else None
-    if not isinstance(err, dict) or "code" not in err:
-        return LucidicMockCallError(
-            code="malformed_response",
-            detail=f"HTTP {exc.response.status_code}: {body!r}",
-        )
-
-    code = err["code"]
-    detail = err.get("detail", "")
-    extra = {k: v for k, v in err.items() if k not in ("code", "detail")}
-    cls = error_class_for_code(code)
-
-    # Each typed subclass that adds attributes does so via its own
-    # __init__ keyword params. Pass the extra dict through; classes that
-    # don't recognize a key still accept it via the base's **extra
-    # channel and stash it as an attribute.
-    #
-    # When `cls is LucidicMockCallError` (unknown code → forward-compat
-    # fallback), pass the actual code through so the exception carries
-    # the backend's wire value instead of the class-level default.
-    try:
-        if cls is LucidicMockCallError:
-            return cls(detail, code=code, **extra)
-        return cls(detail, **extra)
-    except TypeError:
-        # Defensive: if a subclass added a stricter __init__ in the
-        # future and rejects an unknown kwarg, fall back to the base.
-        return LucidicMockCallError(code=code, detail=detail, **extra)
+    return LucidicMockCallError(code="malformed_response", detail=str(exc))
 
 
 class MockCallResource:
@@ -150,8 +111,10 @@ class MockCallResource:
 
         try:
             return self.http.post("sdk/mock-call", body)
-        except httpx.HTTPStatusError as exc:
-            raise _exception_from_http_error(exc) from exc
+        except LucidicMockCallError:
+            raise
+        except APIError as exc:
+            raise _as_mock_error(exc) from exc
 
     async def acall(
         self,
@@ -177,8 +140,10 @@ class MockCallResource:
 
         try:
             return await self.http.apost("sdk/mock-call", body)
-        except httpx.HTTPStatusError as exc:
-            raise _exception_from_http_error(exc) from exc
+        except LucidicMockCallError:
+            raise
+        except APIError as exc:
+            raise _as_mock_error(exc) from exc
 
     # ==================== create() / acreate() — legacy LUC-483 API ====================
 

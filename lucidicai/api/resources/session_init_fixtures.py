@@ -23,10 +23,7 @@ Backend contract (``api/views/sdk_session_fixtures.py``):
 import logging
 from typing import Any, Dict
 
-import httpx
-
 from ..client import HttpClient
-from ...core.errors import LucidicError
 
 logger = logging.getLogger("Lucidic")
 
@@ -44,37 +41,20 @@ class SessionInitFixturesResource:
         True → session is tool-backed and ready for mock_call; False →
         no-op (session has no DatasetItem or no Resources/tools).
 
-        Raises ``LucidicError`` on 4xx/5xx with the backend's error
-        string. The session_not_found path (404) is a real bug — the
-        session_id was wrong or already finished — but we surface it
-        as a plain ``LucidicError`` since the caller in
-        ``SessionResource.create()`` already swallows + warns.
+        Raises a typed ``LucidicError`` (e.g. ``NotFoundError`` on a wrong /
+        finished session_id, ``ServiceUnavailableError`` after the transport
+        exhausts its 503 retry budget) on non-2xx. The caller in
+        ``SessionResource.create()`` already swallows + warns, so these don't
+        surface to the user.
         """
         body = {"session_id": session_id}
         logger.debug(
             "[SessionInitFixturesResource] init session %s",
             session_id[:8] + "..." if len(session_id) > 8 else session_id,
         )
-        try:
-            return self.http.post("sdk/session-init-fixtures", body)
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_init_error(exc)) from exc
+        return self.http.post("sdk/session-init-fixtures", body)
 
     async def ainit(self, session_id: str) -> Dict[str, Any]:
         """Async sibling of ``init``."""
         body = {"session_id": session_id}
-        try:
-            return await self.http.apost("sdk/session-init-fixtures", body)
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_init_error(exc)) from exc
-
-
-def _format_init_error(exc: httpx.HTTPStatusError) -> str:
-    """Best-effort human-readable error from a non-2xx response."""
-    try:
-        body = exc.response.json()
-    except ValueError:
-        return f"HTTP {exc.response.status_code}: {exc.response.text or 'no body'}"
-    if isinstance(body, dict) and "error" in body:
-        return f"HTTP {exc.response.status_code}: {body['error']}"
-    return f"HTTP {exc.response.status_code}: {body!r}"
+        return await self.http.apost("sdk/session-init-fixtures", body)
