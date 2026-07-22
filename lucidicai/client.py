@@ -28,6 +28,7 @@ from .api.resources.agents import AgentsResource
 from .api.resources.evaluator_results import EvaluatorResultsResource
 from .api.resources.evaluators import EvaluatorsResource
 from .api.resources.session import SessionResource
+from .api.resources.usage import UsageResource
 from .api.resources.event import EventResource
 from .api.resources.dataset import DatasetResource
 from .api.resources.experiment import ExperimentResource
@@ -161,6 +162,7 @@ class LucidicAI:
             "agents": AgentsResource(self._http),
             "evaluators": EvaluatorsResource(self._http, self._config.agent_id),
             "evaluator_results": EvaluatorResultsResource(self._http),
+            "usage": UsageResource(self._http),
             "sessions": SessionResource(self._http, self, self._config, self._production),
             "events": EventResource(self._http, self._production),
             "datasets": DatasetResource(self._http, self._config.agent_id, self._production),
@@ -276,6 +278,13 @@ class LucidicAI:
         on ``client.evaluators``.
         """
         return self._resources["evaluator_results"]
+
+    @property
+    def usage(self) -> UsageResource:
+        """Access org-aggregated usage counters (LUC-911):
+        ``client.usage.get()`` returns a read-only ``{stat_name: total}`` mapping.
+        """
+        return self._resources["usage"]
 
     @property
     def tools(self) -> ToolsResource:

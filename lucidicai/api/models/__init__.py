@@ -12,6 +12,7 @@ from .session import (
     SessionEvaluatorResults,
     SessionTrace,
 )
+from .usage import Usage
 
 __all__ = [
     "APIModel",
@@ -29,4 +30,5 @@ __all__ = [
     "EvalResult",
     "EventEval",
     "SessionEvaluatorResults",
+    "Usage",
 ]
