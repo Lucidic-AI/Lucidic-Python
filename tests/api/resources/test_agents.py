@@ -1,15 +1,17 @@
-"""LUC-906 — client.agents reads (list / get / tool_catalog).
+"""LUC-906 / LUC-912 — client.agents reads + writes.
 
 Uses the hermetic ``http`` fixture from tests/api/conftest.py (stub URL,
 retry sleeps irrelevant here). Backend mocked at the HTTP boundary via respx.
 """
+import json
+
 import httpx
 import pytest
 import respx
 
 from lucidicai.api.models.agent import Agent, AgentToolCatalog, CatalogTool
 from lucidicai.api.resources.agents import AgentsResource
-from lucidicai.core.errors import NotFoundError
+from lucidicai.core.errors import InsufficientScopeError, NotFoundError, ValidationError
 
 _BASE = "https://stub.lucidic.test"
 _AGENTS = f"{_BASE}/sdk/v2/agents"
@@ -157,3 +159,70 @@ class TestAsync:
             200, json={"agent_id": "a1", "agent_name": "n", "tools": [], "resources": []}))
         c = await agents.atool_catalog("a1")
         assert c.agent_id == "a1" and c.tools == []
+
+
+class TestCreate:
+    @respx.mock
+    def test_create_omits_unset_optionals(self, agents):
+        route = respx.post(_AGENTS).mock(return_value=httpx.Response(201, json=_agent(1)))
+        a = agents.create("agent-1")
+        assert isinstance(a, Agent) and a.agent_id == "a1"
+        body = json.loads(route.calls.last.request.read())
+        assert body["name"] == "agent-1"
+        assert "icon" not in body            # omitted -> backend defaults ("compass")
+        assert "project_id" not in body
+
+    @respx.mock
+    def test_with_icon_and_project(self, agents):
+        route = respx.post(_AGENTS).mock(return_value=httpx.Response(201, json=_agent(1)))
+        agents.create("a", icon="rocket", project_id="p1")
+        body = json.loads(route.calls.last.request.read())
+        assert body["icon"] == "rocket" and body["project_id"] == "p1"
+
+    @respx.mock
+    def test_bound_key_403_is_insufficient_scope(self, agents):
+        respx.post(_AGENTS).mock(return_value=httpx.Response(
+            403, json={"error": "An agent-bound API key cannot create new agents."}))
+        with pytest.raises(InsufficientScopeError):
+            agents.create("x")
+
+
+class TestUpdate:
+    @respx.mock
+    def test_sends_only_provided_fields(self, agents):
+        route = respx.put(f"{_AGENTS}/a1").mock(return_value=httpx.Response(200, json=_agent(1)))
+        a = agents.update("a1", name="renamed")
+        assert isinstance(a, Agent)
+        body = json.loads(route.calls.last.request.read())
+        assert body["name"] == "renamed"
+        assert "icon" not in body and "project_id" not in body
+
+    @respx.mock
+    def test_all_fields(self, agents):
+        route = respx.put(f"{_AGENTS}/a1").mock(return_value=httpx.Response(200, json=_agent(1)))
+        agents.update("a1", name="n", icon="i", project_id="p1")
+        body = json.loads(route.calls.last.request.read())
+        assert body["name"] == "n" and body["icon"] == "i" and body["project_id"] == "p1"
+
+    @respx.mock
+    def test_over_length_400_is_validation_error(self, agents):
+        respx.put(f"{_AGENTS}/a1").mock(return_value=httpx.Response(
+            400, json={"error": "A field exceeds its maximum length."}))
+        with pytest.raises(ValidationError):
+            agents.update("a1", name="x" * 999)
+
+
+class TestAsyncWrite:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_acreate(self, agents):
+        respx.post(_AGENTS).mock(return_value=httpx.Response(201, json=_agent(1)))
+        a = await agents.acreate("agent-1")
+        assert a.agent_id == "a1"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aupdate(self, agents):
+        respx.put(f"{_AGENTS}/a1").mock(return_value=httpx.Response(200, json=_agent(1)))
+        a = await agents.aupdate("a1", icon="star")
+        assert a.agent_id == "a1"
