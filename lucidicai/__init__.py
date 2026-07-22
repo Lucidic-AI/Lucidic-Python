@@ -32,6 +32,16 @@ from .core.errors import (
     InvalidOperationError,
     PromptError,
     FeatureFlagError,
+    # Typed HTTP/API errors (LUC-900)
+    LucidicAPIError,
+    ValidationError,
+    AuthError,
+    InsufficientScopeError,
+    NotFoundError,
+    ConflictError,
+    RateLimitError,
+    ServiceUnavailableError,
+    APIError,
     # mock_call dispatch error family (LUC-607)
     LucidicMockCallError,
     LucidicToolDriftError,
@@ -46,6 +56,9 @@ from .core.errors import (
     LucidicUnsupportedSQLError,
 )
 from .sdk.training_modules import TrainingModulesResource
+
+# Typed response-model base (LUC-905)
+from .api.models import APIModel, CursorPage
 
 # Prompt object
 from .api.resources.prompt import Prompt
@@ -81,6 +94,16 @@ __all__ = [
     "InvalidOperationError",
     "PromptError",
     "FeatureFlagError",
+    # Typed HTTP/API errors (LUC-900)
+    "LucidicAPIError",
+    "ValidationError",
+    "AuthError",
+    "InsufficientScopeError",
+    "NotFoundError",
+    "ConflictError",
+    "RateLimitError",
+    "ServiceUnavailableError",
+    "APIError",
     # mock_call dispatch error family (LUC-607)
     "LucidicMockCallError",
     "LucidicToolDriftError",
@@ -94,6 +117,9 @@ __all__ = [
     "LucidicMissingImplError",
     "LucidicUnsupportedSQLError",
     "TrainingModulesResource",
+    # Typed response-model base (LUC-905)
+    "APIModel",
+    "CursorPage",
     # Prompt object
     "Prompt",
     # Tool dispatch (v2 tool-backed)
