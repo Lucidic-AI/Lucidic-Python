@@ -8,6 +8,7 @@ from ..client import HttpClient
 from ..models.base import CursorPage
 from ..models.prompt import PromptInfo, PromptVersion
 from ..pagination import apaginate, paginate
+from ...core.errors import require_agent_id
 
 if TYPE_CHECKING:
     from ...core.config import SDKConfig
@@ -471,12 +472,14 @@ class PromptResource:
     def labels(self, agent_id: Optional[str] = None) -> List[str]:
         """The agent's label names (shared across its prompts) — a small,
         non-paginated read."""
-        resp = self.http.get("sdk/v2/prompts/labels", {"agent_id": agent_id or self._config.agent_id})
+        agent = require_agent_id(agent_id or self._config.agent_id, "prompts.labels")
+        resp = self.http.get("sdk/v2/prompts/labels", {"agent_id": agent})
         return resp.get("labels", [])
 
     async def alabels(self, agent_id: Optional[str] = None) -> List[str]:
         """Async sibling of ``labels``."""
-        resp = await self.http.aget("sdk/v2/prompts/labels", {"agent_id": agent_id or self._config.agent_id})
+        agent = require_agent_id(agent_id or self._config.agent_id, "prompts.labels")
+        resp = await self.http.aget("sdk/v2/prompts/labels", {"agent_id": agent})
         return resp.get("labels", [])
 
     # ---- read internals ----
@@ -484,7 +487,9 @@ class PromptResource:
     def _agent_params(
         self, agent_id: Optional[str], ordering: Optional[str], page_size: Optional[int]
     ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {"agent_id": agent_id or self._config.agent_id}
+        params: Dict[str, Any] = {
+            "agent_id": require_agent_id(agent_id or self._config.agent_id, "prompts.list"),
+        }
         if ordering is not None:
             params["ordering"] = ordering
         if page_size is not None:

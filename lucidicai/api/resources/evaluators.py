@@ -15,6 +15,7 @@ from ..models.base import CursorPage
 from ..models.evaluator import Evaluator
 from ..models.session import EvalResult
 from ..pagination import apaginate, paginate
+from ...core.errors import require_agent_id
 
 _EVALUATORS = "sdk/v2/evaluators"
 
@@ -120,10 +121,9 @@ class EvaluatorsResource:
     def _agent_params(
         self, agent_id: Optional[str], ordering: Optional[str], page_size: Optional[int]
     ) -> Dict[str, Any]:
-        resolved = agent_id or self._agent_id
-        params: Dict[str, Any] = {}
-        if resolved is not None:
-            params["agent_id"] = resolved
+        params: Dict[str, Any] = {
+            "agent_id": require_agent_id(agent_id or self._agent_id, "evaluators.list"),
+        }
         if ordering is not None:
             params["ordering"] = ordering
         if page_size is not None:

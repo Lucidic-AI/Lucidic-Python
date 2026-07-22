@@ -9,6 +9,7 @@ from ..client import HttpClient
 from ..models import session as session_models
 from ..models.base import CursorPage
 from ..pagination import apaginate, paginate
+from ...core.errors import require_agent_id
 
 if TYPE_CHECKING:
     from ...client import LucidicAI
@@ -102,6 +103,11 @@ class SessionResource:
                     auto_end=False,
                 )
             raise LucidicError("Client is not properly configured")
+
+        # LUC-926: a session must attach to an agent. Raise loudly (even in
+        # production) BEFORE the swallow below, rather than POST a null agent_id
+        # and silently drop this session + all its events.
+        require_agent_id(self._config.agent_id, "sessions.create")
 
         # Use client's auto_end by default
         if auto_end is None:
@@ -209,6 +215,9 @@ class SessionResource:
                     auto_end=False,
                 )
             raise LucidicError("Client is not properly configured")
+
+        # LUC-926: same guard as create() — raise before the swallow.
+        require_agent_id(self._config.agent_id, "sessions.create")
 
         if auto_end is None:
             auto_end = self._config.auto_end
