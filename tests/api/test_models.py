@@ -1,6 +1,6 @@
 """LUC-905 — typed response-model base."""
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -12,6 +12,13 @@ class _Agent(APIModel):
     agent_id: str
     name: Optional[str] = None
     tags: Optional[List[str]] = None
+
+
+@dataclass
+class _WithLists(APIModel):
+    id: str
+    tags: List[str] = field(default_factory=list)
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
 class TestFromDict:
@@ -42,6 +49,30 @@ class TestFromDict:
     def test_extra_defaults_empty(self):
         a = _Agent.from_dict({"agent_id": "a1"})
         assert a.extra == {}
+
+
+class TestNullNormalization:
+    """A backend `null` for a field with a default must not stick as None —
+    it should fall back to the default (e.g. [] / {}), so downstream
+    iteration stays safe. This is the reference behavior every model relies on."""
+
+    def test_null_list_becomes_empty(self):
+        m = _WithLists.from_dict({"id": "1", "tags": None, "meta": None})
+        assert m.tags == []
+        assert m.meta == {}
+
+    def test_absent_list_uses_default(self):
+        m = _WithLists.from_dict({"id": "1"})
+        assert m.tags == [] and m.meta == {}
+
+    def test_present_list_preserved(self):
+        m = _WithLists.from_dict({"id": "1", "tags": ["a", "b"]})
+        assert m.tags == ["a", "b"]
+
+    def test_null_optional_stays_none(self):
+        # An Optional[...] = None field: null is the correct value, unchanged.
+        a = _Agent.from_dict({"agent_id": "a1", "name": None})
+        assert a.name is None
 
 
 class TestFromList:

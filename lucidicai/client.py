@@ -24,6 +24,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from .api.client import HttpClient
+from .api.resources.agents import AgentsResource
 from .api.resources.session import SessionResource
 from .api.resources.event import EventResource
 from .api.resources.dataset import DatasetResource
@@ -155,6 +156,7 @@ class LucidicAI:
 
         # Initialize API resources
         self._resources: Dict[str, Any] = {
+            "agents": AgentsResource(self._http),
             "sessions": SessionResource(self._http, self, self._config, self._production),
             "events": EventResource(self._http, self._production),
             "datasets": DatasetResource(self._http, self._config.agent_id, self._production),
@@ -239,6 +241,17 @@ class LucidicAI:
     def is_valid(self) -> bool:
         """Check if the client is properly configured."""
         return self._valid
+
+    @property
+    def agents(self) -> AgentsResource:
+        """Access agent reads (LUC-906): ``list()`` / ``get(id)`` + ``tool_catalog(id)``.
+
+        Enumerate the org's agents (discover their ``agent_id`` s), read one
+        back, or inspect an agent's tool catalog. (A client still needs an
+        ``agent_id`` to construct today; a read-only bootstrap mode is a planned
+        follow-up.)
+        """
+        return self._resources["agents"]
 
     @property
     def tools(self) -> ToolsResource:
