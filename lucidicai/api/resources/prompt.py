@@ -2,9 +2,12 @@
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
 from ..client import HttpClient
+from ..models.base import CursorPage
+from ..models.prompt import PromptInfo, PromptVersion
+from ..pagination import apaginate, paginate
 
 if TYPE_CHECKING:
     from ...core.config import SDKConfig
@@ -385,3 +388,117 @@ class PromptResource:
                 logger.error(f"[PromptResource] Failed to update prompt metadata: {e}")
                 return Prompt(raw_content="", content="", metadata={})
             raise
+
+    # ==================== v2 reads (LUC-909) ====================
+    #
+    # Prompt-ops discovery: list the agent's prompts, walk a prompt's full
+    # version history, read the agent's label set. Data-bearing reads — they do
+    # NOT swallow in production (they surface the typed transport error), unlike
+    # the get/update methods above. ``agent_id`` defaults to the configured
+    # agent. Each read has an async sibling.
+
+    def list(
+        self, agent_id: Optional[str] = None, *,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> Iterator[PromptInfo]:
+        """Lazily iterate the agent's prompts (by name). ``ordering`` accepts
+        ``name`` / ``id`` (± prefix)."""
+        base = self._agent_params(agent_id, ordering, page_size)
+        return paginate(lambda c: self._page_get("sdk/v2/prompts", base, c), model=PromptInfo)
+
+    def alist(
+        self, agent_id: Optional[str] = None, *,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> AsyncIterator[PromptInfo]:
+        """Async sibling of ``list``."""
+        base = self._agent_params(agent_id, ordering, page_size)
+        return apaginate(lambda c: self._apage_get("sdk/v2/prompts", base, c), model=PromptInfo)
+
+    def list_page(
+        self, agent_id: Optional[str] = None, *, cursor: Optional[str] = None,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Fetch a single page of prompts (manual pagination control)."""
+        body = self._page_get("sdk/v2/prompts", self._agent_params(agent_id, ordering, page_size), cursor)
+        return CursorPage.from_body(body, model=PromptInfo)
+
+    async def alist_page(
+        self, agent_id: Optional[str] = None, *, cursor: Optional[str] = None,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Async sibling of ``list_page``."""
+        body = await self._apage_get("sdk/v2/prompts", self._agent_params(agent_id, ordering, page_size), cursor)
+        return CursorPage.from_body(body, model=PromptInfo)
+
+    def versions(
+        self, name: str, agent_id: Optional[str] = None, *,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> Iterator[PromptVersion]:
+        """Lazily iterate one prompt's full version history, newest first.
+        ``ordering`` accepts ``version_number`` / ``id`` (± prefix)."""
+        base = self._agent_params(agent_id, ordering, page_size)
+        base["prompt_name"] = name
+        return paginate(lambda c: self._page_get("sdk/v2/prompts/versions", base, c), model=PromptVersion)
+
+    def aversions(
+        self, name: str, agent_id: Optional[str] = None, *,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> AsyncIterator[PromptVersion]:
+        """Async sibling of ``versions``."""
+        base = self._agent_params(agent_id, ordering, page_size)
+        base["prompt_name"] = name
+        return apaginate(lambda c: self._apage_get("sdk/v2/prompts/versions", base, c), model=PromptVersion)
+
+    def versions_page(
+        self, name: str, agent_id: Optional[str] = None, *, cursor: Optional[str] = None,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Fetch a single page of a prompt's version history."""
+        base = self._agent_params(agent_id, ordering, page_size)
+        base["prompt_name"] = name
+        return CursorPage.from_body(self._page_get("sdk/v2/prompts/versions", base, cursor), model=PromptVersion)
+
+    async def aversions_page(
+        self, name: str, agent_id: Optional[str] = None, *, cursor: Optional[str] = None,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Async sibling of ``versions_page``."""
+        base = self._agent_params(agent_id, ordering, page_size)
+        base["prompt_name"] = name
+        body = await self._apage_get("sdk/v2/prompts/versions", base, cursor)
+        return CursorPage.from_body(body, model=PromptVersion)
+
+    def labels(self, agent_id: Optional[str] = None) -> List[str]:
+        """The agent's label names (shared across its prompts) — a small,
+        non-paginated read."""
+        resp = self.http.get("sdk/v2/prompts/labels", {"agent_id": agent_id or self._config.agent_id})
+        return resp.get("labels", [])
+
+    async def alabels(self, agent_id: Optional[str] = None) -> List[str]:
+        """Async sibling of ``labels``."""
+        resp = await self.http.aget("sdk/v2/prompts/labels", {"agent_id": agent_id or self._config.agent_id})
+        return resp.get("labels", [])
+
+    # ---- read internals ----
+
+    def _agent_params(
+        self, agent_id: Optional[str], ordering: Optional[str], page_size: Optional[int]
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"agent_id": agent_id or self._config.agent_id}
+        if ordering is not None:
+            params["ordering"] = ordering
+        if page_size is not None:
+            params["page_size"] = page_size
+        return params
+
+    def _page_get(self, path: str, base: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base)
+        if cursor:
+            params["cursor"] = cursor
+        return self.http.get(path, params)
+
+    async def _apage_get(self, path: str, base: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base)
+        if cursor:
+            params["cursor"] = cursor
+        return await self.http.aget(path, params)

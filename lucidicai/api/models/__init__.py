@@ -2,6 +2,7 @@
 from .agent import Agent, AgentToolCatalog, CatalogTool
 from .base import APIModel, CursorPage
 from .experiment import Experiment
+from .prompt import PromptInfo, PromptVersion
 from .session import (
     EvalResult,
     Event,
@@ -18,6 +19,8 @@ __all__ = [
     "AgentToolCatalog",
     "CatalogTool",
     "Experiment",
+    "PromptInfo",
+    "PromptVersion",
     "Session",
     "SessionTrace",
     "Event",
