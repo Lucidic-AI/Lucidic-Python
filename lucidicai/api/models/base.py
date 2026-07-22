@@ -14,7 +14,7 @@ owning model's ``from_dict`` override.
 ``CursorPage`` lives here too since it is the paginated container of models;
 the iteration helpers that walk ``next`` live in ``api/pagination.py``.
 """
-from dataclasses import asdict, dataclass, fields
+from dataclasses import MISSING, asdict, dataclass, fields
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from urllib.parse import parse_qs, urlparse
 
@@ -33,15 +33,32 @@ class APIModel:
 
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        """Build a model from a backend JSON object, ignoring unknown keys."""
+        """Build a model from a backend JSON object.
+
+        Unknown keys are ignored (kept on ``.extra`` for forward-compat). A
+        ``null`` for a field that has a default (or ``default_factory``) is
+        dropped so the default applies — turning a backend ``"tools": null``
+        into ``[]`` rather than ``None``, which keeps a downstream
+        ``for x in model.field`` safe. A genuinely missing required field still
+        surfaces a clear ``TypeError`` from the dataclass constructor.
+        """
         if not isinstance(data, dict):
             raise TypeError(
                 f"{cls.__name__}.from_dict expected a dict, got "
                 f"{type(data).__name__}"
             )
-        field_names = {f.name for f in fields(cls)}
-        known = {k: v for k, v in data.items() if k in field_names}
-        extra = {k: v for k, v in data.items() if k not in field_names}
+        field_map = {f.name: f for f in fields(cls)}
+        known: Dict[str, Any] = {}
+        extra: Dict[str, Any] = {}
+        for key, value in data.items():
+            f = field_map.get(key)
+            if f is None:
+                extra[key] = value
+                continue
+            has_default = f.default is not MISSING or f.default_factory is not MISSING
+            if value is None and has_default:
+                continue  # let the field default apply instead of a null
+            known[key] = value
         obj = cls(**known)
         # object.__setattr__ works whether or not the subclass is frozen.
         object.__setattr__(obj, "_extra", extra)
