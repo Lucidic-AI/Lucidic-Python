@@ -334,17 +334,21 @@ class HttpClient:
         data = self._add_timestamp(data)
         return self.request("PATCH", endpoint, json=data)
 
-    def delete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def delete(self, endpoint: str, params: Optional[Dict[str, Any]] = None,
+               data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Make a synchronous DELETE request.
-        
+
         Args:
             endpoint: API endpoint (without base URL)
             params: Query parameters
-            
+            data: Optional JSON body. Most deletes carry none; a few endpoints
+                take a small flag in the DELETE body (e.g. the experiments
+                delete's ``delete_sessions``).
+
         Returns:
             Response data as dictionary
         """
-        return self.request("DELETE", endpoint, params=params)
+        return self.request("DELETE", endpoint, params=params, json=data)
 
     def head(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> httpx.Headers:
         """Make a synchronous HEAD request and return the response headers (LUC-903).
@@ -455,17 +459,19 @@ class HttpClient:
         data = self._add_timestamp(data)
         return await self.arequest("PATCH", endpoint, json=data)
 
-    async def adelete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def adelete(self, endpoint: str, params: Optional[Dict[str, Any]] = None,
+                      data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Make an asynchronous DELETE request.
-        
+
         Args:
             endpoint: API endpoint (without base URL)
             params: Query parameters
-            
+            data: Optional JSON body (see ``delete``).
+
         Returns:
             Response data as dictionary
         """
-        return await self.arequest("DELETE", endpoint, params=params)
+        return await self.arequest("DELETE", endpoint, params=params, json=data)
 
     async def ahead(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> httpx.Headers:
         """Async sibling of ``head`` (LUC-903)."""
