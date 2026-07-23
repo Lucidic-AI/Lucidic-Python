@@ -1,5 +1,8 @@
 """LUC-907 — client.sessions v2 reads (list/count/tags, detail+trace,
-evaluator-results, event raw)."""
+evaluator-results, event raw).
+LUC-919 — client.sessions bulk finish."""
+import json
+
 import httpx
 import pytest
 import respx
@@ -13,7 +16,7 @@ from lucidicai.api.models.session import (
     SessionTrace,
 )
 from lucidicai.api.resources.session import SessionResource
-from lucidicai.core.errors import NotFoundError
+from lucidicai.core.errors import InsufficientScopeError, NotFoundError, ValidationError
 
 _BASE = "https://stub.lucidic.test"
 _SESSIONS = f"{_BASE}/sdk/v2/sessions"
@@ -264,3 +267,79 @@ class TestAsync:
             200, json={"event_id": "e1"}))
         ev = await sessions.aevent("s1", "e1")
         assert ev.event_id == "e1"
+
+
+class TestBulkFinish:
+    _FINISH = f"{_SESSIONS}/finish"
+
+    @respx.mock
+    def test_finish_returns_count_and_sends_ids(self, sessions):
+        route = respx.post(self._FINISH).mock(
+            return_value=httpx.Response(200, json={"num_sessions_finished": 2}))
+        n = sessions.finish(["s1", "s2", "s3"])
+        assert n == 2
+        body = json.loads(route.calls.last.request.read())
+        assert body["session_ids"] == ["s1", "s2", "s3"]
+        # bulk finish is ownership-scoped server-side — the client sends no agent_id
+        assert "agent_id" not in body
+
+    @respx.mock
+    def test_finish_empty_list_is_zero(self, sessions):
+        route = respx.post(self._FINISH).mock(
+            return_value=httpx.Response(200, json={"num_sessions_finished": 0}))
+        assert sessions.finish([]) == 0
+        assert json.loads(route.calls.last.request.read())["session_ids"] == []
+
+    @respx.mock
+    def test_finish_missing_count_defaults_zero(self, sessions):
+        respx.post(self._FINISH).mock(return_value=httpx.Response(200, json={}))
+        assert sessions.finish(["s1"]) == 0
+
+    @respx.mock
+    def test_finish_null_count_degrades_to_zero(self, sessions):
+        # a present-but-null count must not raise int(None)
+        respx.post(self._FINISH).mock(
+            return_value=httpx.Response(200, json={"num_sessions_finished": None}))
+        assert sessions.finish(["s1"]) == 0
+
+    @respx.mock
+    def test_finish_bare_string_raises_before_http(self, sessions):
+        # finish("s1") would char-split into single-char ids the backend drops -> a
+        # silent 0. Guard it loudly instead, with no request made.
+        route = respx.post(self._FINISH).mock(
+            return_value=httpx.Response(200, json={"num_sessions_finished": 0}))
+        with pytest.raises(TypeError):
+            sessions.finish("s1")
+        assert not route.called
+
+    @respx.mock
+    def test_finish_accepts_any_iterable(self, sessions):
+        # a generator/tuple is materialized into a list before sending
+        route = respx.post(self._FINISH).mock(
+            return_value=httpx.Response(200, json={"num_sessions_finished": 1}))
+        sessions.finish((sid for sid in ["s9"]))
+        assert json.loads(route.calls.last.request.read())["session_ids"] == ["s9"]
+
+    @respx.mock
+    def test_finish_not_a_list_400(self, sessions):
+        respx.post(self._FINISH).mock(return_value=httpx.Response(
+            400, json={"error": "session_ids must be a list of session ids"}))
+        # the SDK always sends a list, but a backend 400 surfaces as ValidationError
+        with pytest.raises(ValidationError):
+            sessions.finish(["s1"])
+
+    @respx.mock
+    def test_finish_forbidden_without_write_403(self, sessions):
+        respx.post(self._FINISH).mock(return_value=httpx.Response(
+            403, json={"error": "This API key is not authorized for this action."}))
+        with pytest.raises(InsufficientScopeError):
+            sessions.finish(["s1"])
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_afinish(self, sessions):
+        route = respx.post(self._FINISH).mock(
+            return_value=httpx.Response(200, json={"num_sessions_finished": 5}))
+        n = await sessions.afinish(["s1", "s2"])
+        assert n == 5
+        assert json.loads(route.calls.last.request.read())["session_ids"] == ["s1", "s2"]
