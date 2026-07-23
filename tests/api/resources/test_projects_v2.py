@@ -65,7 +65,7 @@ class TestCreate:
     @respx.mock
     def test_create_requires_name_and_icon(self, projects):
         route = respx.post(_PROJECTS).mock(return_value=httpx.Response(201, json=_project(1)))
-        p = projects.create("proj-1", "rocket")
+        p = projects.create("proj-1", icon="rocket")
         assert isinstance(p, Project) and p.project_id == "p1"
         body = json.loads(route.calls.last.request.read())
         assert body["name"] == "proj-1" and body["icon"] == "rocket"
@@ -74,7 +74,7 @@ class TestCreate:
     @respx.mock
     def test_create_with_description(self, projects):
         route = respx.post(_PROJECTS).mock(return_value=httpx.Response(201, json=_project(1)))
-        projects.create("proj-1", "rocket", description="my project")
+        projects.create("proj-1", icon="rocket", description="my project")
         body = json.loads(route.calls.last.request.read())
         assert body["description"] == "my project"
 
@@ -83,7 +83,7 @@ class TestCreate:
         respx.post(_PROJECTS).mock(return_value=httpx.Response(
             400, json={"error": "A field exceeds its maximum length."}))
         with pytest.raises(ValidationError):
-            projects.create("x" * 999, "i")
+            projects.create("x" * 999, icon="i")
 
 
 class TestUpdate:
@@ -124,7 +124,7 @@ class TestAsync:
     @pytest.mark.asyncio
     async def test_acreate(self, projects):
         respx.post(_PROJECTS).mock(return_value=httpx.Response(201, json=_project(1)))
-        p = await projects.acreate("proj-1", "rocket")
+        p = await projects.acreate("proj-1", icon="rocket")
         assert p.project_id == "p1"
 
     @respx.mock

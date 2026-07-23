@@ -71,12 +71,13 @@ class ProjectsResource:
 
     # ==================== create ====================
 
-    def create(self, name: str, icon: str, description: Optional[str] = None) -> Project:
+    def create(self, name: str, *, icon: str, description: Optional[str] = None) -> Project:
         """Create a project in the key's org. ``name`` and ``icon`` are required
-        by the backend; an over-length field → ``ValidationError``."""
+        by the backend (``icon`` is a required keyword, matching the write
+        surface's keyword-only style); an over-length field → ``ValidationError``."""
         return Project.from_dict(self.http.post(_PROJECTS, self._create_body(name, icon, description)))
 
-    async def acreate(self, name: str, icon: str, description: Optional[str] = None) -> Project:
+    async def acreate(self, name: str, *, icon: str, description: Optional[str] = None) -> Project:
         """Async sibling of ``create``."""
         body = self._create_body(name, icon, description)
         return Project.from_dict(await self.http.apost(_PROJECTS, body))
