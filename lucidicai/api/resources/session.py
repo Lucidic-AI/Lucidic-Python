@@ -469,6 +469,45 @@ class SessionResource:
             await self.http.aget(f"sdk/v2/sessions/{quote(session_id, safe='')}/events/{event_id}", params)
         )
 
+    def finish(self, session_ids: List[str]) -> int:
+        """Bulk-finish sessions by id (POST /sdk/v2/sessions/finish; needs
+        ``session:write``). Idempotent and best-effort — unknown, cross-org,
+        already-finished, non-UUID, or (for an agent-bound key) other-agent ids are
+        silently skipped, and the call still succeeds. Finishing marks each session
+        finished, recomputes its status, and — when it has evaluators — kicks off
+        async evaluation/summarization. Unlike the single-session gen-3 ``update``,
+        this only closes sessions; it does not set per-session success/eval/tags.
+        Returns the number of sessions matched and finished.
+
+        Data-bearing write — raises the typed transport error (does not swallow),
+        unlike the gen-3 ``create``/``end`` above."""
+        resp = self.http.post("sdk/v2/sessions/finish", self._finish_body(session_ids))
+        return self._finished_count(resp)
+
+    async def afinish(self, session_ids: List[str]) -> int:
+        """Async sibling of ``finish``."""
+        resp = await self.http.apost("sdk/v2/sessions/finish", self._finish_body(session_ids))
+        return self._finished_count(resp)
+
+    @staticmethod
+    def _finish_body(session_ids: List[str]) -> Dict[str, Any]:
+        # Guard the bare-string footgun: finish("<uuid>") would list()-split the
+        # string into single-char ids the backend silently drops (→ a misleading 0).
+        # The sibling get()/end()/event() take a bare str, so this mistake is easy;
+        # fail loudly instead, matching _filter_params' TypeError discipline.
+        if isinstance(session_ids, (str, bytes)):
+            raise TypeError(
+                "session_ids must be a list of session ids, not a single string — "
+                "wrap it in a list, e.g. finish([session_id])."
+            )
+        return {"session_ids": list(session_ids)}
+
+    @staticmethod
+    def _finished_count(resp: Dict[str, Any]) -> int:
+        # `or 0` (not a .get default) so a present-but-null count degrades to 0
+        # rather than raising int(None).
+        return int(resp.get("num_sessions_finished") or 0)
+
     def update(self, session_id: str, **updates) -> Dict[str, Any]:
         """Update an existing session.
 
