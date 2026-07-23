@@ -4,6 +4,7 @@ from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 from ..client import HttpClient
 from ..models.base import CursorPage
+from ..models.evaluator import Evaluator
 from ..models.experiment import Experiment
 from ..pagination import apaginate, paginate
 from ...core.errors import require_agent_id
@@ -30,6 +31,17 @@ class ExperimentResource:
         self.http = http
         self._agent_id = agent_id
         self._production = production
+        # client.experiments.evaluators — attach/detach/list evaluators on an
+        # experiment. Stateless (experiment id is passed per call), so one instance
+        # is reused across calls.
+        self._evaluators = ExperimentEvaluatorsResource(http)
+
+    @property
+    def evaluators(self) -> "ExperimentEvaluatorsResource":
+        """Wire evaluators onto experiments — e.g.
+        ``client.experiments.evaluators.attach(experiment_id, ["accuracy"])`` /
+        ``.list(experiment_id)`` / ``.detach(experiment_id, evaluator_id)``."""
+        return self._evaluators
 
     def create(
         self,
@@ -177,6 +189,28 @@ class ExperimentResource:
         """Async sibling of ``get``."""
         return Experiment.from_dict(await self.http.aget(f"sdk/v2/experiments/{experiment_id}"))
 
+    # ==================== v2 writes (LUC-915) ====================
+    #
+    # Data-bearing (destructive) write → no production swallow, unlike the gen-3
+    # create/acreate above. Each has an async sibling.
+
+    def delete(self, experiment_id: str, delete_sessions: bool = False) -> None:
+        """Delete an experiment (DELETE /sdk/v2/experiments/{id}; needs
+        ``experiment:delete``). The experiment row is hard-deleted and its
+        surviving sessions are detached (their ``experiment`` is set to null).
+        ``delete_sessions=True`` instead SOFT-deletes those sessions — hidden but
+        recoverable via the retention sweep — and is sent as a JSON body flag.
+        An unknown / cross-org / out-of-binding id → ``NotFoundError``."""
+        self.http.delete(
+            f"sdk/v2/experiments/{experiment_id}", data={"delete_sessions": delete_sessions}
+        )
+
+    async def adelete(self, experiment_id: str, delete_sessions: bool = False) -> None:
+        """Async sibling of ``delete``."""
+        await self.http.adelete(
+            f"sdk/v2/experiments/{experiment_id}", data={"delete_sessions": delete_sessions}
+        )
+
     # ---- internals ----
 
     def _list_params(
@@ -202,3 +236,90 @@ class ExperimentResource:
         if cursor:
             params["cursor"] = cursor
         return await self.http.aget("sdk/v2/experiments", params)
+
+
+class ExperimentEvaluatorsResource:
+    """``client.experiments.evaluators`` — wire evaluators onto an experiment (LUC-915).
+
+    Attach / detach / list the evaluator definitions bound to an experiment. Attach
+    is **config-only**: it links evaluators so FUTURE sessions in the experiment
+    inherit them at session-init — it does NOT re-score existing sessions or
+    recompute metrics. The experiment id is passed per call. Data-bearing writes →
+    no production swallow. Each method has an async sibling.
+    """
+
+    def __init__(self, http: HttpClient):
+        self.http = http
+
+    def list(self, experiment_id: str, *, page_size: Optional[int] = None) -> Iterator[Evaluator]:
+        """Lazily iterate the evaluators attached to an experiment (the endpoint is
+        cursor-paginated, so this transparently walks every page)."""
+        base = self._page_params(page_size)
+        return paginate(lambda c: self._page_get(self._path(experiment_id), base, c), model=Evaluator)
+
+    def alist(self, experiment_id: str, *, page_size: Optional[int] = None) -> AsyncIterator[Evaluator]:
+        """Async sibling of ``list``."""
+        base = self._page_params(page_size)
+        return apaginate(lambda c: self._apage_get(self._path(experiment_id), base, c), model=Evaluator)
+
+    def list_page(
+        self, experiment_id: str, *, cursor: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Fetch a single page of an experiment's attached evaluators."""
+        body = self._page_get(self._path(experiment_id), self._page_params(page_size), cursor)
+        return CursorPage.from_body(body, model=Evaluator)
+
+    async def alist_page(
+        self, experiment_id: str, *, cursor: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Async sibling of ``list_page``."""
+        body = await self._apage_get(self._path(experiment_id), self._page_params(page_size), cursor)
+        return CursorPage.from_body(body, model=Evaluator)
+
+    def attach(self, experiment_id: str, names: List[str]) -> List[Evaluator]:
+        """Attach evaluators to an experiment by NAME (POST; needs
+        ``experiment:write``). Config-only — future sessions inherit; existing
+        sessions are not re-scored. Idempotent (re-attaching is a no-op). If ANY
+        name is unknown for the experiment's agent the whole call fails
+        (``ValidationError``) and nothing is attached. Returns the experiment's
+        full current attached evaluator set."""
+        resp = self.http.post(self._path(experiment_id), {"evaluator_names": names})
+        return Evaluator.from_list(resp.get("evaluators", []))
+
+    async def aattach(self, experiment_id: str, names: List[str]) -> List[Evaluator]:
+        """Async sibling of ``attach``."""
+        resp = await self.http.apost(self._path(experiment_id), {"evaluator_names": names})
+        return Evaluator.from_list(resp.get("evaluators", []))
+
+    def detach(self, experiment_id: str, evaluator_id: str) -> None:
+        """Detach one evaluator (by its UUID) from an experiment (DELETE; needs
+        ``experiment:write``). Removes only the link — the evaluator definition and
+        any already-recorded metrics are untouched. An evaluator that isn't
+        attached (or an unknown id) → ``NotFoundError``."""
+        self.http.delete(f"{self._path(experiment_id)}/{evaluator_id}")
+
+    async def adetach(self, experiment_id: str, evaluator_id: str) -> None:
+        """Async sibling of ``detach``."""
+        await self.http.adelete(f"{self._path(experiment_id)}/{evaluator_id}")
+
+    # ---- internals ----
+
+    @staticmethod
+    def _path(experiment_id: str) -> str:
+        return f"sdk/v2/experiments/{experiment_id}/evaluators"
+
+    @staticmethod
+    def _page_params(page_size: Optional[int]) -> Dict[str, Any]:
+        return {"page_size": page_size} if page_size is not None else {}
+
+    def _page_get(self, path: str, base: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base)
+        if cursor:
+            params["cursor"] = cursor
+        return self.http.get(path, params or None)
+
+    async def _apage_get(self, path: str, base: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base)
+        if cursor:
+            params["cursor"] = cursor
+        return await self.http.aget(path, params or None)
