@@ -4,13 +4,15 @@ from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 from ..client import HttpClient
 from ..models.base import CursorPage
-from ..models.dataset import DatasetItem, DatasetSchema, Fixture
+from ..models.dataset import DatasetGenerationRun, DatasetItem, DatasetSchema, Fixture
 from ..pagination import apaginate, paginate
+from ..polling import await_for, wait_for
 
 logger = logging.getLogger("Lucidic")
 
 _SCHEMAS = "sdk/v2/datasets/schemas"
 _FIXTURES = "sdk/v2/fixtures"
+_GENERATE = "sdk/v2/datasets/generate"
 
 
 class DatasetResource:
@@ -99,6 +101,122 @@ class DatasetResource:
         if cursor:
             params["cursor"] = cursor
         return await self.http.aget(path, params or None)
+
+    # ==================== generation (LUC-921) ====================
+    #
+    # The async dataset-generation pipeline: trigger → poll → (retry). Trigger and
+    # retry kick off a Temporal workflow and return the run; status reads its
+    # progress; wait_for_generation blocks on the LUC-920 poll helper until the run
+    # is terminal. Org-scoped by the key; agent-bound via the run's experiment.
+
+    def generate(
+        self, *, agent_id: str, experiment_id: str, schema_id: str, dataset_name: str,
+        dataset_description: Optional[str] = None, target_count: Optional[int] = None,
+        combo_cap: Optional[int] = None, selected_dimension_ids: Optional[List[str]] = None,
+        resource_ids: Optional[List[str]] = None,
+    ) -> DatasetGenerationRun:
+        """Trigger dataset generation (POST /sdk/v2/datasets/generate; needs
+        ``dataset:generate``). Fills a new dataset from ``schema_id`` using the
+        ``experiment_id``'s trace taxonomy (the experiment must belong to
+        ``agent_id`` and have a completed taxonomy run). ``target_count`` (default
+        50, 1–500) and ``combo_cap`` (default 50, 1–200) bound the output; omit to
+        take the backend defaults. Returns the created run (``run_id`` +
+        ``dataset_id`` + initial ``"queued"`` status) — poll it with
+        ``generation_status`` / ``wait_for_generation``.
+
+        Raises ``ValidationError`` (bad refs / no taxonomy / unknown dimensions),
+        ``NotFoundError`` (agent / experiment / schema not visible to the key), or
+        ``ServiceUnavailableError`` (503 — the workflow couldn't start; retry)."""
+        return DatasetGenerationRun.from_dict(self.http.post(_GENERATE, self._generate_body(
+            agent_id, experiment_id, schema_id, dataset_name, dataset_description,
+            target_count, combo_cap, selected_dimension_ids, resource_ids)))
+
+    async def agenerate(
+        self, *, agent_id: str, experiment_id: str, schema_id: str, dataset_name: str,
+        dataset_description: Optional[str] = None, target_count: Optional[int] = None,
+        combo_cap: Optional[int] = None, selected_dimension_ids: Optional[List[str]] = None,
+        resource_ids: Optional[List[str]] = None,
+    ) -> DatasetGenerationRun:
+        """Async sibling of ``generate``."""
+        return DatasetGenerationRun.from_dict(await self.http.apost(_GENERATE, self._generate_body(
+            agent_id, experiment_id, schema_id, dataset_name, dataset_description,
+            target_count, combo_cap, selected_dimension_ids, resource_ids)))
+
+    def generation_status(self, run_id: str) -> DatasetGenerationRun:
+        """Read a generation run's status + progress (GET
+        /sdk/v2/datasets/generate/{run_id}/status; needs ``dataset:read``). Unknown
+        / cross-org / out-of-binding run → ``NotFoundError``."""
+        return DatasetGenerationRun.from_dict(self.http.get(f"{_GENERATE}/{run_id}/status"))
+
+    async def ageneration_status(self, run_id: str) -> DatasetGenerationRun:
+        """Async sibling of ``generation_status``."""
+        return DatasetGenerationRun.from_dict(await self.http.aget(f"{_GENERATE}/{run_id}/status"))
+
+    def retry_generation(self, run_id: str) -> DatasetGenerationRun:
+        """Retry a **failed** generation run (POST
+        /sdk/v2/datasets/generate/{run_id}/retry; needs ``dataset:generate``). Only
+        a run whose status is ``"failed"`` can be retried (else ``ValidationError``);
+        this clones a brand-new dataset + run (the failed one is left in place) and
+        returns the new run (new ``run_id`` / ``dataset_id``). May 503 like
+        ``generate``."""
+        return DatasetGenerationRun.from_dict(self.http.post(f"{_GENERATE}/{run_id}/retry"))
+
+    async def aretry_generation(self, run_id: str) -> DatasetGenerationRun:
+        """Async sibling of ``retry_generation``."""
+        return DatasetGenerationRun.from_dict(await self.http.apost(f"{_GENERATE}/{run_id}/retry"))
+
+    def wait_for_generation(
+        self, run_id: str, *, timeout: float = 1800.0, interval: float = 3.0
+    ) -> DatasetGenerationRun:
+        """Block until a generation run is terminal (``completed`` or ``failed``) or
+        ``timeout`` seconds elapse, polling ``generation_status`` every ``interval``
+        seconds. Returns the terminal run — inspect ``.succeeded`` / ``.status`` /
+        ``.error_message`` (a **failed** run is returned, not raised; retry it with
+        ``retry_generation``). Raises ``WaitTimeout`` if the deadline passes first.
+
+        The default ``timeout`` (30 min) matches the backend's own generation budget
+        so a full-length healthy run isn't cut off client-side; raise it only if that
+        server budget has been raised."""
+        return wait_for(
+            lambda: self.generation_status(run_id),
+            is_terminal=lambda run: run.is_terminal,
+            timeout=timeout, interval=interval,
+        )
+
+    async def await_for_generation(
+        self, run_id: str, *, timeout: float = 1800.0, interval: float = 3.0
+    ) -> DatasetGenerationRun:
+        """Async sibling of ``wait_for_generation``."""
+        return await await_for(
+            lambda: self.ageneration_status(run_id),
+            is_terminal=lambda run: run.is_terminal,
+            timeout=timeout, interval=interval,
+        )
+
+    @staticmethod
+    def _generate_body(
+        agent_id: str, experiment_id: str, schema_id: str, dataset_name: str,
+        dataset_description: Optional[str], target_count: Optional[int],
+        combo_cap: Optional[int], selected_dimension_ids: Optional[List[str]],
+        resource_ids: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "agent_id": agent_id, "experiment_id": experiment_id,
+            "schema_id": schema_id, "dataset_name": dataset_name,
+        }
+        # omit-None: let the backend apply its defaults (dataset_description="",
+        # target_count=50, combo_cap=50, selected_dimension_ids=[], resource_ids=[]).
+        if dataset_description is not None:
+            body["dataset_description"] = dataset_description
+        if target_count is not None:
+            body["target_count"] = target_count
+        if combo_cap is not None:
+            body["combo_cap"] = combo_cap
+        if selected_dimension_ids is not None:
+            body["selected_dimension_ids"] = selected_dimension_ids
+        if resource_ids is not None:
+            body["resource_ids"] = resource_ids
+        return body
 
     # ==================== Dataset Methods ====================
 
