@@ -1,4 +1,6 @@
-"""LUC-909 — client.prompts reads (list / versions / labels)."""
+"""LUC-909 / LUC-914 — client.prompts reads + writes."""
+import json
+
 import httpx
 import pytest
 import respx
@@ -6,9 +8,12 @@ import respx
 from lucidicai.api.models.prompt import PromptInfo, PromptVersion
 from lucidicai.api.resources.prompt import PromptResource
 from lucidicai.core.config import NetworkConfig, SDKConfig
+from lucidicai.core.errors import ConflictError, ValidationError
 
 _BASE = "https://stub.lucidic.test"
 _PROMPTS = f"{_BASE}/sdk/v2/prompts"
+_DETAIL = f"{_PROMPTS}/detail"
+_LABELS = f"{_PROMPTS}/labels"
 
 
 @pytest.fixture
@@ -122,3 +127,136 @@ class TestAsync:
         respx.get(f"{_PROMPTS}/labels").mock(return_value=httpx.Response(
             200, json={"labels": ["latest"]}))
         assert await prompts.alabels() == ["latest"]
+
+
+def _ct(body):
+    # PATCH/PUT bodies carry an auto-injected current_time; ignore in equality.
+    return {"current_time": body["current_time"]} if "current_time" in body else {}
+
+
+class TestRename:
+    @respx.mock
+    def test_rename_and_reicon(self, prompts):
+        route = respx.patch(_DETAIL).mock(return_value=httpx.Response(200, json=_prompt(1)))
+        p = prompts.rename("greeting", new_name="salutation", icon="wave")
+        assert isinstance(p, PromptInfo)
+        body = json.loads(route.calls.last.request.read())
+        assert body["agent_id"] == "a1" and body["prompt_name"] == "greeting"
+        assert body["name"] == "salutation" and body["icon"] == "wave"
+
+    @respx.mock
+    def test_rename_only_provided(self, prompts):
+        route = respx.patch(_DETAIL).mock(return_value=httpx.Response(200, json=_prompt(1)))
+        prompts.rename("greeting", icon="wave")
+        body = json.loads(route.calls.last.request.read())
+        assert "name" not in body and body["icon"] == "wave"
+
+    @respx.mock
+    def test_warning_on_extra(self, prompts):
+        respx.patch(_DETAIL).mock(return_value=httpx.Response(
+            200, json=dict(_prompt(1), warning="clients fetching the old name will 404")))
+        p = prompts.rename("greeting", new_name="salutation")
+        assert "404" in p.extra["warning"]
+
+    @respx.mock
+    def test_collision_409(self, prompts):
+        respx.patch(_DETAIL).mock(return_value=httpx.Response(
+            409, json={"error": "A prompt named 'x' already exists for this agent."}))
+        with pytest.raises(ConflictError):
+            prompts.rename("greeting", new_name="x")
+
+
+class TestSetLabels:
+    @respx.mock
+    def test_promote(self, prompts):
+        route = respx.put(_LABELS).mock(return_value=httpx.Response(
+            200, json=_version(3, labels=["production"])))
+        v = prompts.set_labels("greeting", 3, ["production"])
+        assert isinstance(v, PromptVersion) and v.labels == ["production"]
+        body = json.loads(route.calls.last.request.read())
+        assert body == {"agent_id": "a1", "prompt_name": "greeting",
+                        "version_number": 3, "labels": ["production"], **_ct(body)}
+
+    @respx.mock
+    def test_warning_on_extra(self, prompts):
+        respx.put(_LABELS).mock(return_value=httpx.Response(
+            200, json=dict(_version(3), warning="version 3 previously had no labels")))
+        v = prompts.set_labels("greeting", 3, ["production"])
+        assert "no labels" in v.extra["warning"]
+
+    @respx.mock
+    def test_move_latest_400(self, prompts):
+        respx.put(_LABELS).mock(return_value=httpx.Response(
+            400, json={"error": "'latest' is auto-managed"}))
+        with pytest.raises(ValidationError):
+            prompts.set_labels("greeting", 3, ["latest"])
+
+
+class TestDelete:
+    @respx.mock
+    def test_delete_204_sends_query(self, prompts):
+        route = respx.delete(_DETAIL).mock(return_value=httpx.Response(204))
+        assert prompts.delete("greeting") is None
+        p = route.calls.last.request.url.params
+        assert p["agent_id"] == "a1" and p["prompt_name"] == "greeting"
+
+    @respx.mock
+    def test_checkpoint_bound_409(self, prompts):
+        respx.delete(_DETAIL).mock(return_value=httpx.Response(
+            409, json={"error": "This prompt has a version bound to a checkpoint and cannot be deleted."}))
+        with pytest.raises(ConflictError):
+            prompts.delete("greeting")
+
+
+class TestAsyncWrite:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_arename(self, prompts):
+        respx.patch(_DETAIL).mock(return_value=httpx.Response(200, json=_prompt(1)))
+        p = await prompts.arename("greeting", new_name="salutation")
+        assert isinstance(p, PromptInfo)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aset_labels(self, prompts):
+        respx.put(_LABELS).mock(return_value=httpx.Response(200, json=_version(3)))
+        v = await prompts.aset_labels("greeting", 3, ["production"])
+        assert v.prompt_version_number == 3
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_adelete(self, prompts):
+        route = respx.delete(_DETAIL).mock(return_value=httpx.Response(204))
+        assert await prompts.adelete("greeting") is None
+        assert route.called
+
+
+class TestCacheInvalidation:
+    """The writes must clear the local get() cache (keyed by prompt_name) —
+    like update()/update_metadata() do — else a promoted/renamed/deleted prompt
+    keeps serving stale cached content."""
+
+    @staticmethod
+    def _seed(prompts):
+        prompts._cache[("greeting", "production", None, None)] = {"content": "old", "timestamp": 0}
+
+    @respx.mock
+    def test_rename_invalidates(self, prompts):
+        respx.patch(_DETAIL).mock(return_value=httpx.Response(200, json=_prompt(1)))
+        self._seed(prompts)
+        prompts.rename("greeting", new_name="salutation")
+        assert not any(k[0] == "greeting" for k in prompts._cache)
+
+    @respx.mock
+    def test_set_labels_invalidates(self, prompts):
+        respx.put(_LABELS).mock(return_value=httpx.Response(200, json=_version(3)))
+        self._seed(prompts)
+        prompts.set_labels("greeting", 3, ["production"])
+        assert not any(k[0] == "greeting" for k in prompts._cache)
+
+    @respx.mock
+    def test_delete_invalidates(self, prompts):
+        respx.delete(_DETAIL).mock(return_value=httpx.Response(204))
+        self._seed(prompts)
+        prompts.delete("greeting")
+        assert not any(k[0] == "greeting" for k in prompts._cache)
