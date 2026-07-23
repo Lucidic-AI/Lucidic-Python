@@ -5,8 +5,10 @@ from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 from ..client import HttpClient
 from ..models.base import CursorPage
 from ..models.evaluator import Evaluator
-from ..models.experiment import Experiment
+from ..models.experiment import Experiment, FailureGroup
+from ..models.taxonomy import TaxonomyRun, TaxonomyStatus
 from ..pagination import apaginate, paginate
+from ..polling import await_for, wait_for
 from ...core.errors import require_agent_id
 
 logger = logging.getLogger("Lucidic")
@@ -31,10 +33,11 @@ class ExperimentResource:
         self.http = http
         self._agent_id = agent_id
         self._production = production
-        # client.experiments.evaluators — attach/detach/list evaluators on an
-        # experiment. Stateless (experiment id is passed per call), so one instance
-        # is reused across calls.
+        # Sub-namespaces (stateless — experiment id passed per call, one instance each).
+        # client.experiments.evaluators — attach/detach/list evaluators (LUC-915).
         self._evaluators = ExperimentEvaluatorsResource(http)
+        # client.experiments.taxonomy — trace-taxonomy generation (LUC-922).
+        self._taxonomy = ExperimentTaxonomyResource(http)
 
     @property
     def evaluators(self) -> "ExperimentEvaluatorsResource":
@@ -42,6 +45,14 @@ class ExperimentResource:
         ``client.experiments.evaluators.attach(experiment_id, ["accuracy"])`` /
         ``.list(experiment_id)`` / ``.detach(experiment_id, evaluator_id)``."""
         return self._evaluators
+
+    @property
+    def taxonomy(self) -> "ExperimentTaxonomyResource":
+        """Trace-taxonomy generation on an experiment — e.g.
+        ``client.experiments.taxonomy.generate(experiment_id)`` /
+        ``.status(experiment_id)`` / ``.wait_for(experiment_id)`` /
+        ``.get(experiment_id)``."""
+        return self._taxonomy
 
     def create(
         self,
@@ -211,6 +222,40 @@ class ExperimentResource:
             f"sdk/v2/experiments/{experiment_id}", data={"delete_sessions": delete_sessions}
         )
 
+    # ==================== failure modes (LUC-922) ====================
+    #
+    # Async failure-mode analysis: generate_failure_modes triggers a Temporal run
+    # (fire-and-forget — there is NO status endpoint), failure_groups reads the
+    # result. Data-bearing → no production swallow. Each has an async sibling.
+    # (Taxonomy generation is the client.experiments.taxonomy sub-namespace.)
+
+    def generate_failure_modes(self, experiment_id: str) -> None:
+        """Trigger failure-mode analysis for an experiment (POST
+        /sdk/v2/experiments/{id}/failure-modes; needs ``failure-group:generate``).
+        Clears the prior groups and recomputes them asynchronously; poll
+        ``failure_groups`` for the result. Note there is **no status endpoint** — an
+        experiment with no failures completes with zero groups, so treat a persistently
+        empty list as "no failure modes found", not "still running". Needs at least one
+        session (→ ``ValidationError``). May raise ``ServiceUnavailableError`` (503) if
+        the calculation can't start — retry."""
+        self.http.post(f"sdk/v2/experiments/{experiment_id}/failure-modes")
+
+    async def agenerate_failure_modes(self, experiment_id: str) -> None:
+        """Async sibling of ``generate_failure_modes``."""
+        await self.http.apost(f"sdk/v2/experiments/{experiment_id}/failure-modes")
+
+    def failure_groups(self, experiment_id: str) -> List[FailureGroup]:
+        """Read an experiment's failure-mode groups (GET
+        /sdk/v2/experiments/{id}/failure-groups; needs ``failure-group:read``) — the
+        result of ``generate_failure_modes``. Not paginated (returns the full set)."""
+        resp = self.http.get(f"sdk/v2/experiments/{experiment_id}/failure-groups")
+        return FailureGroup.from_list(resp.get("event_failure_groups", []))
+
+    async def afailure_groups(self, experiment_id: str) -> List[FailureGroup]:
+        """Async sibling of ``failure_groups``."""
+        resp = await self.http.aget(f"sdk/v2/experiments/{experiment_id}/failure-groups")
+        return FailureGroup.from_list(resp.get("event_failure_groups", []))
+
     # ---- internals ----
 
     def _list_params(
@@ -323,3 +368,105 @@ class ExperimentEvaluatorsResource:
         if cursor:
             params["cursor"] = cursor
         return await self.http.aget(path, params or None)
+
+
+class ExperimentTaxonomyResource:
+    """``client.experiments.taxonomy`` — trace-taxonomy generation (LUC-922).
+
+    Trigger a taxonomy run over an experiment's finished sessions, read the latest
+    completed taxonomy, and poll generation to completion. A taxonomy is the required
+    input to dataset generation (``client.datasets.generate``). The experiment id is
+    passed per call. Data-bearing → no production swallow. Each method has an async
+    sibling.
+    """
+
+    def __init__(self, http: HttpClient):
+        self.http = http
+
+    def _base(self, experiment_id: str) -> str:
+        return f"sdk/v2/experiments/{experiment_id}/taxonomy"
+
+    def generate(
+        self, experiment_id: str, *,
+        seed_dimensions: Optional[List[Dict[str, Any]]] = None,
+        use_previous: Optional[bool] = None,
+    ) -> TaxonomyRun:
+        """Trigger a taxonomy run (POST /sdk/v2/experiments/{id}/taxonomy; needs
+        ``taxonomy:generate``). ``seed_dimensions`` (≤20 ``{name, description?}``) and
+        ``use_previous`` (warm-start from the last completed run) are optional. Needs
+        ≥20 finished sessions (→ ``ValidationError``) and no run already in progress
+        (→ ``ConflictError``). Returns the created run (``run_id`` + ``"queued"``
+        status). May raise ``ServiceUnavailableError`` (503) — retry."""
+        return TaxonomyRun.from_dict(
+            self.http.post(self._base(experiment_id), self._generate_body(seed_dimensions, use_previous)))
+
+    async def agenerate(
+        self, experiment_id: str, *,
+        seed_dimensions: Optional[List[Dict[str, Any]]] = None,
+        use_previous: Optional[bool] = None,
+    ) -> TaxonomyRun:
+        """Async sibling of ``generate``."""
+        return TaxonomyRun.from_dict(
+            await self.http.apost(self._base(experiment_id), self._generate_body(seed_dimensions, use_previous)))
+
+    def get(self, experiment_id: str) -> TaxonomyRun:
+        """Read the latest **completed** taxonomy (GET /sdk/v2/experiments/{id}/
+        taxonomy; needs ``taxonomy:read``) — its dimensions are in ``.taxonomy``.
+        Raises ``NotFoundError`` until a run has completed (in-flight state isn't
+        surfaced here — use ``status`` / ``wait_for``)."""
+        return TaxonomyRun.from_dict(self.http.get(self._base(experiment_id)))
+
+    async def aget(self, experiment_id: str) -> TaxonomyRun:
+        """Async sibling of ``get``."""
+        return TaxonomyRun.from_dict(await self.http.aget(self._base(experiment_id)))
+
+    def status(self, experiment_id: str) -> TaxonomyStatus:
+        """Read taxonomy generation status (GET /sdk/v2/experiments/{id}/taxonomy/
+        status; needs ``taxonomy:read``) — the ``ongoing`` run (if any) and the
+        ``latest_completed`` taxonomy."""
+        return TaxonomyStatus.from_dict(self.http.get(f"{self._base(experiment_id)}/status"))
+
+    async def astatus(self, experiment_id: str) -> TaxonomyStatus:
+        """Async sibling of ``status``."""
+        return TaxonomyStatus.from_dict(await self.http.aget(f"{self._base(experiment_id)}/status"))
+
+    def wait_for(
+        self, experiment_id: str, *, timeout: float = 1800.0, interval: float = 3.0
+    ) -> TaxonomyStatus:
+        """Block until no taxonomy run is in progress (or ``timeout`` elapses),
+        polling ``status`` every ``interval`` seconds. Call this after ``generate``.
+        Returns the terminal ``TaxonomyStatus``.
+
+        To tell whether **your** run succeeded, compare the returned
+        ``.latest_completed.run_id`` (or ``.version``) against the run ``generate``
+        returned: on success they match. A **failed** run clears ``.ongoing`` without
+        updating ``.latest_completed`` — so ``.latest_completed`` is then either a
+        *prior* completed taxonomy (a run_id/version that is NOT yours — do not treat
+        it as your result, and don't feed its stale dimensions into
+        ``datasets.generate``) or ``None`` (no taxonomy ever completed). The failure
+        reason itself isn't exposed by this endpoint. Raises ``WaitTimeout`` if the
+        deadline passes first."""
+        return wait_for(
+            lambda: self.status(experiment_id),
+            is_terminal=lambda s: s.is_terminal, timeout=timeout, interval=interval)
+
+    async def await_for(
+        self, experiment_id: str, *, timeout: float = 1800.0, interval: float = 3.0
+    ) -> TaxonomyStatus:
+        """Async sibling of ``wait_for``."""
+        return await await_for(
+            lambda: self.astatus(experiment_id),
+            is_terminal=lambda s: s.is_terminal, timeout=timeout, interval=interval)
+
+    @staticmethod
+    def _generate_body(
+        seed_dimensions: Optional[List[Dict[str, Any]]], use_previous: Optional[bool]
+    ) -> Dict[str, Any]:
+        # omit-None: both fields are optional (backend defaults seed_dimensions=[],
+        # use_previous=False).
+        body: Dict[str, Any] = {}
+        if seed_dimensions is not None:
+            body["seed_dimensions"] = seed_dimensions
+        if use_previous is not None:
+            body["use_previous"] = use_previous
+        return body

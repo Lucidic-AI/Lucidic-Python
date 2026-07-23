@@ -35,3 +35,18 @@ class Experiment(APIModel):
     num_events_data_by_tag: Optional[Dict[str, Any]] = None
     event_failure_groups: List[Dict[str, Any]] = field(default_factory=list)
     analytics_session_count: Optional[int] = None
+
+
+@dataclass
+class FailureGroup(APIModel):
+    """One clustered failure mode in an experiment (LUC-922) — a named group of
+    failing events, produced by ``experiments.generate_failure_modes`` and read
+    back via ``experiments.failure_groups``. ``events`` is a list of
+    ``{event_id, session_id}``. Keyed by ``id`` (the backend serializes it plain,
+    not as ``failure_group_id``)."""
+
+    id: str
+    group_name: Optional[str] = None
+    group_description: Optional[str] = None
+    icon: Optional[str] = None
+    events: List[Dict[str, Any]] = field(default_factory=list)
