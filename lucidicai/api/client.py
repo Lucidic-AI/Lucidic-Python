@@ -347,6 +347,17 @@ class HttpClient:
 
         Returns:
             Response data as dictionary
+
+        Note:
+            DELETE is auto-retried on a 429/503 status (it is idempotent). One benign
+            edge for a *destructive* delete: if the backend commits the delete and
+            then a 429/503 comes back (e.g. a gateway/load-balancer 503 during a
+            deploy or drain), the retry can hit a 404 and surface as ``NotFoundError``
+            even though the delete actually succeeded. This is rare — the delete paths
+            dispatch no async work, so the retryable status can only originate at an
+            infra layer, not the backend — and harmless (the resource is gone either
+            way). The clean fix is request idempotency keys, deferred until mutation
+            retry-safety is worth building.
         """
         return self.request("DELETE", endpoint, params=params, json=data)
 
