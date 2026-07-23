@@ -484,10 +484,44 @@ class PromptResource:
 
     # ==================== v2 writes (LUC-914) ====================
     #
-    # rename / set_labels / delete operate on EXISTING prompts. There is no SDK
-    # endpoint to create a brand-new prompt (dashboard-only today); ``update()``
-    # above (gen-3 PUT /sdk/prompts) adds a *version* to an existing prompt.
+    # create makes a brand-new prompt (+ its first version, via POST /sdk/v2/prompts,
+    # LUC-931); rename / set_labels / delete operate on EXISTING prompts. (``update()``
+    # above, the gen-3 PUT /sdk/prompts, adds a *version* to an existing prompt.)
     # Data-bearing writes → no production swallow. Each has an async sibling.
+
+    def create(
+        self, name: str, prompt_content: str, *,
+        icon: Optional[str] = None, description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, labels: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
+    ) -> Tuple[PromptInfo, Optional[PromptVersion]]:
+        """Create a brand-new prompt and its first version (POST /sdk/v2/prompts;
+        needs ``prompt:write``). ``name`` is unique per agent — a duplicate →
+        ``ConflictError`` (use ``update()`` to add a version to an existing prompt).
+        The first version auto-gets the ``latest`` + ``production`` labels; any
+        ``labels`` you pass are added on top. Returns ``(prompt, first_version)``
+        as typed models — ``first_version`` is ``None`` only if a future backend
+        omits the version subobject from the response."""
+        response = self.http.post(
+            "sdk/v2/prompts",
+            self._create_body(name, prompt_content, icon, description, metadata, labels, agent_id),
+        )
+        self._invalidate_cache(name)  # a same-name entry (deleted elsewhere, recreated) is now stale
+        return self._created(response)
+
+    async def acreate(
+        self, name: str, prompt_content: str, *,
+        icon: Optional[str] = None, description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, labels: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
+    ) -> Tuple[PromptInfo, Optional[PromptVersion]]:
+        """Async sibling of ``create``."""
+        response = await self.http.apost(
+            "sdk/v2/prompts",
+            self._create_body(name, prompt_content, icon, description, metadata, labels, agent_id),
+        )
+        self._invalidate_cache(name)
+        return self._created(response)
 
     def rename(
         self, prompt_name: str, *, new_name: Optional[str] = None,
@@ -557,6 +591,37 @@ class PromptResource:
         self._invalidate_cache(prompt_name)
 
     # ---- write internals ----
+
+    def _create_body(
+        self, name: str, prompt_content: str, icon: Optional[str],
+        description: Optional[str], metadata: Optional[Dict[str, Any]],
+        labels: Optional[List[str]], agent_id: Optional[str],
+    ) -> Dict[str, Any]:
+        agent = require_agent_id(agent_id or self._config.agent_id, "prompts.create")
+        body: Dict[str, Any] = {
+            "agent_id": agent, "name": name, "prompt_content": prompt_content,
+        }
+        # omit-None: let the backend apply its defaults (icon="compass",
+        # description="", metadata={}, labels=[]) rather than sending explicit nulls.
+        if icon is not None:
+            body["icon"] = icon
+        if description is not None:
+            body["description"] = description
+        if metadata is not None:
+            body["metadata"] = metadata
+        if labels is not None:
+            body["labels"] = labels
+        return body
+
+    @staticmethod
+    def _created(response: Dict[str, Any]) -> Tuple[PromptInfo, Optional[PromptVersion]]:
+        """Split the create response into the created ``PromptInfo`` and its first
+        ``PromptVersion``. The backend returns the prompt payload plus a ``version``
+        subobject; ``version`` is ``None`` only if a future backend omits it."""
+        info = PromptInfo.from_dict(response)
+        raw_version = response.get("version")
+        version = PromptVersion.from_dict(raw_version) if isinstance(raw_version, dict) else None
+        return info, version
 
     def _rename_body(
         self, prompt_name: str, new_name: Optional[str], icon: Optional[str], agent_id: Optional[str]

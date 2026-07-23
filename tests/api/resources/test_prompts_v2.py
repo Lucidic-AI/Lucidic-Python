@@ -8,7 +8,12 @@ import respx
 from lucidicai.api.models.prompt import PromptInfo, PromptVersion
 from lucidicai.api.resources.prompt import PromptResource
 from lucidicai.core.config import NetworkConfig, SDKConfig
-from lucidicai.core.errors import ConflictError, ValidationError
+from lucidicai.core.errors import (
+    AgentIdRequiredError,
+    ConflictError,
+    InsufficientScopeError,
+    ValidationError,
+)
 
 _BASE = "https://stub.lucidic.test"
 _PROMPTS = f"{_BASE}/sdk/v2/prompts"
@@ -132,6 +137,91 @@ class TestAsync:
 def _ct(body):
     # PATCH/PUT bodies carry an auto-injected current_time; ignore in equality.
     return {"current_time": body["current_time"]} if "current_time" in body else {}
+
+
+class TestCreate:
+    """LUC-914 follow-up (unblocked by backend LUC-931): POST /sdk/v2/prompts —
+    create a brand-new prompt + its first version."""
+
+    @respx.mock
+    def test_create_prompt_and_typed_first_version(self, prompts):
+        route = respx.post(_PROMPTS).mock(return_value=httpx.Response(
+            201, json={**_prompt(1), "version": _version(1, labels=["latest", "production"])}))
+        info, v = prompts.create("prompt-1", "content 1")
+        assert isinstance(info, PromptInfo) and info.prompt_id == "p1" and info.name == "prompt-1"
+        assert isinstance(v, PromptVersion) and v.prompt_version_number == 1
+        assert set(v.labels) == {"latest", "production"}
+        body = json.loads(route.calls.last.request.read())
+        assert body["agent_id"] == "a1"  # defaulted from config
+        assert body["name"] == "prompt-1" and body["prompt_content"] == "content 1"
+        # omit-None: unspecified optionals are NOT sent (backend applies its defaults)
+        assert not any(k in body for k in ("icon", "description", "metadata", "labels"))
+
+    @respx.mock
+    def test_create_all_fields_sent(self, prompts):
+        route = respx.post(_PROMPTS).mock(return_value=httpx.Response(201, json=_prompt(1)))
+        prompts.create("prompt-1", "c", icon="star", description="d",
+                       metadata={"k": "v"}, labels=["staging"])
+        body = json.loads(route.calls.last.request.read())
+        assert body["icon"] == "star" and body["description"] == "d"
+        assert body["metadata"] == {"k": "v"} and body["labels"] == ["staging"]
+
+    @respx.mock
+    def test_create_explicit_agent_id_overrides_config(self, prompts):
+        route = respx.post(_PROMPTS).mock(return_value=httpx.Response(201, json=_prompt(1)))
+        prompts.create("prompt-1", "c", agent_id="a2")
+        assert json.loads(route.calls.last.request.read())["agent_id"] == "a2"
+
+    @respx.mock
+    def test_create_without_version_subobject(self, prompts):
+        # Forward-compat: a response missing the version subobject yields (PromptInfo, None).
+        respx.post(_PROMPTS).mock(return_value=httpx.Response(201, json=_prompt(1)))
+        info, v = prompts.create("prompt-1", "c")
+        assert isinstance(info, PromptInfo) and v is None
+
+    @respx.mock
+    def test_create_duplicate_name_409(self, prompts):
+        respx.post(_PROMPTS).mock(return_value=httpx.Response(
+            409, json={"error": "A prompt named 'prompt-1' already exists for this agent."}))
+        with pytest.raises(ConflictError):
+            prompts.create("prompt-1", "c")
+
+    @respx.mock
+    def test_create_missing_content_400(self, prompts):
+        respx.post(_PROMPTS).mock(return_value=httpx.Response(
+            400, json={"error": "This field may not be blank."}))
+        with pytest.raises(ValidationError):
+            prompts.create("prompt-1", "")
+
+    @respx.mock
+    def test_create_without_write_scope_403(self, prompts):
+        respx.post(_PROMPTS).mock(return_value=httpx.Response(
+            403, json={"error": "requires prompt:write"}))
+        with pytest.raises(InsufficientScopeError):
+            prompts.create("prompt-1", "c")
+
+    @respx.mock
+    def test_create_invalidates_stale_same_name_cache(self, prompts):
+        # A name deleted elsewhere then recreated must not keep serving old cached content.
+        respx.post(_PROMPTS).mock(return_value=httpx.Response(201, json=_prompt(1)))
+        prompts._cache[("prompt-1", "production", None, None)] = {"content": "old", "timestamp": 0}
+        prompts.create("prompt-1", "c")
+        assert not any(k[0] == "prompt-1" for k in prompts._cache)
+
+    def test_create_without_agent_id_raises(self, http):
+        # No HTTP call: the guard fires client-side before the request.
+        res = PromptResource(http, SDKConfig(
+            api_key="k", agent_id=None, network=NetworkConfig(base_url=_BASE)))
+        with pytest.raises(AgentIdRequiredError):
+            res.create("prompt-1", "c")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_acreate(self, prompts):
+        respx.post(_PROMPTS).mock(return_value=httpx.Response(
+            201, json={**_prompt(1), "version": _version(1)}))
+        info, v = await prompts.acreate("prompt-1", "c")
+        assert isinstance(info, PromptInfo) and isinstance(v, PromptVersion)
 
 
 class TestRename:
