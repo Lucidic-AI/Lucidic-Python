@@ -27,6 +27,7 @@ from .api.client import HttpClient
 from .api.resources.agents import AgentsResource
 from .api.resources.evaluator_results import EvaluatorResultsResource
 from .api.resources.evaluators import EvaluatorsResource
+from .api.resources.projects import ProjectsResource
 from .api.resources.session import SessionResource
 from .api.resources.usage import UsageResource
 from .api.resources.event import EventResource
@@ -162,6 +163,7 @@ class LucidicAI:
             "agents": AgentsResource(self._http),
             "evaluators": EvaluatorsResource(self._http, self._config.agent_id),
             "evaluator_results": EvaluatorResultsResource(self._http),
+            "projects": ProjectsResource(self._http),
             "usage": UsageResource(self._http),
             "sessions": SessionResource(self._http, self, self._config, self._production),
             "events": EventResource(self._http, self._production),
@@ -278,6 +280,14 @@ class LucidicAI:
         on ``client.evaluators``.
         """
         return self._resources["evaluator_results"]
+
+    @property
+    def projects(self) -> ProjectsResource:
+        """Access project CRUD (LUC-913): ``list`` / ``create`` / ``get`` /
+        ``update`` / ``delete``. Org-scoped; ``delete`` un-projects agents
+        (SET_NULL) rather than destroying them.
+        """
+        return self._resources["projects"]
 
     @property
     def usage(self) -> UsageResource:
