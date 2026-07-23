@@ -482,6 +482,171 @@ class PromptResource:
         resp = await self.http.aget("sdk/v2/prompts/labels", {"agent_id": agent})
         return resp.get("labels", [])
 
+    # ==================== v2 writes (LUC-914) ====================
+    #
+    # create makes a brand-new prompt (+ its first version, via POST /sdk/v2/prompts,
+    # LUC-931); rename / set_labels / delete operate on EXISTING prompts. (``update()``
+    # above, the gen-3 PUT /sdk/prompts, adds a *version* to an existing prompt.)
+    # Data-bearing writes → no production swallow. Each has an async sibling.
+
+    def create(
+        self, name: str, prompt_content: str, *,
+        icon: Optional[str] = None, description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, labels: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
+    ) -> Tuple[PromptInfo, Optional[PromptVersion]]:
+        """Create a brand-new prompt and its first version (POST /sdk/v2/prompts;
+        needs ``prompt:write``). ``name`` is unique per agent — a duplicate →
+        ``ConflictError`` (use ``update()`` to add a version to an existing prompt).
+        The first version auto-gets the ``latest`` + ``production`` labels; any
+        ``labels`` you pass are added on top. Returns ``(prompt, first_version)``
+        as typed models — ``first_version`` is ``None`` only if a future backend
+        omits the version subobject from the response."""
+        response = self.http.post(
+            "sdk/v2/prompts",
+            self._create_body(name, prompt_content, icon, description, metadata, labels, agent_id),
+        )
+        self._invalidate_cache(name)  # a same-name entry (deleted elsewhere, recreated) is now stale
+        return self._created(response)
+
+    async def acreate(
+        self, name: str, prompt_content: str, *,
+        icon: Optional[str] = None, description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, labels: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
+    ) -> Tuple[PromptInfo, Optional[PromptVersion]]:
+        """Async sibling of ``create``."""
+        response = await self.http.apost(
+            "sdk/v2/prompts",
+            self._create_body(name, prompt_content, icon, description, metadata, labels, agent_id),
+        )
+        self._invalidate_cache(name)
+        return self._created(response)
+
+    def rename(
+        self, prompt_name: str, *, new_name: Optional[str] = None,
+        icon: Optional[str] = None, agent_id: Optional[str] = None,
+    ) -> PromptInfo:
+        """Rename and/or re-icon a prompt (PATCH /sdk/v2/prompts/detail). Pass
+        ``new_name`` and/or ``icon``. A name collision with another prompt →
+        ``ConflictError``. When the renamed prompt has shipped versions, the
+        result carries a ``warning`` (on ``.extra``): clients still fetching the
+        old name will 404 until updated."""
+        result = PromptInfo.from_dict(
+            self.http.patch("sdk/v2/prompts/detail", self._rename_body(prompt_name, new_name, icon, agent_id))
+        )
+        self._invalidate_cache(prompt_name)  # old (agent, name) fetches are now stale
+        return result
+
+    async def arename(
+        self, prompt_name: str, *, new_name: Optional[str] = None,
+        icon: Optional[str] = None, agent_id: Optional[str] = None,
+    ) -> PromptInfo:
+        """Async sibling of ``rename``."""
+        body = self._rename_body(prompt_name, new_name, icon, agent_id)
+        result = PromptInfo.from_dict(await self.http.apatch("sdk/v2/prompts/detail", body))
+        self._invalidate_cache(prompt_name)
+        return result
+
+    def set_labels(
+        self, prompt_name: str, version_number: int, labels: List[str], *,
+        agent_id: Optional[str] = None,
+    ) -> PromptVersion:
+        """Set which labels point at a specific version — promote / roll back
+        (PUT /sdk/v2/prompts/labels). This is a **replace**: ``labels`` becomes
+        that version's entire label set (any other label on it is removed), and
+        each label is **moved off** whatever version currently holds it — e.g.
+        ``set_labels("greeting", 5, ["production"])`` points ``production`` at
+        v5 and removes it from wherever it was. Not additive. ``"latest"`` is
+        auto-managed and can't be moved (→ ``ValidationError``); an unknown
+        ``version_number`` → ``NotFoundError``. Returns the updated version (a
+        promote onto a previously-unlabeled version carries a ``warning`` on
+        ``.extra``)."""
+        result = PromptVersion.from_dict(
+            self.http.put("sdk/v2/prompts/labels", self._label_body(prompt_name, version_number, labels, agent_id))
+        )
+        self._invalidate_cache(prompt_name)  # label pointers moved -> label fetches stale
+        return result
+
+    async def aset_labels(
+        self, prompt_name: str, version_number: int, labels: List[str], *,
+        agent_id: Optional[str] = None,
+    ) -> PromptVersion:
+        """Async sibling of ``set_labels``."""
+        body = self._label_body(prompt_name, version_number, labels, agent_id)
+        result = PromptVersion.from_dict(await self.http.aput("sdk/v2/prompts/labels", body))
+        self._invalidate_cache(prompt_name)
+        return result
+
+    def delete(self, prompt_name: str, *, agent_id: Optional[str] = None) -> None:
+        """Hard-delete a prompt and all its versions (DELETE /sdk/v2/prompts/detail;
+        needs ``prompt:delete``). A version bound to a checkpoint is protected →
+        ``ConflictError``."""
+        self.http.delete("sdk/v2/prompts/detail", self._name_params(prompt_name, agent_id))
+        self._invalidate_cache(prompt_name)
+
+    async def adelete(self, prompt_name: str, *, agent_id: Optional[str] = None) -> None:
+        """Async sibling of ``delete``."""
+        await self.http.adelete("sdk/v2/prompts/detail", self._name_params(prompt_name, agent_id))
+        self._invalidate_cache(prompt_name)
+
+    # ---- write internals ----
+
+    def _create_body(
+        self, name: str, prompt_content: str, icon: Optional[str],
+        description: Optional[str], metadata: Optional[Dict[str, Any]],
+        labels: Optional[List[str]], agent_id: Optional[str],
+    ) -> Dict[str, Any]:
+        agent = require_agent_id(agent_id or self._config.agent_id, "prompts.create")
+        body: Dict[str, Any] = {
+            "agent_id": agent, "name": name, "prompt_content": prompt_content,
+        }
+        # omit-None: let the backend apply its defaults (icon="compass",
+        # description="", metadata={}, labels=[]) rather than sending explicit nulls.
+        if icon is not None:
+            body["icon"] = icon
+        if description is not None:
+            body["description"] = description
+        if metadata is not None:
+            body["metadata"] = metadata
+        if labels is not None:
+            body["labels"] = labels
+        return body
+
+    @staticmethod
+    def _created(response: Dict[str, Any]) -> Tuple[PromptInfo, Optional[PromptVersion]]:
+        """Split the create response into the created ``PromptInfo`` and its first
+        ``PromptVersion``. The backend returns the prompt payload plus a ``version``
+        subobject; ``version`` is ``None`` only if a future backend omits it."""
+        info = PromptInfo.from_dict(response)
+        raw_version = response.get("version")
+        version = PromptVersion.from_dict(raw_version) if isinstance(raw_version, dict) else None
+        return info, version
+
+    def _rename_body(
+        self, prompt_name: str, new_name: Optional[str], icon: Optional[str], agent_id: Optional[str]
+    ) -> Dict[str, Any]:
+        agent = require_agent_id(agent_id or self._config.agent_id, "prompts.rename")
+        body: Dict[str, Any] = {"agent_id": agent, "prompt_name": prompt_name}
+        if new_name is not None:
+            body["name"] = new_name  # backend field is "name" (the new name)
+        if icon is not None:
+            body["icon"] = icon
+        return body
+
+    def _label_body(
+        self, prompt_name: str, version_number: int, labels: List[str], agent_id: Optional[str]
+    ) -> Dict[str, Any]:
+        agent = require_agent_id(agent_id or self._config.agent_id, "prompts.set_labels")
+        return {
+            "agent_id": agent, "prompt_name": prompt_name,
+            "version_number": version_number, "labels": labels,
+        }
+
+    def _name_params(self, prompt_name: str, agent_id: Optional[str]) -> Dict[str, Any]:
+        agent = require_agent_id(agent_id or self._config.agent_id, "prompts.delete")
+        return {"agent_id": agent, "prompt_name": prompt_name}
+
     # ---- read internals ----
 
     def _agent_params(
