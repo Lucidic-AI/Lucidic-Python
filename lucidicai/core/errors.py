@@ -8,6 +8,21 @@ class LucidicError(Exception):
     pass
 
 
+class WaitTimeout(LucidicError):
+    """Raised by the ``wait_for`` / ``await_for`` poll helpers (LUC-920) when a
+    trigger-then-poll workflow does not reach a terminal state before the deadline.
+
+    ``last_state`` is the most recently polled state (so a caller can still inspect
+    partial progress); ``timeout`` is the budget in seconds that elapsed.
+    """
+
+    def __init__(self, last_state: Any = None, timeout: Optional[float] = None):
+        self.last_state = last_state
+        self.timeout = timeout
+        detail = f" within {timeout:g}s" if timeout is not None else ""
+        super().__init__(f"Polling did not reach a terminal state{detail}.")
+
+
 # ---------------------------------------------------------------------------
 # HTTP / API errors (LUC-900)
 # ---------------------------------------------------------------------------
