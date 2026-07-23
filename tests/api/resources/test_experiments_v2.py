@@ -1,5 +1,6 @@
 """LUC-908 — client.experiments reads (list / count / get).
-LUC-915 — client.experiments writes (delete + evaluators attach/detach/list)."""
+LUC-915 — client.experiments writes (delete + evaluators attach/detach/list).
+LUC-922 — client.experiments taxonomy + failure-modes (async, trigger-then-poll)."""
 import json
 
 import httpx
@@ -7,9 +8,17 @@ import pytest
 import respx
 
 from lucidicai.api.models.evaluator import Evaluator
-from lucidicai.api.models.experiment import Experiment
-from lucidicai.api.resources.experiment import ExperimentResource
-from lucidicai.core.errors import InsufficientScopeError, NotFoundError, ValidationError
+from lucidicai.api.models.experiment import Experiment, FailureGroup
+from lucidicai.api.models.taxonomy import TaxonomyRun, TaxonomyStatus
+from lucidicai.api.resources.experiment import ExperimentResource, ExperimentTaxonomyResource
+from lucidicai.core.errors import (
+    ConflictError,
+    InsufficientScopeError,
+    NotFoundError,
+    ServiceUnavailableError,
+    ValidationError,
+    WaitTimeout,
+)
 
 _BASE = "https://stub.lucidic.test"
 _EXPERIMENTS = f"{_BASE}/sdk/v2/experiments"
@@ -17,6 +26,38 @@ _EXPERIMENTS = f"{_BASE}/sdk/v2/experiments"
 
 def _evals_url(xid):
     return f"{_EXPERIMENTS}/{xid}/evaluators"
+
+
+def _tax_url(xid):
+    return f"{_EXPERIMENTS}/{xid}/taxonomy"
+
+
+def _tax_run(**over):
+    d = {"run_id": "tr1", "version": 1, "status": "queued", "created_at": "2026-07-22T00:00:00Z"}
+    d.update(over)
+    return d
+
+
+def _tax_status(**over):
+    d = {"ongoing": None, "latest_completed": None, "evaluating_session_count": 0}
+    d.update(over)
+    return d
+
+
+def _tax_completed(**over):
+    # The status endpoint's latest_completed carries NO status field (unlike a run) —
+    # {run_id, version, created_at, completed_at}. Keep the fixture faithful.
+    d = {"run_id": "tr1", "version": 1, "created_at": "2026-07-22T00:00:00Z",
+         "completed_at": "2026-07-22T01:00:00Z"}
+    d.update(over)
+    return d
+
+
+def _fgroup(i, **over):
+    d = {"id": f"fg{i}", "group_name": f"group-{i}", "group_description": "",
+         "icon": "warn", "events": [{"event_id": "e1", "session_id": "s1"}]}
+    d.update(over)
+    return d
 
 
 @pytest.fixture
@@ -260,3 +301,184 @@ class TestWriteAsync:
         ])
         got = [e.evaluator_id async for e in experiments.evaluators.alist("x1")]
         assert got == ["e1", "e2"]
+
+
+# ==================== LUC-922 taxonomy + failure-modes ====================
+
+
+class TestWiring:
+    def test_taxonomy_subnamespace_resolves(self, experiments):
+        assert isinstance(experiments.taxonomy, ExperimentTaxonomyResource)
+
+
+class TestTaxonomyModel:
+    def test_status_types_nested_runs_and_is_terminal(self):
+        # ongoing present -> not terminal, nested runs typed
+        st = TaxonomyStatus.from_dict(_tax_status(
+            ongoing=_tax_run(status="sampling"), latest_completed=_tax_completed(run_id="tr0", version=0)))
+        assert st.is_terminal is False
+        assert isinstance(st.ongoing, TaxonomyRun) and st.ongoing.status == "sampling"
+        assert isinstance(st.latest_completed, TaxonomyRun) and st.latest_completed.run_id == "tr0"
+
+    def test_status_no_ongoing_is_terminal(self):
+        st = TaxonomyStatus.from_dict(_tax_status(latest_completed=_tax_completed()))
+        assert st.is_terminal is True and st.ongoing is None
+        assert isinstance(st.latest_completed, TaxonomyRun)
+
+
+class TestTaxonomyGenerate:
+    @respx.mock
+    def test_generate_empty_body_and_typed(self, experiments):
+        route = respx.post(_tax_url("x1")).mock(return_value=httpx.Response(201, json=_tax_run()))
+        run = experiments.taxonomy.generate("x1")
+        assert isinstance(run, TaxonomyRun) and run.run_id == "tr1" and run.status == "queued"
+        body = json.loads(route.calls.last.request.read())
+        assert "seed_dimensions" not in body and "use_previous" not in body  # omit-None
+
+    @respx.mock
+    def test_generate_with_seeds_and_use_previous(self, experiments):
+        route = respx.post(_tax_url("x1")).mock(return_value=httpx.Response(201, json=_tax_run()))
+        seeds = [{"name": "tone", "description": "d"}]
+        experiments.taxonomy.generate("x1", seed_dimensions=seeds, use_previous=True)
+        body = json.loads(route.calls.last.request.read())
+        assert body["seed_dimensions"] == seeds and body["use_previous"] is True
+
+    @respx.mock
+    def test_generate_too_few_sessions_400(self, experiments):
+        respx.post(_tax_url("x1")).mock(return_value=httpx.Response(
+            400, json={"error": "Need at least 20 finished sessions, found 3"}))
+        with pytest.raises(ValidationError):
+            experiments.taxonomy.generate("x1")
+
+    @respx.mock
+    def test_generate_already_running_409(self, experiments):
+        respx.post(_tax_url("x1")).mock(return_value=httpx.Response(
+            409, json={"error": "A taxonomy run is already in progress", "ongoing_run_id": "tr9"}))
+        with pytest.raises(ConflictError):
+            experiments.taxonomy.generate("x1")
+
+    @respx.mock
+    def test_generate_503(self, experiments):
+        respx.post(_tax_url("x1")).mock(return_value=httpx.Response(
+            503, json={"error": "Workflow service is temporarily unavailable; please retry."}))
+        with pytest.raises(ServiceUnavailableError):
+            experiments.taxonomy.generate("x1")
+
+
+class TestTaxonomyGetStatus:
+    @respx.mock
+    def test_get_completed_taxonomy(self, experiments):
+        respx.get(_tax_url("x1")).mock(return_value=httpx.Response(200, json=_tax_run(
+            status=None, completed_at="2026-07-22T01:00:00Z", taxonomy={"dimensions": []})))
+        run = experiments.taxonomy.get("x1")
+        assert run.taxonomy == {"dimensions": []} and run.completed_at is not None
+
+    @respx.mock
+    def test_get_404_until_completed(self, experiments):
+        respx.get(_tax_url("x1")).mock(return_value=httpx.Response(
+            404, json={"error": "Specified CompletedTaxonomyRun not found"}))
+        with pytest.raises(NotFoundError):
+            experiments.taxonomy.get("x1")
+
+    @respx.mock
+    def test_status_typed(self, experiments):
+        respx.get(f"{_tax_url('x1')}/status").mock(return_value=httpx.Response(
+            200, json=_tax_status(ongoing=_tax_run(status="validating"), evaluating_session_count=4)))
+        st = experiments.taxonomy.status("x1")
+        assert isinstance(st, TaxonomyStatus) and st.evaluating_session_count == 4
+        assert st.ongoing.status == "validating" and st.is_terminal is False
+
+
+class TestTaxonomyWaitFor:
+    @respx.mock
+    def test_polls_until_no_ongoing(self, experiments):
+        respx.get(f"{_tax_url('x1')}/status").mock(side_effect=[
+            httpx.Response(200, json=_tax_status(ongoing=_tax_run(status="queued"))),
+            httpx.Response(200, json=_tax_status(ongoing=_tax_run(status="validating"))),
+            httpx.Response(200, json=_tax_status(latest_completed=_tax_completed(run_id="tr1"))),
+        ])
+        st = experiments.taxonomy.wait_for("x1", timeout=30, interval=0)
+        assert st.is_terminal is True and st.ongoing is None
+        # latest_completed carries no status field from the backend — match on run_id
+        assert st.latest_completed.run_id == "tr1" and st.latest_completed.status is None
+
+    @respx.mock
+    def test_timeout_raises(self, experiments):
+        respx.get(f"{_tax_url('x1')}/status").mock(
+            return_value=httpx.Response(200, json=_tax_status(ongoing=_tax_run(status="sampling"))))
+        with pytest.raises(WaitTimeout) as exc:
+            experiments.taxonomy.wait_for("x1", timeout=0, interval=0)
+        assert exc.value.last_state.ongoing.status == "sampling"
+
+
+class TestFailureModes:
+    @respx.mock
+    def test_generate_failure_modes_returns_none(self, experiments):
+        route = respx.post(f"{_EXPERIMENTS}/x1/failure-modes").mock(
+            return_value=httpx.Response(202, json={"experiment_id": "x1", "status": "started"}))
+        assert experiments.generate_failure_modes("x1") is None
+        assert route.called
+
+    @respx.mock
+    def test_generate_failure_modes_no_sessions_400(self, experiments):
+        respx.post(f"{_EXPERIMENTS}/x1/failure-modes").mock(return_value=httpx.Response(
+            400, json={"error": "No sessions found in experiment"}))
+        with pytest.raises(ValidationError):
+            experiments.generate_failure_modes("x1")
+
+    @respx.mock
+    def test_generate_failure_modes_503(self, experiments):
+        respx.post(f"{_EXPERIMENTS}/x1/failure-modes").mock(return_value=httpx.Response(
+            503, json={"error": "Workflow service is temporarily unavailable; please retry."}))
+        with pytest.raises(ServiceUnavailableError):
+            experiments.generate_failure_modes("x1")
+
+    @respx.mock
+    def test_failure_groups_unwraps_typed_list(self, experiments):
+        respx.get(f"{_EXPERIMENTS}/x1/failure-groups").mock(return_value=httpx.Response(
+            200, json={"event_failure_groups": [_fgroup(1), _fgroup(2)]}))
+        groups = experiments.failure_groups("x1")
+        assert [g.id for g in groups] == ["fg1", "fg2"]
+        assert all(isinstance(g, FailureGroup) for g in groups)
+        assert groups[0].events == [{"event_id": "e1", "session_id": "s1"}]
+
+    @respx.mock
+    def test_failure_groups_empty(self, experiments):
+        respx.get(f"{_EXPERIMENTS}/x1/failure-groups").mock(
+            return_value=httpx.Response(200, json={"event_failure_groups": []}))
+        assert experiments.failure_groups("x1") == []
+
+
+class TestTaxonomyFailureAsync:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_agenerate(self, experiments):
+        respx.post(_tax_url("x1")).mock(return_value=httpx.Response(201, json=_tax_run()))
+        run = await experiments.taxonomy.agenerate("x1")
+        assert run.run_id == "tr1"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_await_for(self, experiments):
+        respx.get(f"{_tax_url('x1')}/status").mock(side_effect=[
+            httpx.Response(200, json=_tax_status(ongoing=_tax_run(status="sampling"))),
+            httpx.Response(200, json=_tax_status(latest_completed=_tax_completed())),
+        ])
+        st = await experiments.taxonomy.await_for("x1", timeout=30, interval=0)
+        assert st.is_terminal is True
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_afailure_groups(self, experiments):
+        respx.get(f"{_EXPERIMENTS}/x1/failure-groups").mock(return_value=httpx.Response(
+            200, json={"event_failure_groups": [_fgroup(1)]}))
+        groups = await experiments.afailure_groups("x1")
+        assert groups[0].id == "fg1"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_agenerate_failure_modes(self, experiments):
+        route = respx.post(f"{_EXPERIMENTS}/x1/failure-modes").mock(
+            return_value=httpx.Response(202, json={"experiment_id": "x1", "status": "started"}))
+        assert await experiments.agenerate_failure_modes("x1") is None
+        assert route.called
