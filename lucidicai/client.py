@@ -37,7 +37,7 @@ from .api.resources.experiment import ExperimentResource
 from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
 from .api.resources.evals import EvalsResource
-from .api.resources.evosim import EvoSimResource
+from .api.resources.evosim import EvoSimsResource
 from .api.resources.mock_call import MockCallResource
 from .sdk.training_modules.resource import TrainingModulesResource
 from .sdk.tools.resource import ToolsResource
@@ -174,7 +174,7 @@ class LucidicAI:
             "prompts": PromptResource(self._http, self._config, self._production),
             "feature_flags": FeatureFlagResource(self._http, self._config.agent_id, self._production),
             "evals": EvalsResource(self._http, self._production),
-            "evosims": EvoSimResource(self._http, self._config.agent_id, self._production),
+            "evosims": EvoSimsResource(self._http, self._config.agent_id, self._production),
             "mock_calls": MockCallResource(self._http, self._production),
         }
 
@@ -417,8 +417,10 @@ class LucidicAI:
         return self._resources["evals"]
 
     @property
-    def evosims(self) -> EvoSimResource:
-        """Access EvoSim resource for agent optimization runs.
+    def evosims(self) -> EvoSimsResource:
+        """Access EvoSim run management (LUC-923): ``train`` kickoff, ``list`` /
+        ``get`` runs, ``cancel``, ``iteration_instances``, and ``wait_for`` a run to
+        a terminal status.
 
         Example:
             result = client.evosims.train("training_config.json")

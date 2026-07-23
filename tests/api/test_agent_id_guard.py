@@ -7,7 +7,7 @@ production — when it's actually needed but absent.
 import pytest
 
 from lucidicai.api.resources.evaluators import EvaluatorsResource
-from lucidicai.api.resources.evosim import EvoSimResource
+from lucidicai.api.resources.evosim import EvoSimsResource
 from lucidicai.api.resources.experiment import ExperimentResource
 from lucidicai.api.resources.prompt import PromptResource
 from lucidicai.api.resources.session import SessionResource
@@ -58,7 +58,7 @@ class TestIngestionGuard:
 
     def test_evosim_train_raises_even_in_production(self, http):
         # Guard is before the try/except swallow, so production doesn't eat it.
-        res = EvoSimResource(http, agent_id=None, production=True)
+        res = EvoSimsResource(http, agent_id=None, production=True)
         with pytest.raises(AgentIdRequiredError):
             res.train("does-not-matter.json")  # raises before reading the file
 
