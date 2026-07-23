@@ -28,6 +28,7 @@ from .api.resources.agents import AgentsResource
 from .api.resources.evaluator_results import EvaluatorResultsResource
 from .api.resources.evaluators import EvaluatorsResource
 from .api.resources.projects import ProjectsResource
+from .api.resources.resources import ResourcesResource
 from .api.resources.session import SessionResource
 from .api.resources.usage import UsageResource
 from .api.resources.event import EventResource
@@ -164,6 +165,7 @@ class LucidicAI:
             "evaluators": EvaluatorsResource(self._http, self._config.agent_id),
             "evaluator_results": EvaluatorResultsResource(self._http),
             "projects": ProjectsResource(self._http),
+            "resources": ResourcesResource(self._http),
             "usage": UsageResource(self._http),
             "sessions": SessionResource(self._http, self, self._config, self._production),
             "events": EventResource(self._http, self._production),
@@ -288,6 +290,15 @@ class LucidicAI:
         (SET_NULL) rather than destroying them.
         """
         return self._resources["projects"]
+
+    @property
+    def resources(self) -> ResourcesResource:
+        """Access SQL-substrate Resource CRUD (LUC-917): ``list`` / ``create`` /
+        ``get`` / ``update`` / ``delete``. Org-scoped definitions of external
+        services the client mocks at runtime (SQL / API / CUSTOM), attached to
+        Datasets and Tools. ``delete`` is protected while the resource is in use.
+        """
+        return self._resources["resources"]
 
     @property
     def usage(self) -> UsageResource:
