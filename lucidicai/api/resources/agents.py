@@ -1,17 +1,16 @@
-"""client.agents — agent reads (LUC-906).
+"""client.agents — agent reads + writes (LUC-906 / LUC-912).
 
-Read the org's agents: ``list`` them (discover / enumerate ``agent_id`` s),
-``get`` one back, or inspect an agent's ``tool_catalog``.
+Read the org's agents (``list`` / ``get`` / ``tool_catalog``) and provision them
+(``create`` / ``update``). ``create`` is the SDK-first bootstrap — since LUC-926
+a client needs only an api_key to construct, so ``client.agents.create(...)``
+can mint an org's first agent purely from code. There is no ``delete`` (that
+cascades to every session/event/tool/prompt under the agent — dashboard-only).
 
-(A brand-new caller with *no* ``agent_id`` at all still can't construct the
-client to reach ``list`` — ``LucidicAI`` requires one today; a read-only /
-bootstrap construction mode is a planned follow-up. With any existing key +
-``agent_id`` you can enumerate the rest.)
-
-Reads are data-bearing, so — unlike the telemetry-write resources — they do
-NOT swallow errors in production: a failure raises the typed ``LucidicError``
-subclass the transport decoded (``NotFoundError``, ``InsufficientScopeError``,
-…). Every method has an ``a``-prefixed async sibling.
+Both reads and writes are data-bearing, so — unlike the telemetry resources —
+they do NOT swallow errors in production: a failure raises the typed
+``LucidicError`` subclass the transport decoded (``NotFoundError``,
+``InsufficientScopeError``, ``ValidationError``, …). Every method has an
+``a``-prefixed async sibling.
 """
 from typing import Any, AsyncIterator, Dict, Iterator, Optional
 
@@ -88,6 +87,74 @@ class AgentsResource:
     async def aget(self, agent_id: str) -> Agent:
         """Async sibling of ``get``."""
         return Agent.from_dict(await self.http.aget(f"{_AGENTS}/{agent_id}"))
+
+    # ==================== write (LUC-912) ====================
+
+    def create(
+        self, name: str, *, icon: Optional[str] = None, project_id: Optional[str] = None,
+    ) -> Agent:
+        """Create an agent in the key's org — the SDK-first bootstrap.
+
+        Needs ``agent:write``. An agent-**bound** key can't create agents (it
+        could only ever see its one agent) → the backend returns 403 →
+        ``InsufficientScopeError`` (a binding restriction, not a missing scope;
+        see that error's docs). ``icon`` defaults backend-side ("compass") when
+        omitted; ``project_id`` optionally files the new agent under a project.
+        """
+        return Agent.from_dict(self.http.post(_AGENTS, self._create_body(name, icon, project_id)))
+
+    async def acreate(
+        self, name: str, *, icon: Optional[str] = None, project_id: Optional[str] = None,
+    ) -> Agent:
+        """Async sibling of ``create``."""
+        body = self._create_body(name, icon, project_id)
+        return Agent.from_dict(await self.http.apost(_AGENTS, body))
+
+    def update(
+        self, agent_id: str, *, name: Optional[str] = None, icon: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> Agent:
+        """Update an agent's name / icon / project (e.g. move it between
+        projects). Only the fields you pass change; ``None`` leaves a field
+        untouched. An over-length name/icon → ``ValidationError``."""
+        return Agent.from_dict(
+            self.http.put(f"{_AGENTS}/{agent_id}", self._update_body(name, icon, project_id))
+        )
+
+    async def aupdate(
+        self, agent_id: str, *, name: Optional[str] = None, icon: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> Agent:
+        """Async sibling of ``update``."""
+        return Agent.from_dict(
+            await self.http.aput(f"{_AGENTS}/{agent_id}", self._update_body(name, icon, project_id))
+        )
+
+    @staticmethod
+    def _create_body(
+        name: str, icon: Optional[str], project_id: Optional[str]
+    ) -> Dict[str, Any]:
+        # Omit unset optional fields uniformly (like _update_body) so the backend
+        # owns their defaults — don't hardcode "compass" here.
+        body: Dict[str, Any] = {"name": name}
+        if icon is not None:
+            body["icon"] = icon
+        if project_id is not None:
+            body["project_id"] = project_id
+        return body
+
+    @staticmethod
+    def _update_body(
+        name: Optional[str], icon: Optional[str], project_id: Optional[str]
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if icon is not None:
+            body["icon"] = icon
+        if project_id is not None:
+            body["project_id"] = project_id
+        return body
 
     # ==================== tool catalog ====================
 

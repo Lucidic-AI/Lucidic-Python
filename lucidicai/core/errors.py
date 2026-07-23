@@ -78,10 +78,13 @@ class APIKeyVerificationError(AuthError):
 
 
 class InsufficientScopeError(LucidicAPIError):
-    """403 — the API key lacks the required capability scope.
+    """403 — the API key is not authorized for this action.
 
-    ``required_scope`` names the missing ``resource:verb`` when the backend
-    reports it, so the message can tell the user which preset/key to mint.
+    Usually a missing capability scope: ``required_scope`` names the missing
+    ``resource:verb`` when the backend reports it. When ``required_scope`` is
+    ``None`` the key HAS the scope but a narrower rule blocked the action (e.g.
+    an agent-bound key can't create new agents) — read the message rather than
+    assuming a scope is missing.
     """
     status_code = 403
 
