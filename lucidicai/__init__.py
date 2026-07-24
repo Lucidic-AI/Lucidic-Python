@@ -79,7 +79,7 @@ from .sdk.tools.adapters import (
 from .integrations.livekit import setup_livekit
 
 # Version
-__version__ = "3.7.2"
+__version__ = "4.0.0"
 
 # All exports
 __all__ = [
