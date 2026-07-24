@@ -1,10 +1,18 @@
 """Dataset resource API operations."""
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 from ..client import HttpClient
+from ..models.base import CursorPage
+from ..models.dataset import DatasetGenerationRun, DatasetItem, DatasetSchema, Fixture
+from ..pagination import apaginate, paginate
+from ..polling import await_for, wait_for
 
 logger = logging.getLogger("Lucidic")
+
+_SCHEMAS = "sdk/v2/datasets/schemas"
+_FIXTURES = "sdk/v2/fixtures"
+_GENERATE = "sdk/v2/datasets/generate"
 
 
 class DatasetResource:
@@ -26,6 +34,189 @@ class DatasetResource:
         self.http = http
         self._agent_id = agent_id
         self._production = production
+        # v2 sub-namespaces (LUC-918): client.datasets.schemas / .fixtures.
+        # Stateless (ids passed per call), so one instance each is reused.
+        self._schemas = DatasetSchemasResource(http)
+        self._fixtures = DatasetFixturesResource(http)
+
+    # ==================== v2 surface (LUC-918) ====================
+    #
+    # Data-bearing v2 reads/writes: they do NOT swallow in production (typed
+    # transport errors propagate), unlike the gen-3 methods below. ``items`` is a
+    # cursor-paginated read of a dataset's items; ``schemas`` / ``fixtures`` are
+    # sub-namespaces. Each has an async sibling.
+
+    @property
+    def schemas(self) -> "DatasetSchemasResource":
+        """Dataset schema CRUD — ``client.datasets.schemas.list()`` /
+        ``create`` / ``get`` / ``update`` / ``delete`` (org-scoped typed
+        definitions of a dataset item's ``input`` shape)."""
+        return self._schemas
+
+    @property
+    def fixtures(self) -> "DatasetFixturesResource":
+        """Fixture authoring — ``client.datasets.fixtures.create(...)`` builds a
+        base DuckDB fixture for a ``(dataset, resource)`` pair from JSON rows."""
+        return self._fixtures
+
+    def items(self, dataset_id: str, *, page_size: Optional[int] = None) -> Iterator[DatasetItem]:
+        """Lazily iterate a dataset's items, newest first (GET
+        /sdk/v2/datasets/{id}/items; needs ``dataset-item:read``). Cursor-paginated
+        — transparently walks every page. Unknown / cross-org dataset →
+        ``NotFoundError`` on first iteration."""
+        base = {"page_size": page_size} if page_size is not None else {}
+        path = f"sdk/v2/datasets/{dataset_id}/items"
+        return paginate(lambda c: self._v2_page_get(path, base, c), model=DatasetItem)
+
+    def aitems(self, dataset_id: str, *, page_size: Optional[int] = None) -> AsyncIterator[DatasetItem]:
+        """Async sibling of ``items``."""
+        base = {"page_size": page_size} if page_size is not None else {}
+        path = f"sdk/v2/datasets/{dataset_id}/items"
+        return apaginate(lambda c: self._v2_apage_get(path, base, c), model=DatasetItem)
+
+    def items_page(
+        self, dataset_id: str, *, cursor: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Fetch a single page of a dataset's items."""
+        base = {"page_size": page_size} if page_size is not None else {}
+        body = self._v2_page_get(f"sdk/v2/datasets/{dataset_id}/items", base, cursor)
+        return CursorPage.from_body(body, model=DatasetItem)
+
+    async def aitems_page(
+        self, dataset_id: str, *, cursor: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Async sibling of ``items_page``."""
+        base = {"page_size": page_size} if page_size is not None else {}
+        body = await self._v2_apage_get(f"sdk/v2/datasets/{dataset_id}/items", base, cursor)
+        return CursorPage.from_body(body, model=DatasetItem)
+
+    def _v2_page_get(self, path: str, base: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base)
+        if cursor:
+            params["cursor"] = cursor
+        return self.http.get(path, params or None)
+
+    async def _v2_apage_get(self, path: str, base: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base)
+        if cursor:
+            params["cursor"] = cursor
+        return await self.http.aget(path, params or None)
+
+    # ==================== generation (LUC-921) ====================
+    #
+    # The async dataset-generation pipeline: trigger → poll → (retry). Trigger and
+    # retry kick off a Temporal workflow and return the run; status reads its
+    # progress; wait_for_generation blocks on the LUC-920 poll helper until the run
+    # is terminal. Org-scoped by the key; agent-bound via the run's experiment.
+
+    def generate(
+        self, *, agent_id: str, experiment_id: str, schema_id: str, dataset_name: str,
+        dataset_description: Optional[str] = None, target_count: Optional[int] = None,
+        combo_cap: Optional[int] = None, selected_dimension_ids: Optional[List[str]] = None,
+        resource_ids: Optional[List[str]] = None,
+    ) -> DatasetGenerationRun:
+        """Trigger dataset generation (POST /sdk/v2/datasets/generate; needs
+        ``dataset:generate``). Fills a new dataset from ``schema_id`` using the
+        ``experiment_id``'s trace taxonomy (the experiment must belong to
+        ``agent_id`` and have a completed taxonomy run). ``target_count`` (default
+        50, 1–500) and ``combo_cap`` (default 50, 1–200) bound the output; omit to
+        take the backend defaults. Returns the created run (``run_id`` +
+        ``dataset_id`` + initial ``"queued"`` status) — poll it with
+        ``generation_status`` / ``wait_for_generation``.
+
+        Raises ``ValidationError`` (bad refs / no taxonomy / unknown dimensions),
+        ``NotFoundError`` (agent / experiment / schema not visible to the key), or
+        ``ServiceUnavailableError`` (503 — the workflow couldn't start; retry)."""
+        return DatasetGenerationRun.from_dict(self.http.post(_GENERATE, self._generate_body(
+            agent_id, experiment_id, schema_id, dataset_name, dataset_description,
+            target_count, combo_cap, selected_dimension_ids, resource_ids)))
+
+    async def agenerate(
+        self, *, agent_id: str, experiment_id: str, schema_id: str, dataset_name: str,
+        dataset_description: Optional[str] = None, target_count: Optional[int] = None,
+        combo_cap: Optional[int] = None, selected_dimension_ids: Optional[List[str]] = None,
+        resource_ids: Optional[List[str]] = None,
+    ) -> DatasetGenerationRun:
+        """Async sibling of ``generate``."""
+        return DatasetGenerationRun.from_dict(await self.http.apost(_GENERATE, self._generate_body(
+            agent_id, experiment_id, schema_id, dataset_name, dataset_description,
+            target_count, combo_cap, selected_dimension_ids, resource_ids)))
+
+    def generation_status(self, run_id: str) -> DatasetGenerationRun:
+        """Read a generation run's status + progress (GET
+        /sdk/v2/datasets/generate/{run_id}/status; needs ``dataset:read``). Unknown
+        / cross-org / out-of-binding run → ``NotFoundError``."""
+        return DatasetGenerationRun.from_dict(self.http.get(f"{_GENERATE}/{run_id}/status"))
+
+    async def ageneration_status(self, run_id: str) -> DatasetGenerationRun:
+        """Async sibling of ``generation_status``."""
+        return DatasetGenerationRun.from_dict(await self.http.aget(f"{_GENERATE}/{run_id}/status"))
+
+    def retry_generation(self, run_id: str) -> DatasetGenerationRun:
+        """Retry a **failed** generation run (POST
+        /sdk/v2/datasets/generate/{run_id}/retry; needs ``dataset:generate``). Only
+        a run whose status is ``"failed"`` can be retried (else ``ValidationError``);
+        this clones a brand-new dataset + run (the failed one is left in place) and
+        returns the new run (new ``run_id`` / ``dataset_id``). May 503 like
+        ``generate``."""
+        return DatasetGenerationRun.from_dict(self.http.post(f"{_GENERATE}/{run_id}/retry"))
+
+    async def aretry_generation(self, run_id: str) -> DatasetGenerationRun:
+        """Async sibling of ``retry_generation``."""
+        return DatasetGenerationRun.from_dict(await self.http.apost(f"{_GENERATE}/{run_id}/retry"))
+
+    def wait_for_generation(
+        self, run_id: str, *, timeout: float = 1800.0, interval: float = 3.0
+    ) -> DatasetGenerationRun:
+        """Block until a generation run is terminal (``completed`` or ``failed``) or
+        ``timeout`` seconds elapse, polling ``generation_status`` every ``interval``
+        seconds. Returns the terminal run — inspect ``.succeeded`` / ``.status`` /
+        ``.error_message`` (a **failed** run is returned, not raised; retry it with
+        ``retry_generation``). Raises ``WaitTimeout`` if the deadline passes first.
+
+        The default ``timeout`` (30 min) matches the backend's own generation budget
+        so a full-length healthy run isn't cut off client-side; raise it only if that
+        server budget has been raised."""
+        return wait_for(
+            lambda: self.generation_status(run_id),
+            is_terminal=lambda run: run.is_terminal,
+            timeout=timeout, interval=interval,
+        )
+
+    async def await_for_generation(
+        self, run_id: str, *, timeout: float = 1800.0, interval: float = 3.0
+    ) -> DatasetGenerationRun:
+        """Async sibling of ``wait_for_generation``."""
+        return await await_for(
+            lambda: self.ageneration_status(run_id),
+            is_terminal=lambda run: run.is_terminal,
+            timeout=timeout, interval=interval,
+        )
+
+    @staticmethod
+    def _generate_body(
+        agent_id: str, experiment_id: str, schema_id: str, dataset_name: str,
+        dataset_description: Optional[str], target_count: Optional[int],
+        combo_cap: Optional[int], selected_dimension_ids: Optional[List[str]],
+        resource_ids: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "agent_id": agent_id, "experiment_id": experiment_id,
+            "schema_id": schema_id, "dataset_name": dataset_name,
+        }
+        # omit-None: let the backend apply its defaults (dataset_description="",
+        # target_count=50, combo_cap=50, selected_dimension_ids=[], resource_ids=[]).
+        if dataset_description is not None:
+            body["dataset_description"] = dataset_description
+        if target_count is not None:
+            body["target_count"] = target_count
+        if combo_cap is not None:
+            body["combo_cap"] = combo_cap
+        if selected_dimension_ids is not None:
+            body["selected_dimension_ids"] = selected_dimension_ids
+        if resource_ids is not None:
+            body["resource_ids"] = resource_ids
+        return body
 
     # ==================== Dataset Methods ====================
 
@@ -530,3 +721,188 @@ class DatasetResource:
                 logger.error(f"[DatasetResource] Failed to list item sessions: {e}")
                 return {"num_sessions": 0, "sessions": []}
             raise
+
+
+class DatasetSchemasResource:
+    """``client.datasets.schemas`` — dataset schema CRUD (LUC-918).
+
+    A dataset schema is an org-scoped typed definition of a dataset item's ``input``
+    shape (required for dataset generation). Org-scoped: a bound key reaches them
+    all. Data-bearing — no production swallow. Each method has an async sibling.
+    """
+
+    def __init__(self, http: HttpClient):
+        self.http = http
+
+    def list(
+        self, *, ordering: Optional[str] = None, page_size: Optional[int] = None
+    ) -> Iterator[DatasetSchema]:
+        """Lazily iterate the org's dataset schemas, newest first. ``ordering``
+        accepts ``id`` (± prefix)."""
+        base = self._params(ordering, page_size)
+        return paginate(lambda c: self._page_get(base, c), model=DatasetSchema)
+
+    def alist(
+        self, *, ordering: Optional[str] = None, page_size: Optional[int] = None
+    ) -> AsyncIterator[DatasetSchema]:
+        """Async sibling of ``list``."""
+        base = self._params(ordering, page_size)
+        return apaginate(lambda c: self._apage_get(base, c), model=DatasetSchema)
+
+    def list_page(
+        self, *, cursor: Optional[str] = None,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Fetch a single page of dataset schemas."""
+        return CursorPage.from_body(
+            self._page_get(self._params(ordering, page_size), cursor), model=DatasetSchema
+        )
+
+    async def alist_page(
+        self, *, cursor: Optional[str] = None,
+        ordering: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Async sibling of ``list_page``."""
+        body = await self._apage_get(self._params(ordering, page_size), cursor)
+        return CursorPage.from_body(body, model=DatasetSchema)
+
+    def get(self, schema_id: str) -> DatasetSchema:
+        """Read one schema by id (raises ``NotFoundError`` if absent/cross-org)."""
+        return DatasetSchema.from_dict(self.http.get(f"{_SCHEMAS}/{schema_id}"))
+
+    async def aget(self, schema_id: str) -> DatasetSchema:
+        """Async sibling of ``get``."""
+        return DatasetSchema.from_dict(await self.http.aget(f"{_SCHEMAS}/{schema_id}"))
+
+    def create(
+        self, name: str, *, fields: List[Dict[str, Any]], description: Optional[str] = None
+    ) -> DatasetSchema:
+        """Create a dataset schema in the key's org (POST /sdk/v2/datasets/schemas;
+        needs ``dataset-schema:write``). ``fields`` is a non-empty list of typed
+        field defs — each ``{key, type, description?, required?, options?,
+        children?}`` where ``type`` is ``string`` / ``number`` / ``categorical`` /
+        ``object`` (``categorical`` needs ``options``; ``object`` needs
+        ``children``). ``name`` is unique per org — a duplicate → ``ConflictError``;
+        a malformed field → ``ValidationError``."""
+        return DatasetSchema.from_dict(
+            self.http.post(_SCHEMAS, self._create_body(name, fields, description))
+        )
+
+    async def acreate(
+        self, name: str, *, fields: List[Dict[str, Any]], description: Optional[str] = None
+    ) -> DatasetSchema:
+        """Async sibling of ``create``."""
+        return DatasetSchema.from_dict(
+            await self.http.apost(_SCHEMAS, self._create_body(name, fields, description))
+        )
+
+    def update(
+        self, schema_id: str, *, name: Optional[str] = None,
+        description: Optional[str] = None, fields: Optional[List[Dict[str, Any]]] = None,
+    ) -> DatasetSchema:
+        """Partially update a schema (PUT /sdk/v2/datasets/schemas/{id}; needs
+        ``dataset-schema:write``). Send only the fields to change. A rename
+        collision → ``ConflictError``."""
+        return DatasetSchema.from_dict(
+            self.http.put(f"{_SCHEMAS}/{schema_id}", self._update_body(name, description, fields))
+        )
+
+    async def aupdate(
+        self, schema_id: str, *, name: Optional[str] = None,
+        description: Optional[str] = None, fields: Optional[List[Dict[str, Any]]] = None,
+    ) -> DatasetSchema:
+        """Async sibling of ``update``."""
+        return DatasetSchema.from_dict(
+            await self.http.aput(f"{_SCHEMAS}/{schema_id}", self._update_body(name, description, fields))
+        )
+
+    def delete(self, schema_id: str) -> None:
+        """Delete a schema (DELETE /sdk/v2/datasets/schemas/{id}; needs
+        ``dataset-schema:delete``). Datasets/generation runs pointing at it are
+        un-linked (their schema pointer is set null), not deleted. A missing /
+        cross-org id → ``NotFoundError``."""
+        self.http.delete(f"{_SCHEMAS}/{schema_id}")
+
+    async def adelete(self, schema_id: str) -> None:
+        """Async sibling of ``delete``."""
+        await self.http.adelete(f"{_SCHEMAS}/{schema_id}")
+
+    # ---- internals ----
+
+    @staticmethod
+    def _params(ordering: Optional[str], page_size: Optional[int]) -> Optional[Dict[str, Any]]:
+        params: Dict[str, Any] = {}
+        if ordering is not None:
+            params["ordering"] = ordering
+        if page_size is not None:
+            params["page_size"] = page_size
+        return params or None
+
+    def _page_get(self, base: Optional[Dict[str, Any]], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base or {})
+        if cursor:
+            params["cursor"] = cursor
+        return self.http.get(_SCHEMAS, params or None)
+
+    async def _apage_get(self, base: Optional[Dict[str, Any]], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base or {})
+        if cursor:
+            params["cursor"] = cursor
+        return await self.http.aget(_SCHEMAS, params or None)
+
+    @staticmethod
+    def _create_body(
+        name: str, fields: List[Dict[str, Any]], description: Optional[str]
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"name": name, "fields": fields}
+        if description is not None:
+            body["description"] = description
+        return body
+
+    @staticmethod
+    def _update_body(
+        name: Optional[str], description: Optional[str], fields: Optional[List[Dict[str, Any]]]
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if fields is not None:
+            body["fields"] = fields
+        return body
+
+
+class DatasetFixturesResource:
+    """``client.datasets.fixtures`` — author base fixtures from JSON rows (LUC-918).
+
+    A fixture is the hydrated mock data (a DuckDB blob) for one ``(dataset,
+    resource)`` pair. ``create`` builds one from explicit rows. Data-bearing — no
+    production swallow. Has an async sibling.
+    """
+
+    def __init__(self, http: HttpClient):
+        self.http = http
+
+    def create(
+        self, *, resource_id: str, dataset_id: str, tables: List[Dict[str, Any]]
+    ) -> Fixture:
+        """Author a base fixture from JSON rows (POST /sdk/v2/fixtures; needs
+        ``fixture:write``). ``tables`` is a list of ``{"name": <table>, "rows":
+        [<row dict>, ...]}`` validated against the resource's ``spec``. Exactly one
+        fixture may exist per ``(dataset, resource)`` — a duplicate →
+        ``ConflictError``; a row/spec mismatch → ``ValidationError``. Unknown
+        resource or dataset → ``NotFoundError``."""
+        return Fixture.from_dict(self.http.post(_FIXTURES, self._body(resource_id, dataset_id, tables)))
+
+    async def acreate(
+        self, *, resource_id: str, dataset_id: str, tables: List[Dict[str, Any]]
+    ) -> Fixture:
+        """Async sibling of ``create``."""
+        return Fixture.from_dict(
+            await self.http.apost(_FIXTURES, self._body(resource_id, dataset_id, tables))
+        )
+
+    @staticmethod
+    def _body(resource_id: str, dataset_id: str, tables: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {"resource_id": resource_id, "dataset_id": dataset_id, "tables": tables}
