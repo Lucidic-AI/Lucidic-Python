@@ -138,6 +138,30 @@ def test_flush_is_bounded_by_its_timeout(client):
 
 
 @respx.mock
+def test_flush_timeout_bounds_the_whole_wait_not_each_post(client):
+    release = threading.Event()
+
+    def _hang(request):
+        release.wait(5)
+        return httpx.Response(201, json={})
+
+    respx.post(_EVALS_ENDPOINT).mock(side_effect=_hang)
+    for score in (0.1, 0.2, 0.3):
+        client.evals.emit(result=score, session_id=_SESSION_ID)
+    try:
+        started = time.monotonic()
+        drained = client.evals.flush(timeout=0.3)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert drained is False
+    # three hung posts share one 0.3 s budget (0.9 s if each got its own).
+    assert elapsed >= 0.25
+    assert elapsed < 0.6
+
+
+@respx.mock
 def test_flush_reports_drained_once_the_post_finishes(client):
     delivered = []
     _slow_eval_route(delivered)
