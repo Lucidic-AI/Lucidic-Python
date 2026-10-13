@@ -106,6 +106,13 @@ def test_parse_rejects_a_missing_or_malformed_signature(header):
     assert exc.value.status_code == 401
 
 
+def test_parse_rejects_a_non_ascii_signature_as_401():
+    # starlette decodes headers as latin-1; this must not escape as a TypeError (500).
+    body = _wire(_full_payload())
+    with pytest.raises(webhook.WebhookSignatureError):
+        webhook.parse(body, {webhook.SIGNATURE_HEADER: "sha256=\u00e9"}, secret=_SECRET)
+
+
 def test_parse_rejects_uppercase_hex():
     # the scheme is lowercase hex compared exactly; no normalisation.
     body = _wire(_full_payload())
@@ -180,6 +187,23 @@ def test_optional_ids_default_to_none_and_checkpoint_may_be_absent():
     assert case.checkpoint_id is None
 
 
+def test_null_checkpoint_id_is_treated_as_absent():
+    # a 422 is permanent (no re-send), so a null must not cost the case.
+    body, headers = _signed(_full_payload(checkpoint_id=None))
+    case = webhook.parse(body, headers, secret=_SECRET)
+    assert case.checkpoint_id is None
+    assert "checkpoint_id" not in case.session_kwargs()
+
+
+def test_cases_dedupe_on_ids_even_with_a_dict_input():
+    body, headers = _signed(_full_payload())
+    first = webhook.parse(body, headers, secret=_SECRET)
+    again = webhook.parse(body, headers, secret=_SECRET)
+    other = webhook.parse(*_signed(_full_payload(
+        session_id="99999999-8888-7777-6666-555555555555")), secret=_SECRET)
+    assert len({first, again, other}) == 2
+
+
 def test_ids_are_normalised_to_canonical_uuid_strings():
     body, headers = _signed(_full_payload(session_id=_SESSION_ID.upper()))
     assert webhook.parse(body, headers, secret=_SECRET).session_id == _SESSION_ID
@@ -201,7 +225,6 @@ def test_unknown_keys_are_kept_read_only_in_extra():
     _wire({"session_id": "abc"}),                           # not a uuid
     _wire({"session_id": 123}),                             # not a string
     _wire(_full_payload(datasetitem_id="not-a-uuid")),
-    _wire(_full_payload(checkpoint_id=None)),               # present means a uuid
 ])
 def test_parse_rejects_a_malformed_case(body):
     _, headers = _signed(body)

@@ -184,6 +184,18 @@ def test_failed_post_does_not_leave_the_emit_pending(client):
     assert time.monotonic() - started < 1.0
 
 
+def test_an_emit_whose_thread_cannot_start_is_not_left_pending(client, monkeypatch):
+    def _refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", _refuse)
+    with pytest.raises(RuntimeError):
+        client.evals.emit(result=1.0, session_id=_SESSION_ID)
+    monkeypatch.undo()
+
+    assert client.evals.flush(timeout=1) is True
+
+
 def test_flush_with_nothing_pending_returns_at_once(client):
     started = time.monotonic()
     assert client.evals.flush(timeout=5) is True

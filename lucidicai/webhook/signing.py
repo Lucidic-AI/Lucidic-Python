@@ -28,4 +28,6 @@ def verify(secret: str, body: bytes, header: Optional[str]) -> bool:
         raise ValueError("webhook secret is empty")
     if not header or not header.startswith(_PREFIX):
         return False
-    return hmac.compare_digest(sign(secret, body), header)
+    # compare bytes: compare_digest raises TypeError on non-ASCII str, and a
+    # hostile header must be a plain mismatch (401), not a server error.
+    return hmac.compare_digest(sign(secret, body).encode("ascii"), header.encode("utf-8"))

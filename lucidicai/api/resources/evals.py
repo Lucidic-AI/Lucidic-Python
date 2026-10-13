@@ -186,7 +186,13 @@ class EvalsResource:
         thread = threading.Thread(target=_background_emit, daemon=True)
         with self._pending_lock:
             self._pending.add(thread)
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            # an unstarted thread can never be joined; don't leave it pending
+            with self._pending_lock:
+                self._pending.discard(thread)
+            raise
 
     def flush(self, timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS) -> bool:
         """Wait for in-flight emit() posts to finish.

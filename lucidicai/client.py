@@ -490,7 +490,10 @@ class LucidicAI:
         logger.info(f"[LucidicAI] Closing async client {self._client_id[:8]}...")
 
         # flush() blocks on thread joins, so keep it off the event loop
-        await asyncio.get_running_loop().run_in_executor(None, self._flush_evals)
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, self._flush_evals)
+        except Exception as e:
+            logger.debug(f"[LucidicAI] Error flushing evals on async close: {e}")
 
         # Collect session IDs under lock (don't clear - let aend() handle removal)
         with self._session_lock:

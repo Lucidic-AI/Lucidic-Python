@@ -52,13 +52,15 @@ class WebhookCase:
     """One dispatched case. Ids are canonical lowercase uuid strings.
 
     ``session_id`` is the idempotency key: delivery is at-least-once, so
-    dedupe on it. Unknown top-level keys (e.g. tuner params) are kept,
-    read-only, in ``extra``.
+    dedupe on it. Equality and hashing use the ids only, so cases can go in a
+    set even when ``input`` is a dict. Unknown top-level keys (e.g. tuner
+    params) are kept in ``extra``, read-only at the top level only.
+    ``checkpoint_id`` is None when the key is absent or null.
     """
 
     session_id: str
     datasetitem_id: Optional[str] = None
-    input: Any = None
+    input: Any = field(default=None, compare=False)
     experiment_id: Optional[str] = None
     eval_run_id: Optional[str] = None
     checkpoint_id: Optional[str] = None
@@ -69,9 +71,6 @@ class WebhookCase:
         """Validate a decoded JSON body. Raises WebhookPayloadError."""
         if not isinstance(payload, dict):
             raise WebhookPayloadError("body must be a JSON object")
-        if "checkpoint_id" in payload and payload["checkpoint_id"] is None:
-            # the contract sends checkpoint_id only when a checkpoint is pre-linked
-            raise WebhookPayloadError("checkpoint_id, when present, must be a uuid")
         extra = {k: v for k, v in payload.items() if k not in _KNOWN_KEYS}
         return cls(
             session_id=_uuid_str(payload, "session_id", required=True),
