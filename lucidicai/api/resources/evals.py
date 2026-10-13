@@ -1,5 +1,6 @@
 """Evals resource API operations."""
 import logging
+import math
 import threading
 import time
 from typing import Any, Dict, Optional, Set, Union
@@ -8,8 +9,19 @@ from ..client import HttpClient
 
 logger = logging.getLogger("Lucidic")
 
-# how long close() waits for in-flight emit() posts before giving up.
+# default for how long close() waits for in-flight emit() posts before giving
+# up; per client via LucidicAI(eval_flush_timeout=...) or close(eval_flush_timeout=...).
 EVAL_FLUSH_TIMEOUT_SECONDS = 5.0
+
+
+def validate_flush_timeout(value: Any) -> float:
+    """Return ``value`` as seconds, or raise ValueError if it is not a finite number >= 0."""
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value < 0):
+        raise ValueError(
+            f"eval flush timeout must be a finite number of seconds >= 0, got {value!r}"
+        )
+    return float(value)
 
 
 def _truncate_id(id_str: Optional[str]) -> str:

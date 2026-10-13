@@ -200,3 +200,143 @@ def test_flush_with_nothing_pending_returns_at_once(client):
     started = time.monotonic()
     assert client.evals.flush(timeout=5) is True
     assert time.monotonic() - started < 1.0
+
+
+# ---- configurable timeout + shutdown budget (verify-sdk follow-up) -----------
+
+def _hang_evals(release):
+    def _hang(request):
+        release.wait(5)
+        return httpx.Response(201, json={})
+
+    return respx.post(_EVALS_ENDPOINT).mock(side_effect=_hang)
+
+
+def _make_client(**kwargs):
+    return LucidicAI(api_key="test-key", agent_id="aaaa1111-0000-0000-0000-000000000000",
+                     production=True, **kwargs)
+
+
+@respx.mock
+def test_client_setting_bounds_the_close_wait():
+    release = threading.Event()
+    _hang_evals(release)
+    c = _make_client(eval_flush_timeout=0.2)
+    c.evals.emit(result=0.4, session_id=_SESSION_ID)
+    try:
+        started = time.monotonic()
+        c.close()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert 0.15 <= elapsed < 1.0
+
+
+@respx.mock
+def test_close_keyword_overrides_the_client_setting(client):
+    release = threading.Event()
+    _hang_evals(release)
+    client.evals.emit(result=0.4, session_id=_SESSION_ID)
+    try:
+        started = time.monotonic()
+        client.close(eval_flush_timeout=0.2)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    # the client default is 5 s; the keyword wins.
+    assert 0.15 <= elapsed < 1.0
+
+
+@pytest.mark.parametrize("bad", [-1, float("nan"), float("inf"), "5", True])
+def test_invalid_eval_flush_timeout_is_rejected(bad):
+    with pytest.raises(ValueError):
+        LucidicAI(api_key="test-key", agent_id="aaaa1111-0000-0000-0000-000000000000",
+                  production=False, eval_flush_timeout=bad)
+
+
+@pytest.fixture
+def isolated_shutdown_manager(monkeypatch):
+    """The ShutdownManager singleton, with only this test's clients registered."""
+    from lucidicai.sdk.shutdown_manager import ShutdownManager
+
+    manager = ShutdownManager()
+    monkeypatch.setattr(manager, "_clients", {})
+    monkeypatch.setattr(manager, "active_sessions", {})
+    monkeypatch.setattr(manager, "shutdown_complete", threading.Event())
+    return manager
+
+
+@respx.mock
+def test_shutdown_shares_one_eval_flush_deadline_across_clients(isolated_shutdown_manager, monkeypatch):
+    manager = isolated_shutdown_manager
+    monkeypatch.setattr(manager, "eval_flush_budget", 0.3)
+    release = threading.Event()
+    _hang_evals(release)
+    clients = [_make_client() for _ in range(3)]
+    for c in clients:
+        c.evals.emit(result=0.5, session_id=_SESSION_ID)
+    try:
+        started = time.monotonic()
+        manager._perform_shutdown()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    # three hung clients share one 0.3 s budget (0.9 s if each got its own,
+    # 15 s with the 5 s client default).
+    assert elapsed >= 0.25
+    assert elapsed < 0.6
+    assert manager._clients == {}
+
+
+@respx.mock
+def test_shutdown_never_waits_longer_than_a_clients_own_setting(isolated_shutdown_manager):
+    release = threading.Event()
+    _hang_evals(release)
+    c = _make_client(eval_flush_timeout=0.2)
+    c.evals.emit(result=0.5, session_id=_SESSION_ID)
+    try:
+        started = time.monotonic()
+        isolated_shutdown_manager._perform_shutdown()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    # the shared budget is 5 s; the client's own 0.2 s is the tighter bound.
+    assert 0.15 <= elapsed < 1.0
+
+
+@pytest.mark.asyncio
+async def test_aclose_warns_when_the_flush_is_skipped(client, monkeypatch, caplog):
+    import logging
+
+    loop = asyncio.get_running_loop()
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError("cannot schedule new futures after shutdown")
+
+    monkeypatch.setattr(loop, "run_in_executor", _refuse)
+    caplog.set_level(logging.DEBUG, logger="Lucidic")
+    await client.aclose()
+
+    skipped = [r for r in caplog.records if "flush" in r.getMessage().lower()
+               and "cannot schedule" in r.getMessage()]
+    assert skipped and all(r.levelno == logging.WARNING for r in skipped)
+
+
+@pytest.mark.asyncio
+async def test_aclose_keyword_bounds_the_wait(client):
+    release = threading.Event()
+    with respx.mock:
+        _hang_evals(release)
+        client.evals.emit(result=0.4, session_id=_SESSION_ID)
+        try:
+            started = time.monotonic()
+            await client.aclose(eval_flush_timeout=0.2)
+            elapsed = time.monotonic() - started
+        finally:
+            release.set()
+    assert 0.15 <= elapsed < 1.0
+
+
+def test_close_rejects_an_invalid_keyword_timeout(client):
+    with pytest.raises(ValueError):
+        client.close(eval_flush_timeout=-1)
