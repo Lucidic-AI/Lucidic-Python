@@ -17,6 +17,7 @@ Example:
         my_function()
 """
 
+import asyncio
 import logging
 import os
 import threading
@@ -429,12 +430,23 @@ class LucidicAI:
 
     # ==================== Lifecycle ====================
 
+    def _flush_evals(self) -> None:
+        """Wait (bounded) for in-flight evals.emit() posts; never raises."""
+        try:
+            self.evals.flush()
+        except Exception as e:
+            logger.debug(f"[LucidicAI] Error flushing evals on close: {e}")
+
     def close(self) -> None:
         """Close the client and clean up resources.
 
-        This ends all active sessions and unregisters from telemetry.
+        This waits (bounded) for pending evals.emit() posts, ends all active
+        sessions and unregisters from telemetry.
         """
         logger.info(f"[LucidicAI] Closing client {self._client_id[:8]}...")
+
+        # deliver pending evals.emit() posts while their sessions are still open
+        self._flush_evals()
 
         # Collect session IDs under lock (don't clear - let end() handle removal)
         with self._session_lock:
@@ -476,6 +488,9 @@ class LucidicAI:
     async def aclose(self) -> None:
         """Close the client (async version)."""
         logger.info(f"[LucidicAI] Closing async client {self._client_id[:8]}...")
+
+        # flush() blocks on thread joins, so keep it off the event loop
+        await asyncio.get_running_loop().run_in_executor(None, self._flush_evals)
 
         # Collect session IDs under lock (don't clear - let aend() handle removal)
         with self._session_lock:
