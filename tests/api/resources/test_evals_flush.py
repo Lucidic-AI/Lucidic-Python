@@ -15,6 +15,7 @@ import pytest
 import respx
 
 from lucidicai import LucidicAI
+from lucidicai.sdk.context import current_client, current_session_id
 
 _BASE_URL = "https://stub.lucidic.test"
 _EVALS_ENDPOINT = f"{_BASE_URL}/sdk/evals"
@@ -22,6 +23,17 @@ _INITSESSION_ENDPOINT = f"{_BASE_URL}/initsession"
 _UPDATESESSION_ENDPOINT = f"{_BASE_URL}/updatesession"
 _SLOW_POST_SECONDS = 0.3
 _SESSION_ID = "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_context():
+    # sessions.create binds current_client/current_session_id and close() does
+    # not unbind them; reset so a closed client never leaks into later tests.
+    client_token = current_client.set(None)
+    session_token = current_session_id.set(None)
+    yield
+    current_session_id.reset(session_token)
+    current_client.reset(client_token)
 
 
 @pytest.fixture(autouse=True)

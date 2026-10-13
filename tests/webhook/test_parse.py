@@ -9,6 +9,7 @@ import pytest
 import respx
 
 from lucidicai import LucidicAI, webhook
+from lucidicai.sdk.context import current_client, current_session_id
 
 _SECRET = "test-signing-secret"
 _SESSION_ID = "6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b"
@@ -17,6 +18,17 @@ _EXPERIMENT_ID = "e0e0e0e0-aaaa-bbbb-cccc-dddddddddddd"
 _EVAL_RUN_ID = "beefbeef-0000-1111-2222-333344445555"
 _CHECKPOINT_ID = "c0c0c0c0-9999-8888-7777-666655554444"
 _BASE_URL = "https://stub.lucidic.test"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_context():
+    # sessions.create binds current_client/current_session_id and close() does
+    # not unbind them; reset so a closed client never leaks into later tests.
+    client_token = current_client.set(None)
+    session_token = current_session_id.set(None)
+    yield
+    current_session_id.reset(session_token)
+    current_client.reset(client_token)
 
 
 def _wire(payload) -> bytes:
