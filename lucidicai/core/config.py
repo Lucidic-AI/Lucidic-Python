@@ -223,10 +223,13 @@ class SDKConfig:
         
         if not self.api_key:
             errors.append("API key is required (LUCIDIC_API_KEY)")
-        
-        if not self.agent_id:
-            errors.append("Agent ID is required (LUCIDIC_AGENT_ID)")
-        
+
+        # agent_id is intentionally NOT required (LUC-926): a client may be
+        # constructed with just an api_key to run org-/id-scoped operations
+        # (agents/projects/usage, get-by-id). Agent-scoped operations (telemetry
+        # ingestion, prompt fetch, list-by-agent) guard with require_agent_id and
+        # raise AgentIdRequiredError when it's actually needed but absent.
+
         if self.blob_threshold < 1024:
             errors.append("Blob threshold must be at least 1024 bytes")
         

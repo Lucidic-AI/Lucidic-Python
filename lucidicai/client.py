@@ -24,14 +24,20 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from .api.client import HttpClient
+from .api.resources.agents import AgentsResource
+from .api.resources.evaluator_results import EvaluatorResultsResource
+from .api.resources.evaluators import EvaluatorsResource
+from .api.resources.projects import ProjectsResource
+from .api.resources.resources import ResourcesResource
 from .api.resources.session import SessionResource
+from .api.resources.usage import UsageResource
 from .api.resources.event import EventResource
 from .api.resources.dataset import DatasetResource
 from .api.resources.experiment import ExperimentResource
 from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
 from .api.resources.evals import EvalsResource
-from .api.resources.evosim import EvoSimResource
+from .api.resources.evosim import EvoSimsResource
 from .api.resources.mock_call import MockCallResource
 from .sdk.training_modules.resource import TrainingModulesResource
 from .sdk.tools.resource import ToolsResource
@@ -155,6 +161,12 @@ class LucidicAI:
 
         # Initialize API resources
         self._resources: Dict[str, Any] = {
+            "agents": AgentsResource(self._http),
+            "evaluators": EvaluatorsResource(self._http, self._config.agent_id),
+            "evaluator_results": EvaluatorResultsResource(self._http),
+            "projects": ProjectsResource(self._http),
+            "resources": ResourcesResource(self._http),
+            "usage": UsageResource(self._http),
             "sessions": SessionResource(self._http, self, self._config, self._production),
             "events": EventResource(self._http, self._production),
             "datasets": DatasetResource(self._http, self._config.agent_id, self._production),
@@ -162,7 +174,7 @@ class LucidicAI:
             "prompts": PromptResource(self._http, self._config, self._production),
             "feature_flags": FeatureFlagResource(self._http, self._config.agent_id, self._production),
             "evals": EvalsResource(self._http, self._production),
-            "evosims": EvoSimResource(self._http, self._config.agent_id, self._production),
+            "evosims": EvoSimsResource(self._http, self._config.agent_id, self._production),
             "mock_calls": MockCallResource(self._http, self._production),
         }
 
@@ -239,6 +251,61 @@ class LucidicAI:
     def is_valid(self) -> bool:
         """Check if the client is properly configured."""
         return self._valid
+
+    @property
+    def agents(self) -> AgentsResource:
+        """Access agent reads (LUC-906): ``list()`` / ``get(id)`` + ``tool_catalog(id)``.
+
+        Enumerate the org's agents (discover their ``agent_id`` s), read one
+        back, or inspect an agent's tool catalog. (A client still needs an
+        ``agent_id`` to construct today; a read-only bootstrap mode is a planned
+        follow-up.)
+        """
+        return self._resources["agents"]
+
+    @property
+    def evaluators(self) -> EvaluatorsResource:
+        """Access evaluator reads (LUC-910): ``list()`` / ``get(id)``,
+        ``evals(id)`` (one evaluator's result distribution), and ``result(id)``
+        (a single evaluator result by id).
+
+        Distinct from ``client.evals`` (ad-hoc score ``emit``).
+        """
+        return self._resources["evaluators"]
+
+    @property
+    def evaluator_results(self) -> EvaluatorResultsResource:
+        """Read a single evaluator result by its id (LUC-910):
+        ``client.evaluator_results.get(eval_id)``.
+
+        Keyed by an ``EvalResult`` id — distinct from the evaluator-keyed reads
+        on ``client.evaluators``.
+        """
+        return self._resources["evaluator_results"]
+
+    @property
+    def projects(self) -> ProjectsResource:
+        """Access project CRUD (LUC-913): ``list`` / ``create`` / ``get`` /
+        ``update`` / ``delete``. Org-scoped; ``delete`` un-projects agents
+        (SET_NULL) rather than destroying them.
+        """
+        return self._resources["projects"]
+
+    @property
+    def resources(self) -> ResourcesResource:
+        """Access SQL-substrate Resource CRUD (LUC-917): ``list`` / ``create`` /
+        ``get`` / ``update`` / ``delete``. Org-scoped definitions of external
+        services the client mocks at runtime (SQL / API / CUSTOM), attached to
+        Datasets and Tools. ``delete`` is protected while the resource is in use.
+        """
+        return self._resources["resources"]
+
+    @property
+    def usage(self) -> UsageResource:
+        """Access org-aggregated usage counters (LUC-911):
+        ``client.usage.get()`` returns a read-only ``{stat_name: total}`` mapping.
+        """
+        return self._resources["usage"]
 
     @property
     def tools(self) -> ToolsResource:
@@ -350,8 +417,10 @@ class LucidicAI:
         return self._resources["evals"]
 
     @property
-    def evosims(self) -> EvoSimResource:
-        """Access EvoSim resource for agent optimization runs.
+    def evosims(self) -> EvoSimsResource:
+        """Access EvoSim run management (LUC-923): ``train`` kickoff, ``list`` /
+        ``get`` runs, ``cancel``, ``iteration_instances``, and ``wait_for`` a run to
+        a terminal status.
 
         Example:
             result = client.evosims.train("training_config.json")

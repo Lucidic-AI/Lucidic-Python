@@ -2,9 +2,14 @@
 import logging
 import threading
 import uuid
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, TYPE_CHECKING
+from urllib.parse import quote
 
 from ..client import HttpClient
+from ..models import session as session_models
+from ..models.base import CursorPage
+from ..pagination import apaginate, paginate
+from ...core.errors import require_agent_id
 
 if TYPE_CHECKING:
     from ...client import LucidicAI
@@ -98,6 +103,11 @@ class SessionResource:
                     auto_end=False,
                 )
             raise LucidicError("Client is not properly configured")
+
+        # LUC-926: a session must attach to an agent. Raise loudly (even in
+        # production) BEFORE the swallow below, rather than POST a null agent_id
+        # and silently drop this session + all its events.
+        require_agent_id(self._config.agent_id, "sessions.create")
 
         # Use client's auto_end by default
         if auto_end is None:
@@ -205,6 +215,9 @@ class SessionResource:
                     auto_end=False,
                 )
             raise LucidicError("Client is not properly configured")
+
+        # LUC-926: same guard as create() — raise before the swallow.
+        require_agent_id(self._config.agent_id, "sessions.create")
 
         if auto_end is None:
             auto_end = self._config.auto_end
@@ -403,16 +416,97 @@ class SessionResource:
         )
         return response
 
-    def get(self, session_id: str) -> Dict[str, Any]:
-        """Get a session by ID.
+    # ==================== v2 reads (LUC-907) ====================
+    #
+    # These reads are data-bearing, so — unlike the telemetry lifecycle methods
+    # above — they do NOT swallow errors in production: a failure raises the
+    # typed LucidicError the transport decoded. Each has an async sibling.
 
-        Args:
-            session_id: Session ID
+    def get(self, session_id: str) -> "session_models.SessionTrace":
+        """Read a session's detail + trace (LUC-817).
 
-        Returns:
-            Session data
+        Accepts the session UUID or the client-supplied ``custom_session_id``.
+        Returns a ``SessionTrace`` (session meta + flat ``occurred_at``-ordered
+        events); use ``.tree()`` to rebuild the parent/child tree.
         """
-        return self.http.get(f"sessions/{session_id}")
+        return session_models.SessionTrace.from_dict(
+            self.http.get(f"sdk/v2/sessions/{quote(session_id, safe='')}")
+        )
+
+    async def aget(self, session_id: str) -> "session_models.SessionTrace":
+        """Async sibling of ``get``."""
+        return session_models.SessionTrace.from_dict(
+            await self.http.aget(f"sdk/v2/sessions/{quote(session_id, safe='')}")
+        )
+
+    def evaluator_results(self, session_id: str) -> "session_models.SessionEvaluatorResults":
+        """A session's eval scores: session-level ``evals`` + event-level
+        ``event_evals`` (accepts a UUID or ``custom_session_id``)."""
+        return session_models.SessionEvaluatorResults.from_dict(
+            self.http.get(f"sdk/v2/sessions/{quote(session_id, safe='')}/evaluator-results")
+        )
+
+    async def aevaluator_results(self, session_id: str) -> "session_models.SessionEvaluatorResults":
+        """Async sibling of ``evaluator_results``."""
+        return session_models.SessionEvaluatorResults.from_dict(
+            await self.http.aget(f"sdk/v2/sessions/{quote(session_id, safe='')}/evaluator-results")
+        )
+
+    def event(self, session_id: str, event_id: str, *, raw: bool = False) -> "session_models.Event":
+        """Read one event of a session. ``raw=True`` returns the complete
+        payload — inline in ``.payload`` (<2 MB) or a short-lived presigned
+        ``.blob_url`` for an offloaded payload (fetch the bytes with
+        ``lucidicai.api.downloads.fetch_presigned``)."""
+        params = {"raw": "true"} if raw else None
+        return session_models.Event.from_dict(
+            self.http.get(f"sdk/v2/sessions/{quote(session_id, safe='')}/events/{event_id}", params)
+        )
+
+    async def aevent(self, session_id: str, event_id: str, *, raw: bool = False) -> "session_models.Event":
+        """Async sibling of ``event``."""
+        params = {"raw": "true"} if raw else None
+        return session_models.Event.from_dict(
+            await self.http.aget(f"sdk/v2/sessions/{quote(session_id, safe='')}/events/{event_id}", params)
+        )
+
+    def finish(self, session_ids: List[str]) -> int:
+        """Bulk-finish sessions by id (POST /sdk/v2/sessions/finish; needs
+        ``session:write``). Idempotent and best-effort — unknown, cross-org,
+        already-finished, non-UUID, or (for an agent-bound key) other-agent ids are
+        silently skipped, and the call still succeeds. Finishing marks each session
+        finished, recomputes its status, and — when it has evaluators — kicks off
+        async evaluation/summarization. Unlike the single-session gen-3 ``update``,
+        this only closes sessions; it does not set per-session success/eval/tags.
+        Returns the number of sessions matched and finished.
+
+        Data-bearing write — raises the typed transport error (does not swallow),
+        unlike the gen-3 ``create``/``end`` above."""
+        resp = self.http.post("sdk/v2/sessions/finish", self._finish_body(session_ids))
+        return self._finished_count(resp)
+
+    async def afinish(self, session_ids: List[str]) -> int:
+        """Async sibling of ``finish``."""
+        resp = await self.http.apost("sdk/v2/sessions/finish", self._finish_body(session_ids))
+        return self._finished_count(resp)
+
+    @staticmethod
+    def _finish_body(session_ids: List[str]) -> Dict[str, Any]:
+        # Guard the bare-string footgun: finish("<uuid>") would list()-split the
+        # string into single-char ids the backend silently drops (→ a misleading 0).
+        # The sibling get()/end()/event() take a bare str, so this mistake is easy;
+        # fail loudly instead, matching _filter_params' TypeError discipline.
+        if isinstance(session_ids, (str, bytes)):
+            raise TypeError(
+                "session_ids must be a list of session ids, not a single string — "
+                "wrap it in a list, e.g. finish([session_id])."
+            )
+        return {"session_ids": list(session_ids)}
+
+    @staticmethod
+    def _finished_count(resp: Dict[str, Any]) -> int:
+        # `or 0` (not a .get default) so a present-but-null count degrades to 0
+        # rather than raising int(None).
+        return int(resp.get("num_sessions_finished") or 0)
 
     def update(self, session_id: str, **updates) -> Dict[str, Any]:
         """Update an existing session.
@@ -485,34 +579,133 @@ class SessionResource:
 
     def list(
         self,
-        agent_id: Optional[str] = None,
+        agent_id: str,
+        *,
         experiment_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0
-    ) -> Dict[str, Any]:
-        """List sessions with optional filters.
+        production: Optional[bool] = None,
+        cost: Optional[str] = None,
+        duration: Optional[str] = None,
+        num_events: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        status: Optional[str] = None,
+        eval_bool: Optional[Any] = None,
+        eval_number: Optional[Any] = None,
+        eval_string: Optional[Any] = None,
+        ordering: Optional[str] = None,
+        page_size: Optional[int] = None,
+    ) -> Iterator["session_models.Session"]:
+        """Lazily iterate an agent's sessions, following pages (LUC-816).
 
-        Args:
-            agent_id: Filter by agent ID
-            experiment_id: Filter by experiment ID
-            limit: Maximum number of sessions
-            offset: Pagination offset
+        Filters (all optional): ``experiment_id``; ``production`` (bool);
+        ``cost`` / ``duration`` / ``num_events`` as ``"min:max"`` range strings
+        (either side may be blank); ``tags`` (list, AND-matched); ``status``;
+        and the repeatable eval filters ``eval_bool`` (``"name:true"`` /
+        ``"name:false"``), ``eval_number`` (``"name:min:max"``), ``eval_string``
+        (``"name:value"``) — each takes a single string or a list of them.
+        ``ordering`` accepts ``start_time`` / ``id`` (± prefix); backend default
+        is newest-first.
 
-        Returns:
-            List of sessions and pagination info
+        Lazy generator: request errors surface on first iteration. Use
+        ``count()`` for a cheap total, ``list_page()`` for eager single-page.
         """
-        params: Dict[str, Any] = {
-            "limit": limit,
-            "offset": offset
-        }
+        base = self._filter_params(agent_id, {
+            "experiment_id": experiment_id, "production": production, "cost": cost,
+            "duration": duration, "num_events": num_events, "tags": tags,
+            "status": status, "eval_bool": eval_bool, "eval_number": eval_number,
+            "eval_string": eval_string, "ordering": ordering, "page_size": page_size,
+        })
+        return paginate(
+            lambda cursor: self._page_get(base, cursor), model=session_models.Session
+        )
 
-        if agent_id:
-            params["agent_id"] = agent_id
+    def alist(self, agent_id: str, **filters: Any) -> AsyncIterator["session_models.Session"]:
+        """Async sibling of ``list`` (same filter kwargs)."""
+        base = self._filter_params(agent_id, filters)
+        return apaginate(
+            lambda cursor: self._apage_get(base, cursor), model=session_models.Session
+        )
 
-        if experiment_id:
-            params["experiment_id"] = experiment_id
+    def list_page(
+        self, agent_id: str, *, cursor: Optional[str] = None, **filters: Any
+    ) -> CursorPage:
+        """Fetch a single page of sessions (manual pagination control)."""
+        return CursorPage.from_body(
+            self._page_get(self._filter_params(agent_id, filters), cursor),
+            model=session_models.Session,
+        )
 
-        return self.http.get("sessions", params)
+    async def alist_page(
+        self, agent_id: str, *, cursor: Optional[str] = None, **filters: Any
+    ) -> CursorPage:
+        """Async sibling of ``list_page``."""
+        body = await self._apage_get(self._filter_params(agent_id, filters), cursor)
+        return CursorPage.from_body(body, model=session_models.Session)
+
+    def count(self, agent_id: str, **filters: Any) -> int:
+        """Cheap total for the filtered set via HEAD (``X-Total-Count``), no
+        paging. Same filter kwargs as ``list``."""
+        headers = self.http.head("sdk/v2/sessions", self._filter_params(agent_id, filters))
+        return int(headers.get("X-Total-Count") or 0)
+
+    async def acount(self, agent_id: str, **filters: Any) -> int:
+        """Async sibling of ``count``."""
+        headers = await self.http.ahead("sdk/v2/sessions", self._filter_params(agent_id, filters))
+        return int(headers.get("X-Total-Count") or 0)
+
+    def tags(self, agent_id: str, **filters: Any) -> List[str]:
+        """The tag set for the filtered query via HEAD (``X-Tags``), no paging."""
+        headers = self.http.head("sdk/v2/sessions", self._filter_params(agent_id, filters))
+        return [t for t in headers.get("X-Tags", "").split(",") if t]
+
+    async def atags(self, agent_id: str, **filters: Any) -> List[str]:
+        """Async sibling of ``tags``."""
+        headers = await self.http.ahead("sdk/v2/sessions", self._filter_params(agent_id, filters))
+        return [t for t in headers.get("X-Tags", "").split(",") if t]
+
+    # ---- list internals ----
+
+    _FILTER_KEYS = frozenset({
+        "experiment_id", "production", "cost", "duration", "num_events", "tags",
+        "status", "eval_bool", "eval_number", "eval_string", "ordering", "page_size",
+    })
+
+    @classmethod
+    def _filter_params(cls, agent_id: str, f: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the /sdk/v2/sessions query params from the filter kwargs,
+        omitting unset ones. Shared by list / list_page / count / tags.
+
+        An unknown filter name raises TypeError: the ``**filters`` methods
+        (count/tags/list_page) would otherwise silently ignore a typo like
+        ``experiment=`` and return the *unfiltered* result — a wrong number
+        with no error."""
+        unknown = set(f) - cls._FILTER_KEYS
+        if unknown:
+            raise TypeError(f"unknown session filter(s): {sorted(unknown)}")
+        params: Dict[str, Any] = {"agent_id": agent_id}
+        for key in ("experiment_id", "status", "cost", "duration", "num_events",
+                    "ordering", "page_size", "eval_bool", "eval_number", "eval_string"):
+            value = f.get(key)
+            if value is not None:
+                params[key] = value
+        production = f.get("production")
+        if production is not None:
+            params["production"] = "true" if production else "false"
+        tags = f.get("tags")
+        if tags:
+            params["tags"] = ",".join(tags) if isinstance(tags, (list, tuple)) else tags
+        return params
+
+    def _page_get(self, base: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base)
+        if cursor:
+            params["cursor"] = cursor
+        return self.http.get("sdk/v2/sessions", params)
+
+    async def _apage_get(self, base: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
+        params = dict(base)
+        if cursor:
+            params["cursor"] = cursor
+        return await self.http.aget("sdk/v2/sessions", params)
 
     # ==================== Asynchronous HTTP Methods ====================
 
@@ -541,17 +734,6 @@ class SessionResource:
             f"session_id={_truncate_id(resp_session_id)}, response_keys={list(response.keys()) if response else 'None'}"
         )
         return response
-
-    async def aget(self, session_id: str) -> Dict[str, Any]:
-        """Get a session by ID (asynchronous).
-
-        Args:
-            session_id: Session ID
-
-        Returns:
-            Session data
-        """
-        return await self.http.aget(f"sessions/{session_id}")
 
     async def aupdate(self, session_id: str, **updates) -> Dict[str, Any]:
         """Update an existing session (asynchronous).
@@ -620,34 +802,3 @@ class SessionResource:
             updates["is_successful_reason"] = is_successful_reason
 
         return await self.aupdate(session_id, **updates)
-
-    async def alist(
-        self,
-        agent_id: Optional[str] = None,
-        experiment_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0
-    ) -> Dict[str, Any]:
-        """List sessions with optional filters (asynchronous).
-
-        Args:
-            agent_id: Filter by agent ID
-            experiment_id: Filter by experiment ID
-            limit: Maximum number of sessions
-            offset: Pagination offset
-
-        Returns:
-            List of sessions and pagination info
-        """
-        params: Dict[str, Any] = {
-            "limit": limit,
-            "offset": offset
-        }
-
-        if agent_id:
-            params["agent_id"] = agent_id
-
-        if experiment_id:
-            params["experiment_id"] = experiment_id
-
-        return await self.http.aget("sessions", params)

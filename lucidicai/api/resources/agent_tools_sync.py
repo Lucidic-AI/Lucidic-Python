@@ -19,10 +19,7 @@ Backend contract (``api/views/sdk_agent_tools.py``, frozen):
 import logging
 from typing import Any, Dict, List
 
-import httpx
-
 from ..client import HttpClient
-from ...core.errors import LucidicError
 
 logger = logging.getLogger("Lucidic")
 
@@ -52,21 +49,17 @@ class SyncAgentToolsResource:
         "drift_count": int, ...}}`` (exact shape is informational; the
         SDK only checks synced=True).
 
-        Raises ``LucidicError`` on any non-2xx. The validation-failure
-        path (422) carries a structured error body in
-        ``exc.response.json()["errors"]`` — surfaced inline in the
-        exception message so callers see the bad payload field without
-        manual parsing.
+        Raises a typed ``LucidicError`` on any non-2xx. A 422 validation
+        failure surfaces as ``ValidationError`` with the ``{<field>: [...]}}``
+        payload on ``.details``; a 503 (lock contention) is retried by the
+        transport first, then raised as ``ServiceUnavailableError``.
         """
         body = {"agent_id": agent_id, "tools": tools}
         logger.debug(
             "[SyncAgentToolsResource] syncing %d tool(s) for agent %s",
             len(tools), agent_id[:8] + "...",
         )
-        try:
-            return self.http.post("sdk/agent-tools/sync", body)
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_sync_error(exc)) from exc
+        return self.http.post("sdk/agent-tools/sync", body)
 
     async def async_sync(
         self,
@@ -76,26 +69,4 @@ class SyncAgentToolsResource:
     ) -> Dict[str, Any]:
         """Async sibling of ``sync``."""
         body = {"agent_id": agent_id, "tools": tools}
-        try:
-            return await self.http.apost("sdk/agent-tools/sync", body)
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_sync_error(exc)) from exc
-
-
-def _format_sync_error(exc: httpx.HTTPStatusError) -> str:
-    """Best-effort human-readable error from a non-2xx /sdk/agent-tools/sync.
-
-    422 carries ``{"errors": {<field>: [...messages]}}`` from
-    Tool.clean; 503 carries ``{"error": <str>}``; other shapes fall
-    back to status + raw body.
-    """
-    try:
-        body = exc.response.json()
-    except ValueError:
-        return f"HTTP {exc.response.status_code}: {exc.response.text or 'no body'}"
-    if isinstance(body, dict):
-        if "errors" in body:
-            return f"HTTP {exc.response.status_code} validation: {body['errors']}"
-        if "error" in body:
-            return f"HTTP {exc.response.status_code}: {body['error']}"
-    return f"HTTP {exc.response.status_code}: {body!r}"
+        return await self.http.apost("sdk/agent-tools/sync", body)

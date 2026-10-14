@@ -4,14 +4,56 @@ This module contains only the HTTP client logic using httpx,
 supporting both synchronous and asynchronous operations.
 """
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
 
 from ..core.config import SDKConfig, get_config
-from ..core.errors import APIKeyVerificationError
+from ..core.errors import exception_from_response
 from ..utils.logger import debug, info, warning, error, mask_sensitive, truncate_data
+
+
+# Status codes the transport retries with backoff (LUC-901). Connection-level
+# failures are retried separately by the httpx transport's own ``retries=``.
+# 429 (throttled) and 503 (unavailable / workflow couldn't start) are retried.
+_RETRY_STATUSES = frozenset({429, 503})
+
+# Retries are gated to idempotent methods. A POST/PATCH may have committed a
+# write before the backend returned 429/503 — the EvoSim kickoff, for example,
+# commits the run row and only then 503s if Temporal can't start — so a blind
+# retry would duplicate it. GET/HEAD/PUT/DELETE are safe to replay. Trigger
+# endpoints that want at-least-once retry need a server-side idempotency key
+# first (LUC-808); until then POST/PATCH fail fast, as they did pre-C0.
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
+
+# Hard ceiling on a single retry sleep, so a large (or proxy-injected)
+# ``Retry-After`` can't pin the calling thread for minutes/hours.
+_MAX_RETRY_DELAY_SECONDS = 30.0
+
+
+def _parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """Parse a ``Retry-After: <seconds>`` header. The HTTP-date form is not
+    supported (returns None → caller falls back to computed backoff)."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _retry_delay(response: httpx.Response, attempt: int, backoff: float) -> float:
+    """Seconds to wait before the next attempt: honor ``Retry-After`` when the
+    server sends it, else exponential backoff (``backoff * 2**attempt``).
+
+    Clamped to ``_MAX_RETRY_DELAY_SECONDS`` so a huge or proxy-injected
+    ``Retry-After`` can't block the caller for minutes/hours.
+    """
+    retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+    delay = retry_after if retry_after is not None else backoff * (2 ** attempt)
+    return min(delay, _MAX_RETRY_DELAY_SECONDS)
 
 
 class HttpClient:
@@ -123,35 +165,35 @@ class HttpClient:
         data["current_time"] = datetime.now(timezone.utc).isoformat()
         return data
     
-    def _handle_response(self, response: httpx.Response) -> Dict[str, Any]:
-        """Handle HTTP response and parse JSON.
-        
-        Args:
-            response: httpx Response object
-            
-        Returns:
-            Response data as dictionary
-            
-        Raises:
-            APIKeyVerificationError: On 401 Unauthorized responses
-            httpx.HTTPStatusError: On other HTTP errors
+    def _raise_if_error(self, response: httpx.Response) -> None:
+        """Decode a non-2xx response and raise a typed ``LucidicError`` (LUC-900).
+
+        The single decode point: the backend ``{"error": ...}`` /
+        ``{"detail": ...}`` / mock-call ``{"error": {"code"}}`` envelopes all
+        map to typed exceptions via ``exception_from_response``. No-op on 2xx.
         """
-        # Log and raise for HTTP errors
-        if not response.is_success:
-            try:
-                error_data = response.json()
-                error_msg = error_data.get('detail', response.text)
-            except Exception:
-                error_msg = response.text
-            
-            error(f"[HTTP] Error {response.status_code}: {error_msg}")
-            
-            # Raise specific error for authentication/authorization failures
-            if response.status_code in (401, 403):
-                raise APIKeyVerificationError(f"Authentication failed: {error_msg}")
-        
-        response.raise_for_status()
-        
+        if response.is_success:
+            return
+        text = response.text
+        try:
+            body = response.json()
+        except Exception:
+            body = None
+        retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+        exc = exception_from_response(
+            response.status_code, body, text, retry_after=retry_after
+        )
+        error(f"[HTTP] Error {response.status_code}: {exc}")
+        raise exc
+
+    def _handle_response(self, response: httpx.Response) -> Dict[str, Any]:
+        """Raise a typed error on non-2xx, else parse and return the JSON body.
+
+        Raises:
+            LucidicError subclass: on any non-2xx response (see ``core.errors``).
+        """
+        self._raise_if_error(response)
+
         # Parse JSON response
         try:
             data = response.json()
@@ -162,10 +204,82 @@ class HttpClient:
             else:
                 # Return text if not JSON
                 data = {"response": response.text}
-        
+
         debug(f"[HTTP] Response ({response.status_code}): {truncate_data(data)}")
-        
+
         return data
+
+    def _send_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> httpx.Response:
+        """Send one request, retrying transient 429/503 on idempotent methods (LUC-901).
+
+        Connection-level failures are retried by the httpx transport's own
+        ``retries=``; this loop adds status-based retries for 429/503, but only
+        for idempotent methods (GET/HEAD/PUT/DELETE) — a POST/PATCH may have
+        committed a write before the error, so retrying could duplicate it.
+        Delays honor ``Retry-After`` (capped). Returns the final response (which
+        may still be an error — ``_handle_response`` types it).
+        """
+        max_retries = self.config.network.max_retries
+        backoff = self.config.network.backoff_factor
+        attempt = 0
+        while True:
+            response = self.sync_client.request(
+                method=method, url=url, params=params, json=json, **kwargs
+            )
+            retryable = (
+                method.upper() in _IDEMPOTENT_METHODS
+                and response.status_code in _RETRY_STATUSES
+            )
+            if retryable and attempt < max_retries:
+                delay = _retry_delay(response, attempt, backoff)
+                warning(
+                    f"[HTTP] {response.status_code} on {method} {url}; "
+                    f"retry {attempt + 1}/{max_retries} in {delay:.2f}s"
+                )
+                time.sleep(delay)
+                attempt += 1
+                continue
+            return response
+
+    async def _asend_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> httpx.Response:
+        """Async sibling of ``_send_with_retry``."""
+        max_retries = self.config.network.max_retries
+        backoff = self.config.network.backoff_factor
+        attempt = 0
+        while True:
+            response = await self.async_client.request(
+                method=method, url=url, params=params, json=json, **kwargs
+            )
+            retryable = (
+                method.upper() in _IDEMPOTENT_METHODS
+                and response.status_code in _RETRY_STATUSES
+            )
+            if retryable and attempt < max_retries:
+                delay = _retry_delay(response, attempt, backoff)
+                warning(
+                    f"[HTTP] {response.status_code} on {method} {url}; "
+                    f"retry {attempt + 1}/{max_retries} in {delay:.2f}s"
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+                continue
+            return response
     
     # ==================== Synchronous Methods ====================
     
@@ -220,18 +334,53 @@ class HttpClient:
         data = self._add_timestamp(data)
         return self.request("PATCH", endpoint, json=data)
 
-    def delete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def delete(self, endpoint: str, params: Optional[Dict[str, Any]] = None,
+               data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Make a synchronous DELETE request.
-        
+
         Args:
             endpoint: API endpoint (without base URL)
             params: Query parameters
-            
+            data: Optional JSON body. Most deletes carry none; a few endpoints
+                take a small flag in the DELETE body (e.g. the experiments
+                delete's ``delete_sessions``).
+
         Returns:
             Response data as dictionary
+
+        Note:
+            DELETE is auto-retried on a 429/503 status (it is idempotent). One benign
+            edge for a *destructive* delete: if the backend commits the delete and
+            then a 429/503 comes back (e.g. a gateway/load-balancer 503 during a
+            deploy or drain), the retry can hit a 404 and surface as ``NotFoundError``
+            even though the delete actually succeeded. This is rare — the delete paths
+            dispatch no async work, so the retryable status can only originate at an
+            infra layer, not the backend — and harmless (the resource is gone either
+            way). The clean fix is request idempotency keys, deferred until mutation
+            retry-safety is worth building.
         """
-        return self.request("DELETE", endpoint, params=params)
-    
+        return self.request("DELETE", endpoint, params=params, json=data)
+
+    def head(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> httpx.Headers:
+        """Make a synchronous HEAD request and return the response headers (LUC-903).
+
+        List endpoints answer HEAD with counts in headers (e.g. ``X-Total-Count``,
+        and sessions' ``X-Tags``) so callers can get a cheap count/tag summary
+        without paging. Raises a typed error on non-2xx.
+
+        Args:
+            endpoint: API endpoint (without base URL)
+            params: Query parameters (same filters as the matching ``.list()``)
+
+        Returns:
+            The response headers (case-insensitive ``httpx.Headers``).
+        """
+        url = f"/{endpoint}"
+        debug(f"[HTTP] HEAD {self.base_url}{url}")
+        response = self._send_with_retry("HEAD", url, params=params)
+        self._raise_if_error(response)
+        return response.headers
+
     def request(
         self,
         method: str,
@@ -264,14 +413,8 @@ class HttpClient:
         if json:
             debug(f"[HTTP] Request body: {truncate_data(mask_sensitive(json))}")
         
-        response = self.sync_client.request(
-            method=method,
-            url=url,
-            params=params,
-            json=json,
-            **kwargs
-        )
-        
+        response = self._send_with_retry(method, url, params=params, json=json, **kwargs)
+
         return self._handle_response(response)
     
     # ==================== Asynchronous Methods ====================
@@ -327,18 +470,28 @@ class HttpClient:
         data = self._add_timestamp(data)
         return await self.arequest("PATCH", endpoint, json=data)
 
-    async def adelete(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def adelete(self, endpoint: str, params: Optional[Dict[str, Any]] = None,
+                      data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Make an asynchronous DELETE request.
-        
+
         Args:
             endpoint: API endpoint (without base URL)
             params: Query parameters
-            
+            data: Optional JSON body (see ``delete``).
+
         Returns:
             Response data as dictionary
         """
-        return await self.arequest("DELETE", endpoint, params=params)
-    
+        return await self.arequest("DELETE", endpoint, params=params, json=data)
+
+    async def ahead(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> httpx.Headers:
+        """Async sibling of ``head`` (LUC-903)."""
+        url = f"/{endpoint}"
+        debug(f"[HTTP] HEAD {self.base_url}{url}")
+        response = await self._asend_with_retry("HEAD", url, params=params)
+        self._raise_if_error(response)
+        return response.headers
+
     async def arequest(
         self,
         method: str,
@@ -371,14 +524,8 @@ class HttpClient:
         if json:
             debug(f"[HTTP] Request body: {truncate_data(mask_sensitive(json))}")
         
-        response = await self.async_client.request(
-            method=method,
-            url=url,
-            params=params,
-            json=json,
-            **kwargs
-        )
-        
+        response = await self._asend_with_retry(method, url, params=params, json=json, **kwargs)
+
         return self._handle_response(response)
     
     # ==================== Lifecycle Methods ====================
