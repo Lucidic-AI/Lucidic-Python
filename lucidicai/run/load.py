@@ -1,6 +1,7 @@
 """``lucidicai.load()``: one Run from a webhook delivery, ``$LUCIDIC_RUN`` or ``--lucidic-run``.
 
-Payload contract: mvp-build/specs/webhook-signing.md, "Payload (runner contract)".
+Payload: ``session_id`` (required); ``datasetitem_id``, ``experiment_id``,
+``checkpoint_id``, ``eval_run_id`` and ``input`` (optional); other keys go to ``params``.
 """
 import json
 import os

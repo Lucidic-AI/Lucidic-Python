@@ -108,3 +108,11 @@ def test_production_client_empty_prompt_uses_the_default():
 async def test_aprompt(run):
     respx.get(_PROMPTS).mock(return_value=httpx.Response(200, json={"prompt_content": "pinned"}))
     assert await run.aprompt("system", default=_DEFAULT) == "pinned"
+
+
+@respx.mock
+def test_register_network_error_still_returns_the_default(run, caplog):
+    _missing()
+    respx.post(_CREATE).mock(side_effect=httpx.ConnectError("down"))
+    assert run.prompt("system", default=_DEFAULT, register=True) == _DEFAULT
+    assert "could not register" in caplog.text

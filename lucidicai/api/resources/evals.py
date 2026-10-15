@@ -9,8 +9,7 @@ from ..client import HttpClient
 
 logger = logging.getLogger("Lucidic")
 
-# default for how long close() waits for in-flight emit() posts before giving
-# up; per client via LucidicAI(eval_flush_timeout=...) or close(eval_flush_timeout=...).
+# default close() wait for in-flight emit() posts
 EVAL_FLUSH_TIMEOUT_SECONDS = 5.0
 
 
@@ -193,8 +192,7 @@ class EvalsResource:
                 with self._pending_lock:
                     self._pending.discard(threading.current_thread())
 
-        # daemon so a hung post never blocks interpreter exit; flush() (called
-        # by client.close()) is what waits for delivery.
+        # daemon so a hung post never blocks exit; flush() waits
         thread = threading.Thread(target=_background_emit, daemon=True)
         with self._pending_lock:
             self._pending.add(thread)

@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
 
-from ..core.errors import ConflictError, InvalidOperationError, LucidicError, NotFoundError
+from ..core.errors import ConflictError, InvalidOperationError, NotFoundError
 from ..sdk.tools.context import MockContext, _current_mock_context, bind_mock_context, clear_mock_context
 from ..session_obj import Session
 from .tools import RunTools
@@ -39,7 +39,8 @@ class Run:
     (fixtures bound, so ``@mockable`` tools are answered from the case data),
     then on exit flushes ``evals.emit`` posts and ends the session. A Run is
     entered once. Prompts and tools are resolved once per run and reused, also
-    by subprocesses given ``to_env()`` or ``to_json()``.
+    by subprocesses given ``to_env()`` or ``to_json()``. The exit flush waits
+    for all of the client's pending ``evals.emit`` posts, not only this run's.
 
     ``session_id`` is the idempotency key: deliveries are at-least-once.
     """
@@ -103,7 +104,8 @@ class Run:
     ) -> str:
         """The run's version of prompt ``name``: checkpoint-pinned > ``label`` > ``default``.
 
-        Resolved once per run. Only a missing prompt falls back to ``default``;
+        Resolved once per run, so ``label`` is fixed by the first call for a
+        name. Only a missing prompt falls back to ``default``;
         other errors raise, so a checkpoint run never silently grades the
         baseline. ``register=True`` creates a missing prompt from ``default``
         (best effort, needs ``prompt:write``).
@@ -160,7 +162,7 @@ class Run:
             self.client.prompts.create(name, content)
         except ConflictError:
             pass  # another worker registered it first
-        except LucidicError as e:
+        except Exception as e:  # best effort: the default is already in hand
             logger.warning(f"[Run] could not register prompt {name!r}: {e}")
 
     async def _aregister(self, name: str, content: str) -> None:
@@ -168,21 +170,29 @@ class Run:
             await self.client.prompts.acreate(name, content)
         except ConflictError:
             pass
-        except LucidicError as e:
+        except Exception as e:  # best effort: the default is already in hand
             logger.warning(f"[Run] could not register prompt {name!r}: {e}")
 
     # ==================== Session lifecycle ====================
 
     def __enter__(self) -> "Run":
         self._begin()
-        self._tools._ensure()
-        self._session = self._attach() if self._attached else self.client.sessions.create(**self._session_kwargs())
+        try:
+            self._tools._ensure()
+            self._session = self._attach() if self._attached else self.client.sessions.create(**self._session_kwargs())
+        except BaseException:
+            self._close_client()
+            raise
         return self
 
     async def __aenter__(self) -> "Run":
         self._begin()
-        await self._tools._aensure()
-        self._session = self._attach() if self._attached else await self.client.sessions.acreate(**self._session_kwargs())
+        try:
+            await self._tools._aensure()
+            self._session = self._attach() if self._attached else await self.client.sessions.acreate(**self._session_kwargs())
+        except BaseException:
+            await self._aclose_client()
+            raise
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -190,20 +200,26 @@ class Run:
         self.client._flush_evals()  # while the session is still open, so self-scores land
         session.__exit__(exc_type, exc_val, exc_tb)
         self._unbind_mock()
-        if self._owns_client:
-            try:
-                self.client.close()
-            except Exception as e:
-                logger.debug(f"[Run] error closing the run's client: {e}")
+        self._close_client()
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         session, self._session = self._session, None
         await asyncio.get_running_loop().run_in_executor(None, self.client._flush_evals)
         await session.__aexit__(exc_type, exc_val, exc_tb)
         self._unbind_mock()
-        if self._owns_client:
+        await self._aclose_client()
+
+    def _close_client(self) -> None:
+        if self._owns_client and self._client is not None:
             try:
-                await self.client.aclose()
+                self._client.close()
+            except Exception as e:
+                logger.debug(f"[Run] error closing the run's client: {e}")
+
+    async def _aclose_client(self) -> None:
+        if self._owns_client and self._client is not None:
+            try:
+                await self._client.aclose()
             except Exception as e:
                 logger.debug(f"[Run] error closing the run's client: {e}")
 
@@ -255,14 +271,16 @@ class Run:
         payload = {**self._params, **asdict(self._ids), "input": self._input}
         payload[SNAPSHOT_KEY] = {
             "prompts": dict(self._prompts),
-            "tools": self._tools.snapshot,
+            "tools": self._tools._snapshot,
             "attached": is_open,
             "mock": is_open and self._mock_bound(),
         }
         return json.dumps(payload)
 
     def to_env(self) -> Dict[str, str]:
-        """``{"LUCIDIC_RUN": to_json()}`` for a subprocess env.
+        """``{"LUCIDIC_RUN": to_json()}``, to merge into a subprocess env.
+
+        ``subprocess.run(cmd, env={**os.environ, **run.to_env()})``
 
         For inputs near the 128 KiB env-string limit, write ``to_json()`` to a
         file and set ``LUCIDIC_RUN`` to its path instead.

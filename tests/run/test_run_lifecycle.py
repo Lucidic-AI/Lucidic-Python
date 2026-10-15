@@ -167,6 +167,19 @@ def test_a_run_without_a_client_builds_and_closes_its_own(backend, monkeypatch):
     assert backend["initsession"].call_count == 1
 
 
+def test_a_failed_enter_closes_the_runs_own_client(backend, monkeypatch):
+    monkeypatch.setenv("LUCIDIC_API_KEY", "test-key")
+    monkeypatch.setenv("LUCIDIC_AGENT_ID", AGENT_ID)
+    backend["initsession"].mock(return_value=httpx.Response(500, json={"error": "boom"}))
+    run = lucidic.load(session_id=SESSION_ID)
+    closed = []
+    monkeypatch.setattr(run.client, "close", lambda: closed.append(True))
+    with pytest.raises(lucidic.LucidicError):
+        with run:
+            pass
+    assert closed == [True]
+
+
 def test_ids_and_params_are_read_only(run):
     with pytest.raises(dataclasses.FrozenInstanceError):
         run.ids.session_id = "other"

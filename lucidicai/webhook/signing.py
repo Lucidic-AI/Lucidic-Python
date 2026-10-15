@@ -1,9 +1,5 @@
-"""Webhook signature scheme v1 (mvp-build/specs/webhook-signing.md).
-
-HMAC-SHA256 over the raw request body, keyed by the shared webhook secret,
-sent as ``X-Lucidic-Signature: sha256=<lowercase hex>``. Same scheme as the
-backend signer (AnalyticsAPIBackend api/temporal/evosim/webhook_egress.py::sign_body)
-and the harvey runner (lucidic_runner/signing.py::verify).
+"""Webhook signature v1: HMAC-SHA256 over the raw body, keyed by the shared
+secret, sent as ``X-Lucidic-Signature: sha256=<lowercase hex>``.
 """
 import hashlib
 import hmac
@@ -28,6 +24,5 @@ def verify(secret: str, body: bytes, header: Optional[str]) -> bool:
         raise ValueError("webhook secret is empty")
     if not header or not header.startswith(_PREFIX):
         return False
-    # compare bytes: compare_digest raises TypeError on non-ASCII str, and a
-    # hostile header must be a plain mismatch (401), not a server error.
+    # bytes compare so a non-ASCII header is a 401, not a TypeError
     return hmac.compare_digest(sign(secret, body).encode("ascii"), header.encode("utf-8"))

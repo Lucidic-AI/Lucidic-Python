@@ -18,11 +18,6 @@ class RunTools:
         self._run = run
         self._snapshot = snapshot
 
-    @property
-    def snapshot(self) -> Optional[List[Dict[str, Any]]]:
-        """The raw module tools, or None before the first fetch."""
-        return self._snapshot
-
     def _ensure(self) -> List[Dict[str, Any]]:
         if self._snapshot is None:
             checkpoint_id = self._run.ids.checkpoint_id

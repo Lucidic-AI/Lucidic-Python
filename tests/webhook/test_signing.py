@@ -1,4 +1,4 @@
-"""lucidicai.webhook sign/verify: scheme v1 of mvp-build/specs/webhook-signing.md."""
+"""lucidicai.webhook sign/verify: signature scheme v1."""
 import pytest
 
 from lucidicai import webhook
