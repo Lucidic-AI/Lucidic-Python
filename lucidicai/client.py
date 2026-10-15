@@ -17,6 +17,7 @@ Example:
         my_function()
 """
 
+import asyncio
 import logging
 import os
 import threading
@@ -36,7 +37,11 @@ from .api.resources.dataset import DatasetResource
 from .api.resources.experiment import ExperimentResource
 from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
-from .api.resources.evals import EvalsResource
+from .api.resources.evals import (
+    EVAL_FLUSH_TIMEOUT_SECONDS,
+    EvalsResource,
+    validate_flush_timeout,
+)
 from .api.resources.evosim import EvoSimsResource
 from .api.resources.mock_call import MockCallResource
 from .sdk.training_modules.resource import TrainingModulesResource
@@ -76,6 +81,8 @@ class LucidicAI:
         region: Deployment region ("us", "india"). Falls back to LUCIDIC_REGION env var.
         base_url: Custom base URL for API requests. Takes precedence over region.
                   Falls back to LUCIDIC_BASE_URL env var.
+        eval_flush_timeout: Seconds close()/aclose() wait for in-flight
+                  evals.emit() posts (default 5.0). close() blocks up to this long.
         **kwargs: Additional configuration options passed to SDKConfig.
 
     Raises:
@@ -123,6 +130,7 @@ class LucidicAI:
         production: Optional[bool] = None,
         region: Optional[str] = None,
         base_url: Optional[str] = None,
+        eval_flush_timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS,
         **kwargs,
     ):
         # Generate unique client ID for telemetry routing
@@ -132,6 +140,7 @@ class LucidicAI:
         if production is None:
             production = os.getenv("LUCIDIC_PRODUCTION", "").lower() in ("true", "1")
         self._production = production
+        self._eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
 
         # Build configuration
         self._config = SDKConfig.from_env(
@@ -246,6 +255,11 @@ class LucidicAI:
     def agent_id(self) -> Optional[str]:
         """Get the agent ID."""
         return self._config.agent_id
+
+    @property
+    def eval_flush_timeout(self) -> float:
+        """Seconds close() waits for in-flight evals.emit() posts by default."""
+        return self._eval_flush_timeout
 
     @property
     def is_valid(self) -> bool:
@@ -498,12 +512,29 @@ class LucidicAI:
 
     # ==================== Lifecycle ====================
 
-    def close(self) -> None:
+    def _flush_evals(self, timeout: Optional[float] = None) -> None:
+        """Wait (bounded) for in-flight evals.emit() posts; never raises.
+
+        ``timeout`` defaults to the client's ``eval_flush_timeout``.
+        """
+        try:
+            self.evals.flush(self._eval_flush_timeout if timeout is None else timeout)
+        except Exception as e:
+            logger.debug(f"[LucidicAI] Error flushing evals on close: {e}")
+
+    def close(self, eval_flush_timeout: Optional[float] = None) -> None:
         """Close the client and clean up resources.
 
-        This ends all active sessions and unregisters from telemetry.
+        This waits for pending evals.emit() posts (blocking up to
+        ``eval_flush_timeout`` seconds, default: the client's setting), ends
+        all active sessions and unregisters from telemetry.
         """
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
         logger.info(f"[LucidicAI] Closing client {self._client_id[:8]}...")
+
+        # deliver pending evals.emit() posts while their sessions are still open
+        self._flush_evals(eval_flush_timeout)
 
         # Collect session IDs under lock (don't clear - let end() handle removal)
         with self._session_lock:
@@ -542,9 +573,20 @@ class LucidicAI:
 
         logger.info(f"[LucidicAI] Client {self._client_id[:8]}... closed")
 
-    async def aclose(self) -> None:
-        """Close the client (async version)."""
+    async def aclose(self, eval_flush_timeout: Optional[float] = None) -> None:
+        """Close the client (async version). See close()."""
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
         logger.info(f"[LucidicAI] Closing async client {self._client_id[:8]}...")
+
+        # flush() blocks on thread joins, so keep it off the event loop
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, self._flush_evals, eval_flush_timeout
+            )
+        except Exception as e:
+            # pending evals may be lost; say so where users will see it
+            logger.warning(f"[LucidicAI] Eval flush skipped on async close: {e}")
 
         # Collect session IDs under lock (don't clear - let aend() handle removal)
         with self._session_lock:

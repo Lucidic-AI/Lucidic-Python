@@ -160,6 +160,22 @@ class InvalidOperationError(LucidicError):
         super().__init__(f"An invalid Lucidic operation was attempted: {message}")
 
 
+class RunLoadError(LucidicError):
+    """``lucidicai.load()`` found no usable run. ``status_code`` is the reply a
+    webhook receiver should send: 500 here (receiver misconfigured, e.g. no secret)."""
+    status_code = 500
+
+
+class RunSignatureError(RunLoadError):
+    """Missing or invalid ``X-Lucidic-Signature``. Reply 401 (the backend won't re-send)."""
+    status_code = 401
+
+
+class RunPayloadError(RunLoadError):
+    """A verified body, ``LUCIDIC_RUN`` or override that is not a valid run. Reply 422."""
+    status_code = 422
+
+
 class FeatureFlagError(LucidicError):
     """Exception for feature flag fetch failures"""
     def __init__(self, message: str):
