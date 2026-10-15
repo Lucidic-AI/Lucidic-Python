@@ -17,8 +17,9 @@ from urllib.parse import quote
 
 import httpx
 
+from ...core.errors import NotFoundError
 from ..client import HttpClient
-from ..documents import Doc, DownloadSummary, is_current, is_expired, parse_listing, store, summarize
+from ..documents import Doc, DownloadSummary, expired_again, is_current, is_expired, is_no_corpus, parse_listing, store, summarize
 from ..downloads import afetch_presigned, fetch_presigned
 from ..models.base import CursorPage
 from ..models.resource import Resource
@@ -160,34 +161,62 @@ class ResourcesResource:
         """Download a session's document corpus (GET /sdk/v2/sessions/{id}/documents;
         needs ``session:read``) to ``dir/<path>``, skipping files whose sha256
         already matches. An expired URL (S3 400/403) re-lists once for fresh URLs.
-        Raises the route's typed errors, ``APIError`` for a bad listing, path or
-        sha256, and ``httpx.HTTPStatusError`` for any other S3 failure."""
+        A no-corpus 404 is an empty summary. Raises the route's other
+        typed errors, ``APIError`` for a bad listing, path or sha256 or a second
+        expiry, and ``httpx.HTTPStatusError`` for any other S3 failure."""
         root, path = Path(dir), self._documents_path(session_id)
         done: Dict[str, Optional[int]] = {}
         try:
-            return self._land(parse_listing(self.http.get(path), root), done)
+            return self._land(self._list(path, root), done)
         except httpx.HTTPStatusError as exc:
             if not is_expired(exc):
                 raise
         # one re-list for fresh urls (spec expiry rule); finished docs are not redone
-        return self._land(parse_listing(self.http.get(path), root), done)
+        try:
+            return self._land(self._list(path, root), done)
+        except httpx.HTTPStatusError as exc:
+            if is_expired(exc):
+                raise expired_again(exc) from None
+            raise
 
     async def adownload(self, session_id: str, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
         """Async sibling of ``download``."""
         root, path = Path(dir), self._documents_path(session_id)
         done: Dict[str, Optional[int]] = {}
         try:
-            return await self._aland(parse_listing(await self.http.aget(path), root), done)
+            return await self._aland(await self._alist(path, root), done)
         except httpx.HTTPStatusError as exc:
             if not is_expired(exc):
                 raise
-        return await self._aland(parse_listing(await self.http.aget(path), root), done)
+        try:
+            return await self._aland(await self._alist(path, root), done)
+        except httpx.HTTPStatusError as exc:
+            if is_expired(exc):
+                raise expired_again(exc) from None
+            raise
 
     # ==================== internals ====================
 
     @staticmethod
     def _documents_path(session_id: str) -> str:
         return f"sdk/v2/sessions/{quote(session_id, safe='')}/documents"
+
+    def _list(self, path: str, root: Path) -> List[Doc]:
+        try:
+            return parse_listing(self.http.get(path), root)
+        except NotFoundError as exc:
+            # no corpus, so the wrapper template can call download unconditionally
+            if not is_no_corpus(exc):
+                raise
+            return []
+
+    async def _alist(self, path: str, root: Path) -> List[Doc]:
+        try:
+            return parse_listing(await self.http.aget(path), root)
+        except NotFoundError as exc:
+            if not is_no_corpus(exc):
+                raise
+            return []
 
     @staticmethod
     def _land(docs: List[Doc], done: Dict[str, Optional[int]]) -> DownloadSummary:

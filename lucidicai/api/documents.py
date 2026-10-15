@@ -8,14 +8,14 @@ never logged or stored.
 """
 import hashlib
 import os
-import tempfile
+import secrets
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 import httpx
 
-from ..core.errors import APIError
+from ..core.errors import APIError, NotFoundError
 
 _CHUNK = 1 << 16
 _FIELDS = ("path", "sha256", "url")
@@ -88,9 +88,9 @@ def store(doc: Doc, data: bytes) -> int:
     if hashlib.sha256(data).hexdigest() != doc.sha256:
         raise APIError(f"sha256 mismatch for {doc.path}")
     doc.target.parent.mkdir(parents=True, exist_ok=True)
-    # a random temp name cannot collide with another corpus path
-    fd, part = tempfile.mkstemp(dir=doc.target.parent)
-    with os.fdopen(fd, "wb") as f:
+    # random name so no corpus path collides; not mkstemp, whose 0600 hides docs from other uids
+    part = doc.target.with_name(f"{doc.target.name}.{secrets.token_hex(8)}.part")
+    with open(part, "xb") as f:
         f.write(data)
     os.replace(part, doc.target)
     return len(data)
@@ -99,6 +99,17 @@ def store(doc: Doc, data: bytes) -> int:
 def is_expired(exc: httpx.HTTPStatusError) -> bool:
     # s3 answers an expired url with 403 AccessDenied, or 400 ExpiredToken when the signing creds expired
     return exc.response.status_code in (400, 403)
+
+
+def is_no_corpus(exc: NotFoundError) -> bool:
+    # the route's other 404s are an unknown or unreachable session, which must still raise
+    return any(m in str(exc) for m in ("has no dataset item", "has no document corpus", "not hydrated"))
+
+
+def expired_again(exc: httpx.HTTPStatusError) -> APIError:
+    """The second expiry, without the presigned URL that ``exc``'s message carries."""
+    status = exc.response.status_code
+    return APIError(f"document URL expired again after a re-list (S3 {status})", status_code=status)
 
 
 def summarize(done: Dict[str, Optional[int]]) -> DownloadSummary:

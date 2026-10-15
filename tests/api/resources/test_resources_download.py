@@ -1,5 +1,6 @@
 """LUC-1141 — client.resources.download(session_id, dir) (documents into the workdir)."""
 import hashlib
+import logging
 import os
 
 import httpx
@@ -8,7 +9,7 @@ import respx
 
 from lucidicai.api.documents import DownloadSummary
 from lucidicai.api.resources.resources import ResourcesResource
-from lucidicai.core.errors import APIError, NotFoundError
+from lucidicai.core.errors import APIError, InsufficientScopeError, NotFoundError
 
 _BASE = "https://stub.lucidic.test"
 _S3 = "https://bucket.s3.amazonaws.com"
@@ -111,8 +112,10 @@ class TestDownload:
         route = _mock_listing(_two_docs(), _two_docs())
         s1 = respx.get(f"{_S3}/1").mock(return_value=httpx.Response(403))
         s2 = respx.get(f"{_S3}/2")
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(APIError) as err:
             resources.download("s1", tmp_path)
+        assert err.value.status_code == 403
+        assert _S3 not in str(err.value)
         assert (route.call_count, s1.call_count, s2.call_count) == (2, 2, 0)
 
     @respx.mock
@@ -193,11 +196,52 @@ class TestDownload:
         assert sorted(os.listdir(tmp_path)) == ["x", "x.part"]
         assert (tmp_path / "x.part").read_bytes() == _MSA
 
+    @pytest.mark.parametrize("message", [
+        "Session has no dataset item, so it has no documents",
+        "Session's dataset has no document corpus",
+        "Session's document corpus is not hydrated",
+    ])
     @respx.mock
-    def test_route_404_propagates(self, resources, tmp_path):
-        _mock_listing(httpx.Response(404, json={"error": "Session's document corpus is not hydrated"}))
+    def test_no_corpus_404_is_an_empty_summary(self, resources, tmp_path, message):
+        _mock_listing(httpx.Response(404, json={"error": message}))
+        assert resources.download("s1", tmp_path) == DownloadSummary(written=[], skipped=[], bytes=0)
+        assert os.listdir(tmp_path) == []
+
+    @respx.mock
+    def test_unknown_session_404_raises(self, resources, tmp_path):
+        _mock_listing(httpx.Response(404, json={"error": "Specified session_id not found"}))
         with pytest.raises(NotFoundError):
             resources.download("s1", tmp_path)
+
+    @respx.mock
+    def test_other_route_error_raises(self, resources, tmp_path):
+        _mock_listing(httpx.Response(403, json={"error": "missing scope"}))
+        with pytest.raises(InsufficientScopeError):
+            resources.download("s1", tmp_path)
+
+    @pytest.mark.parametrize("umask,mode", [(0o022, 0o644), (0o027, 0o640)])
+    @respx.mock
+    def test_landed_file_mode_follows_umask(self, resources, tmp_path, umask, mode):
+        _mock_listing(_listing(_doc("notes.txt", _NOTES, 2)))
+        respx.get(f"{_S3}/2").mock(return_value=httpx.Response(200, content=_NOTES))
+        old = os.umask(umask)
+        try:
+            resources.download("s1", tmp_path)
+        finally:
+            os.umask(old)
+        assert (tmp_path / "notes.txt").stat().st_mode & 0o777 == mode
+        assert os.listdir(tmp_path) == ["notes.txt"]
+
+    @respx.mock
+    def test_debug_log_redacts_presigned_query(self, resources, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv("LUCIDIC_DEBUG", "true")
+        caplog.set_level(logging.DEBUG, logger="Lucidic")
+        _mock_listing(_two_docs())
+        respx.get(f"{_S3}/1").mock(return_value=httpx.Response(200, content=_MSA))
+        respx.get(f"{_S3}/2").mock(return_value=httpx.Response(200, content=_NOTES))
+        resources.download("s1", tmp_path)
+        assert f"{_S3}/1" in caplog.text
+        assert "sig=" not in caplog.text
 
 
 class TestAdownload:
@@ -226,7 +270,14 @@ class TestAdownload:
     @respx.mock
     async def test_expired_twice_raises(self, resources, tmp_path):
         route = _mock_listing(_two_docs(), _two_docs())
-        s1 = respx.get(f"{_S3}/1").mock(return_value=httpx.Response(403))
-        with pytest.raises(httpx.HTTPStatusError):
+        s1 = respx.get(f"{_S3}/1").mock(return_value=httpx.Response(400))
+        with pytest.raises(APIError) as err:
             await resources.adownload("s1", tmp_path)
+        assert err.value.status_code == 400 and _S3 not in str(err.value)
         assert (route.call_count, s1.call_count) == (2, 2)
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_route_404_is_an_empty_summary(self, resources, tmp_path):
+        _mock_listing(httpx.Response(404, json={"error": "Session's document corpus is not hydrated"}))
+        assert await resources.adownload("s1", tmp_path) == DownloadSummary(written=[], skipped=[], bytes=0)

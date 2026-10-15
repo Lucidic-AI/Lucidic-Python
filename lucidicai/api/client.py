@@ -12,7 +12,7 @@ import httpx
 
 from ..core.config import SDKConfig, get_config
 from ..core.errors import exception_from_response
-from ..utils.logger import debug, info, warning, error, mask_sensitive, truncate_data
+from ..utils.logger import debug, info, warning, error, mask_sensitive, redact_url_queries, truncate_data
 
 
 # Status codes the transport retries with backoff (LUC-901). Connection-level
@@ -205,7 +205,7 @@ class HttpClient:
                 # Return text if not JSON
                 data = {"response": response.text}
 
-        debug(f"[HTTP] Response ({response.status_code}): {truncate_data(data)}")
+        debug(f"[HTTP] Response ({response.status_code}): {redact_url_queries(truncate_data(data))}")
 
         return data
 

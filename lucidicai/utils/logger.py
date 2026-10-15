@@ -5,6 +5,7 @@ LUCIDIC_DEBUG and LUCIDIC_VERBOSE environment variables.
 """
 import os
 import logging
+import re
 from typing import Any, Optional
 from dotenv import load_dotenv, find_dotenv
 
@@ -145,6 +146,11 @@ def mask_sensitive(data: dict, sensitive_keys: set = None) -> dict:
         else:
             masked[key] = value
     return masked
+
+
+def redact_url_queries(text: str) -> str:
+    """Drop the query string of every URL in ``text`` (presigned signatures live there)."""
+    return re.sub(r"(https?://[^\s'\"?]*)\?[^\s'\"]*", r"\1?<redacted>", text)
 
 
 def truncate_data(data: Any, max_length: int = 500) -> str:
