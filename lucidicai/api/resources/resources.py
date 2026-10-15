@@ -157,35 +157,31 @@ class ResourcesResource:
     # ==================== download ====================
 
     def download(self, session_id: str, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
-        """Download a session's document corpus (GET
-        /sdk/v2/sessions/{id}/documents; needs ``session:read``) into ``dir``.
-        Each document lands at ``dir/path`` (``dir`` created as needed); a file
-        whose sha256 already matches is skipped. On a 400/403 from S3 (expired
-        URL) the listing is fetched once more and unfinished documents retried.
-        Raises the route's typed errors (``NotFoundError`` when the session has
-        no hydrated corpus, ``ConflictError`` for more than one), ``APIError`` for
-        a malformed listing, an unsafe path or a sha256 mismatch (nothing written
-        for that document), and ``httpx.HTTPStatusError`` for any other S3 failure."""
-        root = Path(dir)
+        """Download a session's document corpus (GET /sdk/v2/sessions/{id}/documents;
+        needs ``session:read``) to ``dir/<path>``, skipping files whose sha256
+        already matches. An expired URL (S3 400/403) re-lists once for fresh URLs.
+        Raises the route's typed errors, ``APIError`` for a bad listing, path or
+        sha256, and ``httpx.HTTPStatusError`` for any other S3 failure."""
+        root, path = Path(dir), self._documents_path(session_id)
         done: Dict[str, Optional[int]] = {}
         try:
-            return self._land(parse_listing(self.http.get(self._documents_path(session_id)), root), done)
+            return self._land(parse_listing(self.http.get(path), root), done)
         except httpx.HTTPStatusError as exc:
             if not is_expired(exc):
                 raise
         # one re-list for fresh urls (spec expiry rule); finished docs are not redone
-        return self._land(parse_listing(self.http.get(self._documents_path(session_id)), root), done)
+        return self._land(parse_listing(self.http.get(path), root), done)
 
     async def adownload(self, session_id: str, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
         """Async sibling of ``download``."""
-        root = Path(dir)
+        root, path = Path(dir), self._documents_path(session_id)
         done: Dict[str, Optional[int]] = {}
         try:
-            return await self._aland(parse_listing(await self.http.aget(self._documents_path(session_id)), root), done)
+            return await self._aland(parse_listing(await self.http.aget(path), root), done)
         except httpx.HTTPStatusError as exc:
             if not is_expired(exc):
                 raise
-        return await self._aland(parse_listing(await self.http.aget(self._documents_path(session_id)), root), done)
+        return await self._aland(parse_listing(await self.http.aget(path), root), done)
 
     # ==================== internals ====================
 

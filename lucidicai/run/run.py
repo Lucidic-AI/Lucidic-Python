@@ -2,10 +2,12 @@
 import asyncio
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Union
 
+from ..api.documents import DownloadSummary
 from ..core.errors import ConflictError, InvalidOperationError, NotFoundError
 from ..sdk.tools.context import MockContext, _current_mock_context, bind_mock_context, clear_mock_context
 from ..session_obj import Session
@@ -44,8 +46,6 @@ class Run:
 
     ``session_id`` is the idempotency key: deliveries are at-least-once.
     """
-
-    # todo(LUC-1141): document download (run.download(dir) over client.resources) plugs in here
 
     def __init__(
         self,
@@ -172,6 +172,16 @@ class Run:
             pass
         except Exception as e:  # best effort: the default is already in hand
             logger.warning(f"[Run] could not register prompt {name!r}: {e}")
+
+    # ==================== Documents ====================
+
+    def download(self, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
+        """The case's documents into ``dir``; see ``client.resources.download``."""
+        return self.client.resources.download(self._ids.session_id, dir)
+
+    async def adownload(self, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
+        """Async sibling of ``download``."""
+        return await self.client.resources.adownload(self._ids.session_id, dir)
 
     # ==================== Session lifecycle ====================
 

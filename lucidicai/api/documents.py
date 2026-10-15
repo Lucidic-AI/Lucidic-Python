@@ -8,15 +8,17 @@ never logged or stored.
 """
 import hashlib
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
 from ..core.errors import APIError
 
 _CHUNK = 1 << 16
+_FIELDS = ("path", "sha256", "url")
 
 
 @dataclass(frozen=True)
@@ -28,7 +30,8 @@ class DownloadSummary:
     bytes: int
 
 
-class Doc(NamedTuple):
+@dataclass(frozen=True)
+class Doc:
     path: str
     target: Path
     sha256: str
@@ -41,28 +44,31 @@ def parse_listing(body: Dict[str, Any], root: Path) -> List[Doc]:
     if not isinstance(entries, list):
         raise APIError("malformed documents listing")
     docs: List[Doc] = []
-    seen = set()
+    targets = set()
     for entry in entries:
-        fields = [entry.get(k) for k in ("path", "sha256", "url")] if isinstance(entry, dict) else []
-        if len(fields) != 3 or not all(isinstance(f, str) for f in fields):
+        if not isinstance(entry, dict) or not all(isinstance(entry.get(k), str) for k in _FIELDS):
             raise APIError("malformed documents listing")
-        path, sha256, url = fields
-        if path in seen:
-            raise APIError(f"duplicate document path {path!r}")
-        seen.add(path)
-        docs.append(Doc(path, target_path(root, path), sha256.lower(), url))
+        doc = Doc(entry["path"], target_path(root, entry["path"]), entry["sha256"].lower(), entry["url"])
+        # compare targets, so `a/b` and `./a/b` collide too
+        if doc.target in targets:
+            raise APIError(f"duplicate document path {doc.path!r}")
+        targets.add(doc.target)
+        docs.append(doc)
+    nested = [d.path for d in docs if not targets.isdisjoint(d.target.parents)]
+    if nested:
+        raise APIError(f"document path {nested[0]!r} is under another document")
     return docs
 
 
 def target_path(root: Path, rel: str) -> Path:
     """``root/rel``, refusing anything that could land outside ``root``."""
     parts = PurePosixPath(rel).parts
-    if not parts or "\\" in rel or PurePosixPath(rel).is_absolute() or ".." in parts:
+    # `..` is refused even when it stays inside root; resolve() below catches the rest
+    if "\\" in rel or "\x00" in rel or ".." in parts:
         raise APIError(f"unsafe document path {rel!r}")
     target = root.joinpath(*parts)
     # resolve() follows symlinks already inside root
-    base = root.resolve()
-    if base not in target.resolve().parents:
+    if root.resolve() not in target.resolve().parents:
         raise APIError(f"unsafe document path {rel!r}")
     return target
 
@@ -82,8 +88,10 @@ def store(doc: Doc, data: bytes) -> int:
     if hashlib.sha256(data).hexdigest() != doc.sha256:
         raise APIError(f"sha256 mismatch for {doc.path}")
     doc.target.parent.mkdir(parents=True, exist_ok=True)
-    part = doc.target.with_name(doc.target.name + ".part")
-    part.write_bytes(data)
+    # a random temp name cannot collide with another corpus path
+    fd, part = tempfile.mkstemp(dir=doc.target.parent)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
     os.replace(part, doc.target)
     return len(data)
 
