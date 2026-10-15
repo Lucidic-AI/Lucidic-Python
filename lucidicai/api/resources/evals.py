@@ -1,11 +1,27 @@
 """Evals resource API operations."""
 import logging
+import math
 import threading
-from typing import Any, Dict, Optional, Union
+import time
+from typing import Any, Dict, Optional, Set, Union
 
 from ..client import HttpClient
 
 logger = logging.getLogger("Lucidic")
+
+# default for how long close() waits for in-flight emit() posts before giving
+# up; per client via LucidicAI(eval_flush_timeout=...) or close(eval_flush_timeout=...).
+EVAL_FLUSH_TIMEOUT_SECONDS = 5.0
+
+
+def validate_flush_timeout(value: Any) -> float:
+    """Return ``value`` as seconds, or raise ValueError if it is not a finite number >= 0."""
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value < 0):
+        raise ValueError(
+            f"eval flush timeout must be a finite number of seconds >= 0, got {value!r}"
+        )
+    return float(value)
 
 
 def _truncate_id(id_str: Optional[str]) -> str:
@@ -74,6 +90,8 @@ class EvalsResource:
         """
         self.http = http
         self._production = production
+        self._pending: Set[threading.Thread] = set()
+        self._pending_lock = threading.Lock()
 
     def emit(
         self,
@@ -171,10 +189,47 @@ class EvalsResource:
                 self._create_eval(params)
             except Exception as e:
                 logger.debug(f"[EvalsResource] Background emit() failed: {e}")
+            finally:
+                with self._pending_lock:
+                    self._pending.discard(threading.current_thread())
 
-        # Start background thread
+        # daemon so a hung post never blocks interpreter exit; flush() (called
+        # by client.close()) is what waits for delivery.
         thread = threading.Thread(target=_background_emit, daemon=True)
-        thread.start()
+        with self._pending_lock:
+            self._pending.add(thread)
+        try:
+            thread.start()
+        except Exception:
+            # an unstarted thread can never be joined; don't leave it pending
+            with self._pending_lock:
+                self._pending.discard(thread)
+            raise
+
+    def flush(self, timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS) -> bool:
+        """Wait for in-flight emit() posts to finish.
+
+        Args:
+            timeout: Upper bound in seconds for the whole wait, shared across
+                all pending posts.
+
+        Returns:
+            True if every post started before this call has finished (sent or
+            failed), False if the timeout ran out first.
+        """
+        deadline = time.monotonic() + timeout
+        with self._pending_lock:
+            pending = list(self._pending)
+        for thread in pending:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        with self._pending_lock:
+            unfinished = [t for t in pending if t in self._pending]
+        if unfinished:
+            logger.warning(
+                f"[EvalsResource] flush() timed out after {timeout}s with "
+                f"{len(unfinished)} eval(s) still in flight"
+            )
+        return not unfinished
 
     def _create_eval(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Send evaluation to backend API.
