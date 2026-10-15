@@ -54,6 +54,10 @@ from .core.errors import (
     LucidicImplError,
     LucidicMissingImplError,
     LucidicUnsupportedSQLError,
+    # lucidicai.load() errors (LUC-1138)
+    RunLoadError,
+    RunSignatureError,
+    RunPayloadError,
 )
 from .sdk.training_modules import TrainingModulesResource
 
@@ -80,6 +84,9 @@ from .integrations.livekit import setup_livekit
 
 # Eval-run webhook signatures
 from . import webhook
+
+# One object per run (LUC-1138)
+from .run import Run, RunIds, RunTools, load
 
 # Version
 __version__ = "4.0.0"
@@ -119,6 +126,10 @@ __all__ = [
     "LucidicImplError",
     "LucidicMissingImplError",
     "LucidicUnsupportedSQLError",
+    # lucidicai.load() errors (LUC-1138)
+    "RunLoadError",
+    "RunSignatureError",
+    "RunPayloadError",
     "TrainingModulesResource",
     # Typed response-model base (LUC-905)
     "APIModel",
@@ -141,6 +152,11 @@ __all__ = [
     "setup_livekit",
     # Eval-run webhook signatures
     "webhook",
+    # One object per run (LUC-1138)
+    "load",
+    "Run",
+    "RunIds",
+    "RunTools",
     # Version
     "__version__",
 ]
