@@ -153,8 +153,10 @@ class EvaluatorsResource:
         pass/fail verdict (POST /sdk/v2/evaluators/{id}/primary; needs
         ``evaluator:write``). The previous primary is cleared; calling it on the
         current primary is a no-op. A World / test-case grader or a string
-        evaluator → ``ValidationError``; a concurrent change → ``ConflictError``
-        (retry). Returns the evaluator (detail shape, ``is_primary=True``)."""
+        evaluator → ``ValidationError``; a concurrent change (another primary set
+        at the same moment) → ``ConflictError`` (retry); unknown / cross-org /
+        out-of-binding id → ``NotFoundError``. Returns the evaluator (detail shape,
+        ``is_primary=True``)."""
         return Evaluator.from_dict(self.http.post(f"{_EVALUATORS}/{evaluator_id}/primary"))
 
     async def aset_primary(self, evaluator_id: str) -> Evaluator:
