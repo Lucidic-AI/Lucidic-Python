@@ -24,6 +24,7 @@ class Evaluator(APIModel):
     type: Optional[str] = None
     result_type: Optional[str] = None
     is_default: bool = False
+    is_primary: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     criteria: Optional[Any] = None
