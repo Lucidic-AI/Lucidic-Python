@@ -1,5 +1,6 @@
 """LUC-910 — client.evaluators reads (list / get / evals / result).
-LUC-916 — client.evaluators writes (create LLM / update / delete)."""
+LUC-916 — client.evaluators writes (create LLM / update / delete).
+LUC-1147 — client.evaluators.set_primary."""
 import json
 
 import httpx
@@ -251,6 +252,29 @@ class TestDelete:
             evaluators.delete("missing")
 
 
+class TestSetPrimary:
+    @respx.mock
+    def test_set_primary_posts_and_returns_typed(self, evaluators):
+        route = respx.post(f"{_EVALUATORS}/e1/primary").mock(return_value=httpx.Response(
+            200, json=_evaluator(1, is_primary=True)))
+        e = evaluators.set_primary("e1")
+        assert route.called
+        assert isinstance(e, Evaluator) and e.evaluator_id == "e1" and e.is_primary is True
+
+    @respx.mock
+    @pytest.mark.parametrize("status,error", [
+        (400, ValidationError), (404, NotFoundError), (409, ConflictError),
+    ])
+    def test_set_primary_errors(self, evaluators, status, error):
+        respx.post(f"{_EVALUATORS}/e1/primary").mock(return_value=httpx.Response(
+            status, json={"error": "nope"}))
+        with pytest.raises(error):
+            evaluators.set_primary("e1")
+
+    def test_is_primary_defaults_false_when_absent(self):
+        assert Evaluator.from_dict(_evaluator(1)).is_primary is False
+
+
 class TestWriteAsync:
     @respx.mock
     @pytest.mark.asyncio
@@ -281,3 +305,10 @@ class TestWriteAsync:
         assert await evaluators.adelete("e1") is None
         assert route.called
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aset_primary(self, evaluators):
+        route = respx.post(f"{_EVALUATORS}/e1/primary").mock(return_value=httpx.Response(
+            200, json=_evaluator(1, is_primary=True)))
+        e = await evaluators.aset_primary("e1")
+        assert route.called and e.is_primary is True

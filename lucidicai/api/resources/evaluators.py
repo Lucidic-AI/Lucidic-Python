@@ -3,7 +3,8 @@
 A new namespace (today only ``client.evals.emit`` — a different concept, ad-hoc
 score submission — exists). Reads the agent's evaluator definitions, one
 evaluator's eval distribution across runs, and a single evaluator result by id.
-Writes create / update / delete evaluator definitions.
+Writes create / update / delete evaluator definitions, and ``set_primary``
+picks the agent's verdict source (LUC-1147).
 
 The per-result reads reuse the ``EvalResult`` model (both endpoints serialize
 with the backend's ``EvaluatorResultSerializer``). Data-bearing reads + writes —
@@ -146,6 +147,19 @@ class EvaluatorsResource:
             f"{_EVALUATORS}/{evaluator_id}",
             self._update_body(name, description, icon, is_default, criteria, result_type, config),
         ))
+
+    def set_primary(self, evaluator_id: str) -> Evaluator:
+        """Make this evaluator the agent's primary — the source of each session's
+        pass/fail verdict (POST /sdk/v2/evaluators/{id}/primary; needs
+        ``evaluator:write``). The previous primary is cleared; calling it on the
+        current primary is a no-op. A World / test-case grader or a string
+        evaluator → ``ValidationError``; a concurrent change → ``ConflictError``
+        (retry). Returns the evaluator (detail shape, ``is_primary=True``)."""
+        return Evaluator.from_dict(self.http.post(f"{_EVALUATORS}/{evaluator_id}/primary"))
+
+    async def aset_primary(self, evaluator_id: str) -> Evaluator:
+        """Async sibling of ``set_primary``."""
+        return Evaluator.from_dict(await self.http.apost(f"{_EVALUATORS}/{evaluator_id}/primary"))
 
     def delete(self, evaluator_id: str) -> None:
         """Hard-delete an evaluator (DELETE /sdk/v2/evaluators/{id}; needs
