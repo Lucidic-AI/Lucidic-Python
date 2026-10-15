@@ -30,7 +30,7 @@ def runner_module(monkeypatch):
     return _load_example("lucidic_runner")
 
 
-def test_entry_runs_the_agent_inside_the_case_session(client, backend, monkeypatch):
+def test_entry_runs_the_agent_inside_the_case_session(client, backend, monkeypatch, tmp_path):
     seen = {}
 
     def their_agent(task, *, system, extra_tools, call_extra_tool):
@@ -44,6 +44,9 @@ def test_entry_runs_the_agent_inside_the_case_session(client, backend, monkeypat
     backend.get("/sdk/prompts").mock(return_value=httpx.Response(404, json={"error": "Prompt not found"}))
     create = backend.post("/sdk/v2/prompts").mock(return_value=httpx.Response(
         201, json={"prompt_id": "p1", "name": "system", "icon": "compass", "preview": ""}))
+    documents = backend.get(f"/sdk/v2/sessions/{SESSION_ID}/documents").mock(
+        return_value=httpx.Response(200, json={"expires_in": 1200, "documents": []}))
+    monkeypatch.chdir(tmp_path)
     entry = _load_example("lucidic_entry")
 
     body, signature = signed(full_payload())
@@ -55,6 +58,7 @@ def test_entry_runs_the_agent_inside_the_case_session(client, backend, monkeypat
     assert seen["session"] == SESSION_ID
     assert json.loads(create.calls.last.request.content)["name"] == "system"
     assert backend["updatesession"].call_count == 1
+    assert documents.call_count == 1
 
 
 def test_runner_accepts_once_per_session_id(runner_module, client):

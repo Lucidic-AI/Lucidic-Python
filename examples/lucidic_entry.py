@@ -12,7 +12,7 @@ client = lucidic.LucidicAI(providers=["openai"])        # api key / agent id fro
 
 def run_case(run: lucidic.Run):
     with run:                                           # session open, fixtures bound; ends + flushes evals on exit
-        # todo(LUC-1141): run.download(workdir) for the case documents
+        run.download("workdir")                         # the case documents, at workdir/<path>
         return their_agent(
             run.input,
             system=run.prompt("system", default=their_agent.SYSTEM_PROMPT, register=True),
