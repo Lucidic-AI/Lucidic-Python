@@ -44,7 +44,8 @@ class Run:
     by subprocesses given ``to_env()`` or ``to_json()``. The exit flush waits
     for all of the client's pending ``evals.emit`` posts, not only this run's.
 
-    ``session_id`` is the idempotency key: deliveries are at-least-once.
+    ``ids.session_id`` is the idempotency key: deliveries are at-least-once.
+    The backend may give the session a different id; ``session_id`` is that one.
     """
 
     def __init__(
@@ -67,6 +68,8 @@ class Run:
         # a child of an entered run binds to the parent's session instead of creating one
         self._attached = bool(snapshot.get("attached"))
         self._parent_mock = bool(snapshot.get("mock"))
+        self._parent_session_id: Optional[str] = snapshot.get("session_id")
+        self._server_session_id: Optional[str] = None
         self._entered = False
         self._session: Optional[Session] = None
 
@@ -77,6 +80,19 @@ class Run:
     @property
     def ids(self) -> RunIds:
         return self._ids
+
+    @property
+    def session_id(self) -> Optional[str]:
+        """The server's id for the run's session; None until ``with run:`` opens it.
+
+        Pass this, not ``ids.session_id``, to calls that target the session
+        (``evals.emit``, ``sessions.update``): the backend may store the
+        dispatched id as the session's custom id under a fresh primary key.
+        """
+        return self._server_session_id
+
+    def _target_session_id(self) -> str:
+        return self._server_session_id or self._ids.session_id
 
     @property
     def params(self) -> Mapping[str, Any]:
@@ -144,7 +160,7 @@ class Run:
 
     def _prompt_kwargs(self, label: str) -> Dict[str, Any]:
         # explicit ids pin the checkpoint version even before the session exists
-        return {"label": label, "checkpoint_id": self._ids.checkpoint_id, "session_id": self._ids.session_id}
+        return {"label": label, "checkpoint_id": self._ids.checkpoint_id, "session_id": self._target_session_id()}
 
     @staticmethod
     def _content(name: str, content: Optional[str]) -> Optional[str]:
@@ -177,11 +193,11 @@ class Run:
 
     def download(self, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
         """The case's documents into ``dir``; see ``client.resources.download``."""
-        return self.client.resources.download(self._ids.session_id, dir)
+        return self.client.resources.download(self._target_session_id(), dir)
 
     async def adownload(self, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
         """Async sibling of ``download``."""
-        return await self.client.resources.adownload(self._ids.session_id, dir)
+        return await self.client.resources.adownload(self._target_session_id(), dir)
 
     # ==================== Session lifecycle ====================
 
@@ -190,6 +206,7 @@ class Run:
         try:
             self._tools._ensure()
             self._session = self._attach() if self._attached else self.client.sessions.create(**self._session_kwargs())
+            self._server_session_id = self._session.session_id
         except BaseException:
             self._close_client()
             raise
@@ -200,6 +217,7 @@ class Run:
         try:
             await self._tools._aensure()
             self._session = self._attach() if self._attached else await self.client.sessions.acreate(**self._session_kwargs())
+            self._server_session_id = self._session.session_id
         except BaseException:
             await self._aclose_client()
             raise
@@ -250,15 +268,16 @@ class Run:
         }
 
     def _attach(self) -> Session:
-        session = Session(self.client, self._ids.session_id, auto_end=False)
+        session_id = self._parent_session_id or self._ids.session_id
+        session = Session(self.client, session_id, auto_end=False)
         session._bind_context()
         if self._parent_mock:
-            bind_mock_context(MockContext(session_id=self._ids.session_id, client=self.client))
+            bind_mock_context(MockContext(session_id=session_id, client=self.client))
         return session
 
     def _mock_bound(self) -> bool:
         ctx = _current_mock_context()
-        return ctx is not None and ctx.session_id == self._ids.session_id and ctx.client is self._client
+        return ctx is not None and ctx.session_id == self._target_session_id() and ctx.client is self._client
 
     def _unbind_mock(self) -> None:
         # nothing else clears it on session end; a reused pool thread would inherit it
@@ -283,6 +302,7 @@ class Run:
             "prompts": dict(self._prompts),
             "tools": self._tools._snapshot,
             "attached": is_open,
+            "session_id": self._server_session_id if is_open else None,
             "mock": is_open and self._mock_bound(),
         }
         return json.dumps(payload)
