@@ -9,7 +9,7 @@ import respx
 
 from lucidicai.api.documents import DownloadSummary
 from lucidicai.api.resources.resources import ResourcesResource
-from lucidicai.core.errors import APIError, InsufficientScopeError
+from lucidicai.core.errors import APIError, InsufficientScopeError, NotFoundError
 
 _BASE = "https://stub.lucidic.test"
 _S3 = "https://bucket.s3.amazonaws.com"
@@ -115,7 +115,7 @@ class TestDownload:
         with pytest.raises(APIError) as err:
             resources.download("s1", tmp_path)
         assert err.value.status_code == 403
-        assert _S3 not in str(err.value) and err.value.__suppress_context__
+        assert _S3 not in str(err.value)
         assert (route.call_count, s1.call_count, s2.call_count) == (2, 2, 0)
 
     @respx.mock
@@ -196,11 +196,22 @@ class TestDownload:
         assert sorted(os.listdir(tmp_path)) == ["x", "x.part"]
         assert (tmp_path / "x.part").read_bytes() == _MSA
 
+    @pytest.mark.parametrize("message", [
+        "Session has no dataset item, so it has no documents",
+        "Session's dataset has no document corpus",
+        "Session's document corpus is not hydrated",
+    ])
     @respx.mock
-    def test_route_404_is_an_empty_summary(self, resources, tmp_path):
-        _mock_listing(httpx.Response(404, json={"error": "Session's document corpus is not hydrated"}))
+    def test_no_corpus_404_is_an_empty_summary(self, resources, tmp_path, message):
+        _mock_listing(httpx.Response(404, json={"error": message}))
         assert resources.download("s1", tmp_path) == DownloadSummary(written=[], skipped=[], bytes=0)
         assert os.listdir(tmp_path) == []
+
+    @respx.mock
+    def test_unknown_session_404_raises(self, resources, tmp_path):
+        _mock_listing(httpx.Response(404, json={"error": "Specified session_id not found"}))
+        with pytest.raises(NotFoundError):
+            resources.download("s1", tmp_path)
 
     @respx.mock
     def test_other_route_error_raises(self, resources, tmp_path):

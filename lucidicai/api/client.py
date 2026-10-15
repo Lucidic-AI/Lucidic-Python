@@ -205,7 +205,7 @@ class HttpClient:
                 # Return text if not JSON
                 data = {"response": response.text}
 
-        debug(f"[HTTP] Response ({response.status_code}): {truncate_data(redact_url_queries(str(data)))}")
+        debug(f"[HTTP] Response ({response.status_code}): {redact_url_queries(truncate_data(data))}")
 
         return data
 

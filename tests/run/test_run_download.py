@@ -42,5 +42,6 @@ async def test_adownload_lands_the_case_documents(run, tmp_path):
 
 @respx.mock
 def test_download_without_a_corpus_is_empty(run, tmp_path):
-    respx.get(f"{BASE_URL}/sdk/v2/sessions/{SESSION_ID}/documents").mock(return_value=httpx.Response(404))
+    respx.get(f"{BASE_URL}/sdk/v2/sessions/{SESSION_ID}/documents").mock(
+        return_value=httpx.Response(404, json={"error": "Session's dataset has no document corpus"}))
     assert run.download(tmp_path).written == []
