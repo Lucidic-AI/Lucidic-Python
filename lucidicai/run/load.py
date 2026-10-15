@@ -141,7 +141,8 @@ def _snapshot(payload: Mapping[str, Any]) -> Dict[str, Any]:
     snapshot = payload.get(SNAPSHOT_KEY) or {}
     if not (isinstance(snapshot, dict)
             and isinstance(snapshot.get("prompts") or {}, dict)
-            and isinstance(snapshot.get("tools") or [], list)):
+            and isinstance(snapshot.get("tools") or [], list)
+            and isinstance(snapshot.get("session_id") or "", str)):
         raise RunPayloadError(f"{SNAPSHOT_KEY} is malformed")
     return snapshot
 

@@ -62,12 +62,12 @@ class RunTools:
         """
         self._run._require_open("run.tools.call")
         return self._run.client.training_modules.call(
-            name, args, session_id=self._run.ids.session_id
+            name, args, session_id=self._run._target_session_id()
         )
 
     async def acall(self, name: str, args: Optional[Dict[str, Any]] = None) -> Any:
         """Async sibling of ``call``."""
         self._run._require_open("run.tools.acall")
         return await self._run.client.training_modules.acall(
-            name, args, session_id=self._run.ids.session_id
+            name, args, session_id=self._run._target_session_id()
         )
