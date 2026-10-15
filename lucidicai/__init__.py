@@ -78,6 +78,9 @@ from .sdk.tools.adapters import (
 # Integrations
 from .integrations.livekit import setup_livekit
 
+# Eval-run webhook signatures
+from . import webhook
+
 # Version
 __version__ = "4.0.0"
 
@@ -136,6 +139,8 @@ __all__ = [
     "register_langchain_tools",
     # Integrations
     "setup_livekit",
+    # Eval-run webhook signatures
+    "webhook",
     # Version
     "__version__",
 ]
