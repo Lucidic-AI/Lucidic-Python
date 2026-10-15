@@ -1,0 +1,25 @@
+"""The Lucidic wrapper an FDE copies next to the customer's agent.
+
+Webhook runs: examples/lucidic_runner.py loads each delivery and calls run_case.
+Local or subprocess runs: `python lucidic_entry.py --lucidic-run case.json`
+(or LUCIDIC_RUN set to the JSON or a path to it).
+"""
+import lucidicai as lucidic
+from their_pkg import their_agent                       # the only line the customer edits
+
+client = lucidic.LucidicAI(providers=["openai"])        # api key / agent id from env
+
+
+def run_case(run: lucidic.Run):
+    with run:                                           # session open, fixtures bound; ends + flushes evals on exit
+        # todo(LUC-1141): run.download(workdir) for the case documents
+        return their_agent(
+            run.input,
+            system=run.prompt("system", default=their_agent.SYSTEM_PROMPT, register=True),
+            extra_tools=run.tools.list(),
+            call_extra_tool=run.tools.call,
+        )
+
+
+if __name__ == "__main__":
+    run_case(lucidic.load(client=client))               # LUCIDIC_RUN, else --lucidic-run
