@@ -7,10 +7,19 @@ all of the org's resources (agent binding is a no-op here).
 
 Reads and writes are data-bearing — they do NOT swallow in production; typed
 transport errors propagate. Every method has an ``a``-prefixed async sibling.
+
+``download`` lands a session's document corpus in a local directory (LUC-1141).
 """
-from typing import Any, AsyncIterator, Dict, Iterator, Optional
+import os
+from pathlib import Path
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
+from urllib.parse import quote
+
+import httpx
 
 from ..client import HttpClient
+from ..documents import Doc, DownloadSummary, is_current, is_expired, parse_listing, store, summarize
+from ..downloads import afetch_presigned, fetch_presigned
 from ..models.base import CursorPage
 from ..models.resource import Resource
 from ..pagination import apaginate, paginate
@@ -145,7 +154,59 @@ class ResourcesResource:
         """Async sibling of ``delete``."""
         await self.http.adelete(f"{_RESOURCES}/{resource_id}")
 
+    # ==================== download ====================
+
+    def download(self, session_id: str, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
+        """Download a session's document corpus (GET
+        /sdk/v2/sessions/{id}/documents; needs ``session:read``) into ``dir``.
+        Each document lands at ``dir/path`` (``dir`` created as needed); a file
+        whose sha256 already matches is skipped. On a 400/403 from S3 (expired
+        URL) the listing is fetched once more and unfinished documents retried.
+        Raises the route's typed errors (``NotFoundError`` when the session has
+        no hydrated corpus, ``ConflictError`` for more than one), ``APIError`` for
+        a malformed listing, an unsafe path or a sha256 mismatch (nothing written
+        for that document), and ``httpx.HTTPStatusError`` for any other S3 failure."""
+        root = Path(dir)
+        done: Dict[str, Optional[int]] = {}
+        try:
+            return self._land(parse_listing(self.http.get(self._documents_path(session_id)), root), done)
+        except httpx.HTTPStatusError as exc:
+            if not is_expired(exc):
+                raise
+        # one re-list for fresh urls (spec expiry rule); finished docs are not redone
+        return self._land(parse_listing(self.http.get(self._documents_path(session_id)), root), done)
+
+    async def adownload(self, session_id: str, dir: Union[str, "os.PathLike[str]"]) -> DownloadSummary:
+        """Async sibling of ``download``."""
+        root = Path(dir)
+        done: Dict[str, Optional[int]] = {}
+        try:
+            return await self._aland(parse_listing(await self.http.aget(self._documents_path(session_id)), root), done)
+        except httpx.HTTPStatusError as exc:
+            if not is_expired(exc):
+                raise
+        return await self._aland(parse_listing(await self.http.aget(self._documents_path(session_id)), root), done)
+
     # ==================== internals ====================
+
+    @staticmethod
+    def _documents_path(session_id: str) -> str:
+        return f"sdk/v2/sessions/{quote(session_id, safe='')}/documents"
+
+    @staticmethod
+    def _land(docs: List[Doc], done: Dict[str, Optional[int]]) -> DownloadSummary:
+        # done carries finished paths across the re-list
+        for doc in docs:
+            if doc.path not in done:
+                done[doc.path] = None if is_current(doc.target, doc.sha256) else store(doc, fetch_presigned(doc.url))
+        return summarize(done)
+
+    @staticmethod
+    async def _aland(docs: List[Doc], done: Dict[str, Optional[int]]) -> DownloadSummary:
+        for doc in docs:
+            if doc.path not in done:
+                done[doc.path] = None if is_current(doc.target, doc.sha256) else store(doc, await afetch_presigned(doc.url))
+        return summarize(done)
 
     @staticmethod
     def _params(ordering: Optional[str], page_size: Optional[int]) -> Optional[Dict[str, Any]]:
