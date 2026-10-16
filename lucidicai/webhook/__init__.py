@@ -3,8 +3,8 @@
 ``lucidicai.load(body, signature)`` verifies and parses a delivery; use
 ``sign``/``verify`` directly only when building your own receiver or tests.
 """
-from .signing import SIGNATURE_HEADER, sign, verify
+from .signing import SIGNATURE_HEADER, secret_keys, sign, verify
 
 SECRET_ENV_VAR = "LUCIDIC_WEBHOOK_SECRET"
 
-__all__ = ["sign", "verify", "SIGNATURE_HEADER", "SECRET_ENV_VAR"]
+__all__ = ["sign", "verify", "secret_keys", "SIGNATURE_HEADER", "SECRET_ENV_VAR"]

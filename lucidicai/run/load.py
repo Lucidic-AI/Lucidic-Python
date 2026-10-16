@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Union
 
 from ..core.errors import RunLoadError, RunPayloadError, RunSignatureError
 from ..webhook import SECRET_ENV_VAR, SIGNATURE_HEADER, verify
+from ..webhook.signing import Secret, secret_keys
 from .run import RUN_ENV_VAR, SNAPSHOT_KEY, Run, RunIds
 
 if TYPE_CHECKING:
@@ -27,7 +28,7 @@ def load(
     signature: Optional[str] = None,
     *,
     client: Optional["LucidicAI"] = None,
-    secret: Optional[str] = None,
+    secret: Optional[Secret] = None,
     session_id: Optional[str] = None,
     datasetitem_id: Optional[str] = None,
     experiment_id: Optional[str] = None,
@@ -48,8 +49,12 @@ def load(
         body: The raw webhook request body, never re-serialised JSON.
         signature: The ``X-Lucidic-Signature`` header value.
         client: The client the run uses; default: one built from env, closed on exit.
-        secret: Webhook secret; default ``$LUCIDIC_WEBHOOK_SECRET``.
+        secret: Webhook secret, or a list of them while one rotates; default
+            ``$LUCIDIC_WEBHOOK_SECRET`` (comma-separated for rotation).
         params: Extra params, merged over the payload's unknown keys.
+
+    A signed delivery verifies again if replayed within the 300 s window, so a
+    webhook receiver should dedupe on ``session_id``.
 
     Raises:
         RunSignatureError: bad or missing signature (reply 401).
@@ -73,7 +78,7 @@ def load(
     return _run_from_payload({**(payload or {}), **overrides}, params or {}, client)
 
 
-def _from_source(body: Union[bytes, str, None], signature: Optional[str], secret: Optional[str]) -> Any:
+def _from_source(body: Union[bytes, str, None], signature: Optional[str], secret: Optional[Secret]) -> Any:
     if body is not None:
         return _from_webhook(body, signature, secret)
     value = os.environ.get(RUN_ENV_VAR)
@@ -83,12 +88,13 @@ def _from_source(body: Union[bytes, str, None], signature: Optional[str], secret
     return None if value is None else _from_value(value, RUN_ARG)
 
 
-def _from_webhook(body: Union[bytes, str], signature: Optional[str], secret: Optional[str]) -> Any:
+def _from_webhook(body: Union[bytes, str], signature: Optional[str], secret: Optional[Secret]) -> Any:
     raw = body.encode("utf-8") if isinstance(body, str) else bytes(body)
-    key = secret if secret is not None else os.environ.get(SECRET_ENV_VAR, "")
-    if not key:
+    env_keys = [part.strip() for part in os.environ.get(SECRET_ENV_VAR, "").split(",")]
+    keys = secret_keys(env_keys if secret is None else secret)
+    if not keys:
         raise RunLoadError(f"no webhook secret: pass secret= or set {SECRET_ENV_VAR}")
-    if not verify(key, raw, signature):
+    if not verify(keys, raw, signature):
         raise RunSignatureError(f"missing or invalid {SIGNATURE_HEADER}")
     return _json(raw, "webhook body")
 

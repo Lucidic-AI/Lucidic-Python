@@ -4,11 +4,12 @@ No network I/O happens in load(), so nothing here stubs HTTP.
 """
 import json
 import sys
+import time
 
 import pytest
 
 import lucidicai as lucidic
-from lucidicai import RunLoadError, RunPayloadError, RunSignatureError
+from lucidicai import RunLoadError, RunPayloadError, RunSignatureError, webhook
 
 from .conftest import (
     CHECKPOINT_ID, EVAL_RUN_ID, EXPERIMENT_ID, ITEM_ID, SECRET, SESSION_ID, full_payload, signed, wire,
@@ -64,7 +65,7 @@ def test_raw_bytes_are_verified_not_a_reserialisation():
 def test_signature_is_checked_before_json():
     # garbage with a bad signature is a 401, not a 422.
     with pytest.raises(RunSignatureError):
-        lucidic.load(b"not json", "sha256=00", secret=SECRET)
+        lucidic.load(b"not json", "t=0,v1=00", secret=SECRET)
 
 
 def test_str_body_is_verified_as_utf8():
@@ -76,6 +77,32 @@ def test_secret_comes_from_the_environment(monkeypatch):
     monkeypatch.setenv("LUCIDIC_WEBHOOK_SECRET", SECRET)
     body, signature = signed(full_payload())
     assert lucidic.load(body, signature).ids.session_id == SESSION_ID
+
+
+def test_environment_secret_may_list_two_for_rotation(monkeypatch):
+    monkeypatch.setenv("LUCIDIC_WEBHOOK_SECRET", f" new-secret , {SECRET} ")
+    body, signature = signed(full_payload())
+    assert lucidic.load(body, signature).ids.session_id == SESSION_ID
+
+
+def test_secret_may_be_a_list():
+    body, signature = signed(full_payload())
+    assert lucidic.load(body, signature, secret=["new-secret", SECRET]).ids.session_id == SESSION_ID
+
+
+def test_stale_signature_is_401():
+    body = wire(full_payload())
+    with pytest.raises(RunSignatureError):
+        lucidic.load(body, webhook.sign(SECRET, body, t=int(time.time()) - 301), secret=SECRET)
+
+
+@pytest.mark.parametrize("env, secret", [("", None), (" , ", None), (SECRET, []), (SECRET, [""]), (SECRET, "")])
+def test_empty_secret_is_no_secret(monkeypatch, env, secret):
+    monkeypatch.setenv("LUCIDIC_WEBHOOK_SECRET", env)
+    body, signature = signed(full_payload())
+    with pytest.raises(RunLoadError) as exc:
+        lucidic.load(body, signature, secret=secret)
+    assert type(exc.value) is RunLoadError
 
 
 def test_no_secret_is_a_500_config_error():

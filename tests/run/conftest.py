@@ -37,7 +37,7 @@ def full_payload(**overrides):
 
 
 def wire(payload) -> bytes:
-    # the backend's serialisation (webhook_egress.py::sign_body)
+    # the backend's serialisation (webhook_egress.py::encode_payload)
     return json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode("utf-8")
 
 
