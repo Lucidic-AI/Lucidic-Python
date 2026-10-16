@@ -105,3 +105,15 @@ def test_verify_rejects_a_missing_or_malformed_header(header):
 def test_verify_treats_a_non_ascii_header_as_a_mismatch():
     # starlette decodes headers as latin-1; this must not escape as a TypeError (500).
     assert _verify(f"t={_T},v1=é") is False
+
+
+@pytest.mark.parametrize("t", [-1, 10**12])
+def test_sign_refuses_a_t_no_verifier_accepts(t):
+    with pytest.raises(ValueError):
+        webhook.sign(_SECRET, _BODY, t=t)
+
+
+@pytest.mark.parametrize("secret", [b"test-signing-secret", [b"a"], ["a", 1]])
+def test_a_non_str_secret_is_a_type_error(secret):
+    with pytest.raises(TypeError):
+        _verify(_VECTOR, secret=secret)

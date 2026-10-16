@@ -53,6 +53,9 @@ def load(
             ``$LUCIDIC_WEBHOOK_SECRET`` (comma-separated for rotation).
         params: Extra params, merged over the payload's unknown keys.
 
+    A signed delivery verifies again if replayed within the 300 s window, so a
+    webhook receiver should dedupe on ``session_id``.
+
     Raises:
         RunSignatureError: bad or missing signature (reply 401).
         RunPayloadError: not a valid run (reply 422).
