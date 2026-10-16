@@ -89,6 +89,9 @@ from . import webhook
 # One object per run (LUC-1138)
 from .run import Run, RunIds, RunTools, load
 
+# Webhook runner (LUC-1151)
+from .runner import MemoryDedupe, Runner, serve
+
 # Version
 __version__ = "4.0.0"
 
@@ -159,6 +162,10 @@ __all__ = [
     "Run",
     "RunIds",
     "RunTools",
+    # Webhook runner (LUC-1151)
+    "Runner",
+    "MemoryDedupe",
+    "serve",
     # Version
     "__version__",
 ]

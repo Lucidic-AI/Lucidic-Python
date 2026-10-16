@@ -1,20 +1,18 @@
 """examples/lucidic_entry.py and examples/lucidic_runner.py, loaded by path with a stub agent."""
 import importlib.util
 import json
+import runpy
 import sys
-import threading
 import types
 from pathlib import Path
 
 import httpx
-import pytest
 
 import lucidicai as lucidic
 
 from .conftest import SECRET, SESSION_ID, full_payload, signed
 
 _EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
-OTHER_IDS = [f"{i}{i}{i}{i}{i}{i}{i}{i}-0000-0000-0000-000000000000" for i in range(1, 4)]
 
 
 def _load_example(name):
@@ -22,12 +20,6 @@ def _load_example(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.fixture
-def runner_module(monkeypatch):
-    monkeypatch.setenv("LUCIDIC_WEBHOOK_SECRET", SECRET)
-    return _load_example("lucidic_runner")
 
 
 def test_entry_runs_the_agent_inside_the_case_session(client, backend, monkeypatch, tmp_path):
@@ -61,31 +53,14 @@ def test_entry_runs_the_agent_inside_the_case_session(client, backend, monkeypat
     assert documents.call_count == 1
 
 
-def test_runner_accepts_once_per_session_id(runner_module, client):
-    ran = []
-    runner = runner_module.Runner(lambda run: ran.append(run.ids.session_id), client, max_workers=2)
-    body, signature = signed(full_payload())
+def test_runner_example_serves_the_entry_run_case(client, monkeypatch):
+    def run_case(run):
+        return None
 
-    assert runner.handle(body, signature) == 202
-    assert runner.handle(body, signature) == 202   # at-least-once re-delivery
-    runner._pool.shutdown(wait=True)
-    assert ran == [SESSION_ID]
+    served = {}
+    monkeypatch.setitem(sys.modules, "lucidic_entry", types.SimpleNamespace(client=client, run_case=run_case))
+    monkeypatch.setattr(lucidic, "serve", lambda fn, **kwargs: served.update(fn=fn, **kwargs))
+    monkeypatch.setenv("PORT", "9001")
+    runpy.run_path(str(_EXAMPLES / "lucidic_runner.py"), run_name="__main__")
 
-
-def test_runner_replies_with_the_load_error_status(runner_module, client):
-    runner = runner_module.Runner(lambda run: None, client)
-    body, _ = signed(full_payload())
-    assert runner.handle(body, "t=0,v1=00") == 401
-    assert runner.handle(*signed({"session_id": "not-a-uuid"})) == 422
-
-
-def test_runner_sheds_load_when_the_pool_is_full(runner_module, client):
-    release = threading.Event()
-    runner = runner_module.Runner(lambda run: release.wait(5), client, max_workers=1)
-    try:
-        statuses = [runner.handle(*signed(full_payload(session_id=sid))) for sid in OTHER_IDS]
-    finally:
-        release.set()
-        runner._pool.shutdown(wait=True)
-    # one running + one queued; the backend re-sends the 503 later
-    assert statuses == [202, 202, 503]
+    assert served == {"fn": run_case, "host": "0.0.0.0", "port": 9001, "workers": 4, "client": client}

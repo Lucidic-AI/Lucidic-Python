@@ -3,9 +3,8 @@
 The wrapper an FDE copies next to the customer's agent is examples/lucidic_entry.py:
 ``with run:`` around their agent, with ``run.prompt(...)`` and ``run.tools.list()``.
 
-A webhook receiver calls ``load(body, signature, client=client)`` in the request
-(it does no network I/O), replies 202 and hands the run to ``run_case`` on a
-bounded pool; see examples/lucidic_runner.py.
+Webhook runs: ``lucidicai.serve(run_case)`` (``lucidicai/runner.py``) verifies and
+dedupes each delivery, replies 202 and calls ``run_case`` on a bounded pool.
 A subprocess gets the same run through ``run.to_env()``.
 """
 from .load import RUN_ARG, load

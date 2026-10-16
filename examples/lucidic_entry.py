@@ -1,6 +1,6 @@
 """The Lucidic wrapper an FDE copies next to the customer's agent.
 
-Webhook runs: examples/lucidic_runner.py loads each delivery and calls run_case.
+Webhook runs: `lucidic.serve(run_case)` (see examples/lucidic_runner.py) calls run_case per case.
 Local or subprocess runs: `python lucidic_entry.py --lucidic-run case.json`
 (or LUCIDIC_RUN set to the JSON or a path to it).
 """
