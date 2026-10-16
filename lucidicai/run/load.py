@@ -9,7 +9,7 @@ import sys
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Union
 
-from ..core.errors import RunLoadError, RunPayloadError, RunSignatureError
+from ..core.errors import RunLoadError, RunPayloadError, RunSecretMissingError, RunSignatureError
 from ..webhook import SECRET_ENV_VAR, SIGNATURE_HEADER, verify
 from ..webhook.signing import Secret, secret_keys
 from .run import RUN_ENV_VAR, SNAPSHOT_KEY, Run, RunIds
@@ -59,7 +59,8 @@ def load(
     Raises:
         RunSignatureError: bad or missing signature (reply 401).
         RunPayloadError: not a valid run (reply 422).
-        RunLoadError: no secret for a webhook body, or no run found (500).
+        RunSecretMissingError: a webhook body but no secret (reply 412).
+        RunLoadError: no run found (500).
     """
     payload = _from_source(body, signature, secret)
     if payload is None and session_id is None:
@@ -93,7 +94,7 @@ def _from_webhook(body: Union[bytes, str], signature: Optional[str], secret: Opt
     env_keys = [part.strip() for part in os.environ.get(SECRET_ENV_VAR, "").split(",")]
     keys = secret_keys(env_keys if secret is None else secret)
     if not keys:
-        raise RunLoadError(f"no webhook secret: pass secret= or set {SECRET_ENV_VAR}")
+        raise RunSecretMissingError(f"no webhook secret: pass secret= or set {SECRET_ENV_VAR}")
     if not verify(keys, raw, signature):
         raise RunSignatureError(f"missing or invalid {SIGNATURE_HEADER}")
     return _json(raw, "webhook body")

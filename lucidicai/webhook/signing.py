@@ -19,13 +19,13 @@ Secret = Union[str, Sequence[str]]
 
 
 def secret_keys(secret: Optional[Secret]) -> List[str]:
-    """The non-empty keys in ``secret``. A str is one key, never split into characters."""
+    """The stripped, non-blank keys in ``secret``. A str is one key, never split into characters."""
     if secret is None:
         return []
     items = [secret] if isinstance(secret, str) else list(secret)
     if not all(isinstance(key, str) for key in items):
         raise TypeError("webhook secret must be a str or a sequence of str")
-    return [key for key in items if key]
+    return [key.strip() for key in items if key.strip()]
 
 
 def _v1(key: str, t_text: str, body: bytes) -> str:
@@ -34,10 +34,13 @@ def _v1(key: str, t_text: str, body: bytes) -> str:
 
 def sign(secret: str, body: bytes, *, t: Optional[int] = None) -> str:
     """Return the header value for ``body`` under ``secret`` at unix time ``t`` (default: now)."""
+    key = secret.strip()
+    if not key:
+        raise ValueError("webhook secret is empty")
     t_text = str(int(time.time()) if t is None else t)
     if not _T_TEXT.fullmatch(t_text):
         raise ValueError(f"t must be a unix time of 1 to 12 digits, got {t_text}")
-    return f"t={t_text},v1={_v1(secret, t_text, body)}"
+    return f"t={t_text},v1={_v1(key, t_text, body)}"
 
 
 def _parse(header: str) -> Optional[Tuple[str, List[str]]]:

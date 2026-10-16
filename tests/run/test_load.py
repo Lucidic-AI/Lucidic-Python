@@ -9,7 +9,7 @@ import time
 import pytest
 
 import lucidicai as lucidic
-from lucidicai import RunLoadError, RunPayloadError, RunSignatureError, webhook
+from lucidicai import RunLoadError, RunPayloadError, RunSecretMissingError, RunSignatureError, webhook
 
 from .conftest import (
     CHECKPOINT_ID, EVAL_RUN_ID, EXPERIMENT_ID, ITEM_ID, SECRET, SESSION_ID, full_payload, signed, wire,
@@ -96,21 +96,29 @@ def test_stale_signature_is_401():
         lucidic.load(body, webhook.sign(SECRET, body, t=int(time.time()) - 301), secret=SECRET)
 
 
-@pytest.mark.parametrize("env, secret", [("", None), (" , ", None), (SECRET, []), (SECRET, [""]), (SECRET, "")])
+@pytest.mark.parametrize("env, secret", [
+    ("", None), (" , ", None), (SECRET, []), (SECRET, [""]), (SECRET, ""), (SECRET, "  "), (SECRET, [" ", ""]),
+])
 def test_empty_secret_is_no_secret(monkeypatch, env, secret):
     monkeypatch.setenv("LUCIDIC_WEBHOOK_SECRET", env)
     body, signature = signed(full_payload())
-    with pytest.raises(RunLoadError) as exc:
+    with pytest.raises(RunSecretMissingError) as exc:
         lucidic.load(body, signature, secret=secret)
-    assert type(exc.value) is RunLoadError
+    assert exc.value.status_code == 412
 
 
-def test_no_secret_is_a_500_config_error():
+def test_no_secret_is_a_412():
     body, signature = signed(full_payload())
-    with pytest.raises(RunLoadError) as exc:
+    with pytest.raises(RunSecretMissingError) as exc:
         lucidic.load(body, signature)
-    assert type(exc.value) is RunLoadError
-    assert exc.value.status_code == 500
+    # still a RunLoadError, so existing handlers catch it
+    assert isinstance(exc.value, RunLoadError)
+    assert exc.value.status_code == 412
+
+
+def test_secret_is_stripped_like_the_backend_does():
+    body, signature = signed(full_payload())
+    assert lucidic.load(body, signature, secret=f" {SECRET} ").ids.session_id == SESSION_ID
 
 
 @pytest.mark.parametrize("body", [
@@ -241,3 +249,5 @@ def test_no_source_and_no_session_id_is_a_load_error():
     with pytest.raises(RunLoadError) as exc:
         lucidic.load()
     assert "no run found" in str(exc.value)
+    assert type(exc.value) is RunLoadError
+    assert exc.value.status_code == 500

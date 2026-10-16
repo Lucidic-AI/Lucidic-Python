@@ -58,6 +58,7 @@ def test_a_str_secret_is_one_key_not_characters():
     forged = webhook.sign("t", _BODY, t=_T)
     assert _verify(forged, secret="test") is False
     assert webhook.secret_keys("a,b") == ["a,b"]
+    assert webhook.secret_keys([" a ", "  ", ""]) == ["a"]
 
 
 def test_any_key_in_a_list_matches():
@@ -105,6 +106,18 @@ def test_verify_rejects_a_missing_or_malformed_header(header):
 def test_verify_treats_a_non_ascii_header_as_a_mismatch():
     # starlette decodes headers as latin-1; this must not escape as a TypeError (500).
     assert _verify(f"t={_T},v1=é") is False
+
+
+def test_a_padded_secret_round_trips():
+    header = webhook.sign(f"  {_SECRET}\n", _BODY, t=_T)
+    assert header == _VECTOR
+    assert _verify(header, secret=f" {_SECRET} ") is True
+
+
+@pytest.mark.parametrize("secret", ["", "  "])
+def test_sign_refuses_an_empty_secret(secret):
+    with pytest.raises(ValueError):
+        webhook.sign(secret, _BODY, t=_T)
 
 
 @pytest.mark.parametrize("t", [-1, 10**12])
