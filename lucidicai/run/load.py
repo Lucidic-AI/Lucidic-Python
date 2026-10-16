@@ -89,10 +89,16 @@ def _from_source(body: Union[bytes, str, None], signature: Optional[str], secret
     return None if value is None else _from_value(value, RUN_ARG)
 
 
+def webhook_keys(secret: Optional[Secret] = None) -> List[str]:
+    """The keys in ``secret``, else in ``$LUCIDIC_WEBHOOK_SECRET`` (comma-separated while one rotates)."""
+    if secret is None:
+        secret = os.environ.get(SECRET_ENV_VAR, "").split(",")
+    return secret_keys(secret)
+
+
 def _from_webhook(body: Union[bytes, str], signature: Optional[str], secret: Optional[Secret]) -> Any:
     raw = body.encode("utf-8") if isinstance(body, str) else bytes(body)
-    env_keys = [part.strip() for part in os.environ.get(SECRET_ENV_VAR, "").split(",")]
-    keys = secret_keys(env_keys if secret is None else secret)
+    keys = webhook_keys(secret)
     if not keys:
         raise RunSecretMissingError(f"no webhook secret: pass secret= or set {SECRET_ENV_VAR}")
     if not verify(keys, raw, signature):

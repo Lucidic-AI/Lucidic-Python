@@ -50,6 +50,7 @@ Constructor arguments take precedence over environment variables.
 | `LUCIDIC_AUTO_END` | No | `true` | Auto-end sessions on process exit |
 | `LUCIDIC_REGION` | No | `"us"` | `"us"` or `"india"` |
 | `LUCIDIC_BASE_URL` | No | — | Custom API URL (overrides region) |
+| `LUCIDIC_WEBHOOK_SECRET` | For webhook runs | — | Eval-run webhook signing secret (comma-separated while rotating) |
 
 ## Supported Providers
 
@@ -69,6 +70,32 @@ The `LucidicAI` instance exposes resource handlers as properties:
 
 Use `@client.event` to track an arbitrary function as a nested event on the
 current session.
+
+## Eval runs over a webhook
+
+Lucidic sends each eval case to your runner as a signed webhook. `lucidicai.serve`
+verifies it, dedupes re-deliveries, replies `202` at once and calls your
+function on a bounded thread pool (stdlib only):
+
+```python
+import lucidicai as lucidic
+
+client = lucidic.LucidicAI(providers=["openai"])
+
+def run_case(run: lucidic.Run):
+    with run:                    # the case's session; ends and flushes evals on exit
+        return my_agent(run.input)
+
+lucidic.serve(run_case, host="0.0.0.0", port=8080, workers=4, client=client)
+```
+
+Set `LUCIDIC_WEBHOOK_SECRET` (or pass `secret=`); without one `serve` refuses to
+start. Replies: `202` accepted, `200` duplicate, `401` bad or stale signature
+(keep the clock NTP-synced), `412` no secret, `413` body over `max_body`
+(1 MiB), `503` full (`workers * 2` cases running or queued; the backend
+re-sends). Dedupe is in memory for an hour by default; pass `dedupe=` a store
+with `claim(key) -> bool` and `release(key)` to share it across replicas. In
+your own server, call `lucidic.Runner(run_case).handle(body, headers)`.
 
 ## Documentation
 
