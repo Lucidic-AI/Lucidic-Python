@@ -58,6 +58,7 @@ from .core.errors import (
     RunLoadError,
     RunSignatureError,
     RunPayloadError,
+    RunSecretMissingError,
 )
 from .sdk.training_modules import TrainingModulesResource
 
@@ -130,6 +131,7 @@ __all__ = [
     "RunLoadError",
     "RunSignatureError",
     "RunPayloadError",
+    "RunSecretMissingError",
     "TrainingModulesResource",
     # Typed response-model base (LUC-905)
     "APIModel",

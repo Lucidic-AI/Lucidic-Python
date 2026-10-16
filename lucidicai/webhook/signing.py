@@ -19,13 +19,13 @@ Secret = Union[str, Sequence[str]]
 
 
 def secret_keys(secret: Optional[Secret]) -> List[str]:
-    """The non-empty keys in ``secret``. A str is one key, never split into characters."""
+    """The stripped, non-blank keys in ``secret``. A str is one key, never split into characters."""
     if secret is None:
         return []
     items = [secret] if isinstance(secret, str) else list(secret)
     if not all(isinstance(key, str) for key in items):
         raise TypeError("webhook secret must be a str or a sequence of str")
-    return [key for key in items if key]
+    return [key.strip() for key in items if key.strip()]
 
 
 def _v1(key: str, t_text: str, body: bytes) -> str:

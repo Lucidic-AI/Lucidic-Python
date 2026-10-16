@@ -58,6 +58,7 @@ def test_a_str_secret_is_one_key_not_characters():
     forged = webhook.sign("t", _BODY, t=_T)
     assert _verify(forged, secret="test") is False
     assert webhook.secret_keys("a,b") == ["a,b"]
+    assert webhook.secret_keys([" a ", "  ", ""]) == ["a"]
 
 
 def test_any_key_in_a_list_matches():

@@ -162,8 +162,13 @@ class InvalidOperationError(LucidicError):
 
 class RunLoadError(LucidicError):
     """``lucidicai.load()`` found no usable run. ``status_code`` is the reply a
-    webhook receiver should send: 500 here (receiver misconfigured, e.g. no secret)."""
+    webhook receiver should send: 500 here (receiver misconfigured)."""
     status_code = 500
+
+
+class RunSecretMissingError(RunLoadError):
+    """A webhook body arrived but no webhook secret is configured. Reply 412 (the backend won't re-send)."""
+    status_code = 412
 
 
 class RunSignatureError(RunLoadError):
