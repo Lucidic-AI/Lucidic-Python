@@ -11,7 +11,9 @@ queues; ``run_case(run)`` runs later on a pool of ``workers`` threads.
   dispatch window, or cases spend their retries on 503s.
 - Dedupe is by ``session_id`` for ``ttl`` seconds. The default store is in
   memory, so it resets on restart (cases already acked with 202 then end as
-  rollout timeouts); pass a shared store when running several replicas.
+  rollout timeouts); pass a shared store when running several replicas. A
+  store's ``claim`` runs under the runner's lock, so keep it fast.
+- Stopping the server drains: cases already acked with 202 still run.
 - Deliveries signed more than 300 s from this host's clock get 401, so keep the
   clock synced (NTP).
 """
@@ -120,19 +122,21 @@ class Runner:
             logger.warning(f"rejected delivery: {e}")
             return e.status_code, str(e).encode()
         session_id = run.ids.session_id
-        # slot and claim together, so a 503 never leaves a claim that would drop the retry
+        # claim then slot under one lock: a re-delivery is 200 even when full, and a 503 leaves no claim
         with self._lock:
-            if not self._slots.acquire(blocking=False):
-                return 503, b"runner full, retry later"
             if not self._dedupe.claim(session_id):
-                self._slots.release()
                 return 200, b"duplicate"
+            if not self._slots.acquire(blocking=False):
+                self._dedupe.release(session_id)
+                return 503, b"runner full, retry later"
             try:
                 self._pool.submit(self._work, run)
-            except RuntimeError:
+            except BaseException as e:
                 self._dedupe.release(session_id)
                 self._slots.release()
-                return 503, b"runner shutting down"
+                if isinstance(e, RuntimeError):
+                    return 503, b"runner shutting down"
+                raise
         return 202, b"accepted"
 
     def _work(self, run: Run) -> None:
@@ -152,7 +156,13 @@ def _http_server(runner: Runner, host: str, port: int) -> ThreadingHTTPServer:
         timeout = READ_TIMEOUT
 
         def do_POST(self) -> None:
-            status, reply = self._read_and_handle()
+            try:
+                status, reply = self._read_and_handle()
+            except Exception:
+                # e.g. a custom dedupe store failed; 500 lets the backend retry
+                logger.exception("delivery failed")
+                self.close_connection = True
+                status, reply = 500, b"internal error"
             self.send_response(status)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(reply)))
@@ -164,13 +174,15 @@ def _http_server(runner: Runner, host: str, port: int) -> ThreadingHTTPServer:
             if declared is None:
                 self.close_connection = True
                 return 411, b"Content-Length required"
-            if not declared.isdigit():
+            # ascii digits only, and short enough for int()
+            if not (declared.isascii() and declared.isdigit() and len(declared) <= 15):
                 self.close_connection = True
                 return 400, b"invalid Content-Length"
-            if int(declared) > runner.max_body:
+            length = int(declared)
+            if length > runner.max_body:
                 self.close_connection = True
                 return 413, f"body exceeds {runner.max_body} bytes".encode()
-            return runner.handle(self.rfile.read(int(declared)), self.headers)
+            return runner.handle(self.rfile.read(length), self.headers)
 
         def log_message(self, format: str, *args: Any) -> None:
             logger.debug(format % args)

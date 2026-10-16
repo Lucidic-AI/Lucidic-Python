@@ -116,6 +116,42 @@ def test_full_is_503_and_the_retry_is_accepted_later(make_runner):
     assert _accept_soon(runner, OTHER_IDS[2]) == 202
 
 
+def test_redelivery_of_an_accepted_case_is_200_even_when_full(make_runner):
+    release = threading.Event()
+    runner = make_runner(lambda run: release.wait(5), workers=1)
+    try:
+        assert [_post(runner, full_payload(session_id=sid))[0] for sid in OTHER_IDS[:2]] == [202, 202]
+        assert _post(runner, full_payload(session_id=OTHER_IDS[0])) == (200, b"duplicate")
+        assert _post(runner, full_payload(session_id=OTHER_IDS[2]))[0] == 503
+    finally:
+        release.set()
+
+
+class _FlakyStore:
+    """Raises on the first ``fails`` claims, then accepts."""
+
+    def __init__(self, fails):
+        self.fails = fails
+
+    def claim(self, key):
+        if self.fails:
+            self.fails -= 1
+            raise ConnectionError("store down")
+        return True
+
+    def release(self, key):
+        pass
+
+
+def test_a_failing_dedupe_store_does_not_leak_slots(make_runner):
+    runner = make_runner(workers=1, dedupe=_FlakyStore(fails=3))
+    for _ in range(3):
+        with pytest.raises(ConnectionError):
+            _post(runner, full_payload())
+    # both slots are still free
+    assert [_post(runner, full_payload(session_id=sid))[0] for sid in OTHER_IDS[:2]] == [202, 202]
+
+
 def test_a_failing_run_case_is_logged_and_frees_its_slot(make_runner, caplog):
     def boom(run):
         raise RuntimeError("agent crashed")
@@ -215,9 +251,27 @@ def test_http_stale_delivery_is_401(live):
     assert ran == []
 
 
-@pytest.mark.parametrize("length, status", [(None, 411), ("12x", 400), ("-1", 400), ("4097", 413)])
+@pytest.mark.parametrize(
+    "length, status",
+    [(None, 411), ("12x", 400), ("-1", 400), ("\u00b2", 400), ("9" * 5000, 400), ("4097", 413)],
+)
 def test_http_content_length_is_checked_before_reading(live, length, status):
     port, ran = live
     headers = {} if length is None else {"Content-Length": length}
     assert _request(port, b"", headers)[0] == status
     assert ran == []
+
+
+def test_http_store_error_is_500_and_retryable(make_runner):
+    runner = make_runner(dedupe=_FlakyStore(fails=1))
+    server = _http_server(runner, "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        body, signature = signed(full_payload())
+        headers = {"Content-Length": str(len(body)), webhook.SIGNATURE_HEADER: signature}
+        assert _request(port, body, headers)[0] == 500
+        assert _request(port, body, headers) == (202, b"accepted")
+    finally:
+        server.shutdown()
+        server.server_close()
