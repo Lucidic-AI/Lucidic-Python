@@ -5,6 +5,10 @@ deliver a case twice. So the handler only verifies and queues, replies 202 in
 well under a second, and runs the case on a bounded pool.
 
     LUCIDIC_WEBHOOK_SECRET=... LUCIDIC_RUNNER_WORKERS=4 python lucidic_runner.py
+
+``LUCIDIC_WEBHOOK_SECRET`` may hold two comma-separated values while a secret
+rotates. Deliveries signed more than 300 s from this host's clock get 401, so
+keep the clock synced (NTP).
 """
 import logging
 import os

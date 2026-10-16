@@ -1,28 +1,83 @@
-"""Webhook signature v1: HMAC-SHA256 over the raw body, keyed by the shared
-secret, sent as ``X-Lucidic-Signature: sha256=<lowercase hex>``.
+"""Webhook signature v2: ``X-Lucidic-Signature: t=<unix>,v1=<hex>[,v1=<hex>]``.
+
+``v1 = HMAC-SHA256(secret, t + "." + body)`` over the raw body, one per signing
+secret (two while a secret rotates). A ``t`` more than ``tolerance`` seconds from
+the receiver's clock is rejected, so a captured delivery can't be replayed later.
 """
 import hashlib
 import hmac
-from typing import Optional
+import re
+import time
+from typing import List, Optional, Sequence, Tuple, Union
 
 SIGNATURE_HEADER = "X-Lucidic-Signature"
-_PREFIX = "sha256="
+DEFAULT_TOLERANCE = 300
+MAX_SIGNATURES = 5
+_T_TEXT = re.compile(r"[0-9]{1,12}")
+
+Secret = Union[str, Sequence[str]]
 
 
-def sign(secret: str, body: bytes) -> str:
-    """Return the header value for ``body`` under ``secret``."""
-    return _PREFIX + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+def secret_keys(secret: Optional[Secret]) -> List[str]:
+    """The non-empty keys in ``secret``. A str is one key, never split into characters."""
+    if secret is None:
+        return []
+    items = [secret] if isinstance(secret, str) else list(secret)
+    return [key for key in items if key]
 
 
-def verify(secret: str, body: bytes, header: Optional[str]) -> bool:
-    """True iff ``header`` is the exact signature of ``body``. Constant-time compare.
+def _v1(key: str, t_text: str, body: bytes) -> str:
+    return hmac.new(key.encode("utf-8"), t_text.encode("ascii") + b"." + body, hashlib.sha256).hexdigest()
+
+
+def sign(secret: str, body: bytes, *, t: Optional[int] = None) -> str:
+    """Return the header value for ``body`` under ``secret`` at unix time ``t`` (default: now)."""
+    t_text = str(int(time.time()) if t is None else t)
+    return f"t={t_text},v1={_v1(secret, t_text, body)}"
+
+
+def _parse(header: str) -> Optional[Tuple[str, List[str]]]:
+    """``(t_text, [v1, ...])``, or None when the header is malformed."""
+    t_text, signatures = None, []
+    for part in header.split(","):
+        key, sep, value = part.partition("=")
+        if not sep:
+            return None
+        if key == "t":
+            if t_text is not None or not _T_TEXT.fullmatch(value):
+                return None
+            t_text = value
+        elif key == "v1":
+            signatures.append(value)
+            if len(signatures) > MAX_SIGNATURES:
+                return None
+    if t_text is None or not signatures:
+        return None
+    return t_text, signatures
+
+
+def verify(
+    secret: Secret,
+    body: bytes,
+    header: Optional[str],
+    *,
+    tolerance: int = DEFAULT_TOLERANCE,
+    now: Optional[float] = None,
+) -> bool:
+    """True iff ``header`` carries a fresh ``v1`` of ``body`` under any key in ``secret``.
 
     Raises:
-        ValueError: if ``secret`` is empty (a configuration bug, not a bad request).
+        ValueError: if ``secret`` holds no key (a configuration bug, not a bad request).
     """
-    if not secret:
+    keys = secret_keys(secret)
+    if not keys:
         raise ValueError("webhook secret is empty")
-    if not header or not header.startswith(_PREFIX):
+    parsed = _parse(header) if header else None
+    if parsed is None:
+        return False
+    t_text, signatures = parsed
+    if abs((time.time() if now is None else now) - int(t_text)) > tolerance:
         return False
     # bytes compare so a non-ASCII header is a 401, not a TypeError
-    return hmac.compare_digest(sign(secret, body).encode("ascii"), header.encode("utf-8"))
+    expected = [_v1(key, t_text, body).encode("ascii") for key in keys]
+    return any(hmac.compare_digest(e, s.encode("utf-8")) for e in expected for s in signatures)

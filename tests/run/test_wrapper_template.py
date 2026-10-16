@@ -75,7 +75,7 @@ def test_runner_accepts_once_per_session_id(runner_module, client):
 def test_runner_replies_with_the_load_error_status(runner_module, client):
     runner = runner_module.Runner(lambda run: None, client)
     body, _ = signed(full_payload())
-    assert runner.handle(body, "sha256=00") == 401
+    assert runner.handle(body, "t=0,v1=00") == 401
     assert runner.handle(*signed({"session_id": "not-a-uuid"})) == 422
 
 
