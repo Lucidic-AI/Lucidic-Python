@@ -108,6 +108,18 @@ def test_verify_treats_a_non_ascii_header_as_a_mismatch():
     assert _verify(f"t={_T},v1=é") is False
 
 
+def test_a_padded_secret_round_trips():
+    header = webhook.sign(f"  {_SECRET}\n", _BODY, t=_T)
+    assert header == _VECTOR
+    assert _verify(header, secret=f" {_SECRET} ") is True
+
+
+@pytest.mark.parametrize("secret", ["", "  "])
+def test_sign_refuses_an_empty_secret(secret):
+    with pytest.raises(ValueError):
+        webhook.sign(secret, _BODY, t=_T)
+
+
 @pytest.mark.parametrize("t", [-1, 10**12])
 def test_sign_refuses_a_t_no_verifier_accepts(t):
     with pytest.raises(ValueError):
