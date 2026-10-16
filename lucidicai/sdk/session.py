@@ -75,7 +75,7 @@ def _ensure_http_and_resources_initialized(config: SDKConfig) -> None:
 def _build_session_params(
     session_id: Optional[str],
     session_name: Optional[str],
-    agent_id: str,
+    agent_id: Optional[str],
     task: Optional[str],
     tags: Optional[List],
     experiment_id: Optional[str],
@@ -84,10 +84,16 @@ def _build_session_params(
     production_monitoring: bool,
 ) -> tuple[str, dict]:
     """Build session parameters for API call.
-    
+
     Returns:
         Tuple of (real_session_id, session_params)
     """
+    # LUC-926: a session must attach to an agent. Raise loudly (even in
+    # production) if there's no agent_id, rather than POST a null one or let a
+    # swallow silently drop the session. Shared by create_session + acreate.
+    from ..core.errors import require_agent_id
+    require_agent_id(agent_id, "create_session")
+
     # Create or retrieve session
     if session_id:
         real_session_id = session_id
@@ -330,7 +336,12 @@ def emit_session(
         Session ID - returned immediately
     """
     from .init import _sdk_state
-    
+
+    # NOTE (LUC-926): emit_session is pre-existing-broken — the import above
+    # (`_sdk_state`) doesn't exist in sdk/init.py, so this fire-and-forget path
+    # raises ImportError on first use and is effectively dead (not in __all__).
+    # It is therefore NOT a silent-loss risk; no agent_id guard is added here.
+
     # Pre-generate session ID for instant return
     real_session_id = session_id or str(uuid.uuid4())
     

@@ -5,14 +5,16 @@ Thin wrappers over the backend inference-time Training Modules endpoints:
 - GET /sdk/training-modules/tools
 - POST /sdk/training-modules/inferences
 - GET /sdk/training-modules/inferences/{inference_run_id}
+
+Non-2xx responses raise a typed ``LucidicError`` from the central transport
+decoder (LUC-900) — e.g. ``NotFoundError``, ``ValidationError`` (with
+``.details``), or ``ServiceUnavailableError`` after the transport's 503 retry
+budget is exhausted. This module no longer hand-formats error strings.
 """
 import logging
 from typing import Any, Dict, Optional
 
-import httpx
-
 from ..client import HttpClient
-from ...core.errors import LucidicError
 
 logger = logging.getLogger("Lucidic")
 
@@ -41,13 +43,10 @@ class TrainingModulesAPIResource:
         ``prompt_name`` to scope to a single edit site server-side (LUC-801), and
         ``checkpoint_id`` to introspect a checkpoint without a live session.
         """
-        try:
-            return self.http.get(
-                "sdk/training-modules/tools",
-                _tools_params(session_id=session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id),
-            )
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_training_module_error(exc)) from exc
+        return self.http.get(
+            "sdk/training-modules/tools",
+            _tools_params(session_id=session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id),
+        )
 
     async def alist_tools(
         self,
@@ -57,13 +56,10 @@ class TrainingModulesAPIResource:
         checkpoint_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Async sibling of ``list_tools``."""
-        try:
-            return await self.http.aget(
-                "sdk/training-modules/tools",
-                _tools_params(session_id=session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id),
-            )
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_training_module_error(exc)) from exc
+        return await self.http.aget(
+            "sdk/training-modules/tools",
+            _tools_params(session_id=session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id),
+        )
 
     def submit_inference(
         self,
@@ -81,10 +77,7 @@ class TrainingModulesAPIResource:
         }
         if client_event_id is not None:
             body["client_event_id"] = client_event_id
-        try:
-            return self.http.post("sdk/training-modules/inferences", body)
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_training_module_error(exc)) from exc
+        return self.http.post("sdk/training-modules/inferences", body)
 
     async def asubmit_inference(
         self,
@@ -102,10 +95,7 @@ class TrainingModulesAPIResource:
         }
         if client_event_id is not None:
             body["client_event_id"] = client_event_id
-        try:
-            return await self.http.apost("sdk/training-modules/inferences", body)
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_training_module_error(exc)) from exc
+        return await self.http.apost("sdk/training-modules/inferences", body)
 
     def get_inference(
         self,
@@ -115,13 +105,10 @@ class TrainingModulesAPIResource:
     ) -> Dict[str, Any]:
         """Fetch an existing Training Module inference run."""
         params = {"session_id": session_id} if session_id else None
-        try:
-            return self.http.get(
-                f"sdk/training-modules/inferences/{inference_run_id}",
-                params,
-            )
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_training_module_error(exc)) from exc
+        return self.http.get(
+            f"sdk/training-modules/inferences/{inference_run_id}",
+            params,
+        )
 
     async def aget_inference(
         self,
@@ -131,13 +118,10 @@ class TrainingModulesAPIResource:
     ) -> Dict[str, Any]:
         """Async sibling of ``get_inference``."""
         params = {"session_id": session_id} if session_id else None
-        try:
-            return await self.http.aget(
-                f"sdk/training-modules/inferences/{inference_run_id}",
-                params,
-            )
-        except httpx.HTTPStatusError as exc:
-            raise LucidicError(_format_training_module_error(exc)) from exc
+        return await self.http.aget(
+            f"sdk/training-modules/inferences/{inference_run_id}",
+            params,
+        )
 
 
 def _tools_params(
@@ -159,18 +143,3 @@ def _tools_params(
     if prompt_name is not None:
         params["prompt_name"] = prompt_name
     return params
-
-
-def _format_training_module_error(exc: httpx.HTTPStatusError) -> str:
-    """Best-effort human-readable Training Modules error."""
-    try:
-        body = exc.response.json()
-    except ValueError:
-        return f"HTTP {exc.response.status_code}: {exc.response.text or 'no body'}"
-
-    if isinstance(body, dict):
-        if "error" in body:
-            return f"HTTP {exc.response.status_code}: {body['error']}"
-        if "errors" in body:
-            return f"HTTP {exc.response.status_code} validation: {body['errors']}"
-    return f"HTTP {exc.response.status_code}: {body!r}"

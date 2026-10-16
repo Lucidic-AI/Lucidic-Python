@@ -4,15 +4,14 @@
 checkpoint-backed module tools. It hides backend inference-run bookkeeping
 on success and returns structured soft failures for agent-facing failures.
 """
-import asyncio
 import json
 import logging
-import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
+from ...api.polling import await_for, wait_for
 from ...api.resources.training_modules import TrainingModulesAPIResource
-from ...core.errors import LucidicError
+from ...core.errors import LucidicError, WaitTimeout
 from ..context import current_session_id
 
 if TYPE_CHECKING:
@@ -22,6 +21,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger("Lucidic")
 
 ACTIVE_STATUSES = {"PENDING", "SUBMITTED", "RUNNING"}
+
+
+class _PollAbort(Exception):
+    """Carries a soft-failure result out of the poll closure (LUC-920 refactor).
+
+    The training-module mock-call contract never raises — a poll-time problem
+    (malformed response, transport error) degrades to a structured soft failure.
+    The generic ``wait_for`` loop can't produce those, so the poll closure raises
+    this to hand the already-built failure back for the caller to return."""
+
+    def __init__(self, failure: Dict[str, Any]):
+        self.failure = failure
+        super().__init__(failure.get("error", {}).get("code", "poll_abort"))
 
 
 class TrainingModulesResource:
@@ -355,37 +367,40 @@ class TrainingModulesResource:
         timeout_seconds: Optional[float],
         poll_interval_seconds: Optional[float],
     ) -> Any:
-        deadline = time.monotonic() + self._timeout(timeout_seconds)
-        interval = self._poll_interval(poll_interval_seconds)
+        box = {"run": run}
 
-        while run.get("status") in ACTIVE_STATUSES:
-            if time.monotonic() >= deadline:
-                return self._timeout_failure(run, timeout_seconds)
-            inference_run_id = run.get("inference_run_id")
+        def poll() -> Dict[str, Any]:
+            current = box["run"]
+            inference_run_id = current.get("inference_run_id")
             if not inference_run_id:
-                return self._soft_failure(
+                raise _PollAbort(self._soft_failure(
                     code="training_module_malformed_response",
                     message="Training Module inference response did not include inference_run_id.",
-                    run=run,
-                    session_id=session_id,
-                    tool_name=run.get("tool_name"),
-                )
-            time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+                    run=current, session_id=session_id, tool_name=current.get("tool_name"),
+                ))
             try:
-                run = self._api.get_inference(
-                    inference_run_id=str(inference_run_id),
-                    session_id=session_id,
-                )
+                box["run"] = self._api.get_inference(
+                    inference_run_id=str(inference_run_id), session_id=session_id)
             except Exception as exc:
-                return self._soft_failure(
-                    code="training_module_poll_failed",
-                    message=str(exc),
-                    run=run,
-                    session_id=session_id,
-                    tool_name=run.get("tool_name"),
-                )
+                raise _PollAbort(self._soft_failure(
+                    code="training_module_poll_failed", message=str(exc),
+                    run=current, session_id=session_id, tool_name=current.get("tool_name"),
+                ))
+            return box["run"]
 
-        return self._terminal_tool_result(run)
+        try:
+            final = wait_for(
+                poll,
+                is_terminal=lambda r: r.get("status") not in ACTIVE_STATUSES,
+                timeout=self._timeout(timeout_seconds),
+                interval=self._poll_interval(poll_interval_seconds),
+                initial=run,
+            )
+        except WaitTimeout as timed_out:
+            return self._timeout_failure(timed_out.last_state, timeout_seconds)
+        except _PollAbort as aborted:
+            return aborted.failure
+        return self._terminal_tool_result(final)
 
     async def _apoll_to_tool_result(
         self,
@@ -395,37 +410,40 @@ class TrainingModulesResource:
         timeout_seconds: Optional[float],
         poll_interval_seconds: Optional[float],
     ) -> Any:
-        deadline = time.monotonic() + self._timeout(timeout_seconds)
-        interval = self._poll_interval(poll_interval_seconds)
+        box = {"run": run}
 
-        while run.get("status") in ACTIVE_STATUSES:
-            if time.monotonic() >= deadline:
-                return self._timeout_failure(run, timeout_seconds)
-            inference_run_id = run.get("inference_run_id")
+        async def poll() -> Dict[str, Any]:
+            current = box["run"]
+            inference_run_id = current.get("inference_run_id")
             if not inference_run_id:
-                return self._soft_failure(
+                raise _PollAbort(self._soft_failure(
                     code="training_module_malformed_response",
                     message="Training Module inference response did not include inference_run_id.",
-                    run=run,
-                    session_id=session_id,
-                    tool_name=run.get("tool_name"),
-                )
-            await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+                    run=current, session_id=session_id, tool_name=current.get("tool_name"),
+                ))
             try:
-                run = await self._api.aget_inference(
-                    inference_run_id=str(inference_run_id),
-                    session_id=session_id,
-                )
+                box["run"] = await self._api.aget_inference(
+                    inference_run_id=str(inference_run_id), session_id=session_id)
             except Exception as exc:
-                return self._soft_failure(
-                    code="training_module_poll_failed",
-                    message=str(exc),
-                    run=run,
-                    session_id=session_id,
-                    tool_name=run.get("tool_name"),
-                )
+                raise _PollAbort(self._soft_failure(
+                    code="training_module_poll_failed", message=str(exc),
+                    run=current, session_id=session_id, tool_name=current.get("tool_name"),
+                ))
+            return box["run"]
 
-        return self._terminal_tool_result(run)
+        try:
+            final = await await_for(
+                poll,
+                is_terminal=lambda r: r.get("status") not in ACTIVE_STATUSES,
+                timeout=self._timeout(timeout_seconds),
+                interval=self._poll_interval(poll_interval_seconds),
+                initial=run,
+            )
+        except WaitTimeout as timed_out:
+            return self._timeout_failure(timed_out.last_state, timeout_seconds)
+        except _PollAbort as aborted:
+            return aborted.failure
+        return self._terminal_tool_result(final)
 
     def _terminal_tool_result(self, run: Dict[str, Any]) -> Any:
         status = run.get("status")

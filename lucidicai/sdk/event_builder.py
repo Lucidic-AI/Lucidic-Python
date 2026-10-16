@@ -62,9 +62,17 @@ class EventBuilder:
         Returns:
             Normalized event request dictionary
         """
-        # check if already in strict format
+        # check if already in strict format (caller supplied a `payload` dict)
         if cls._is_strict_format(params):
-            return params
+            # Still translate the identity/base fields to the wire names the backend
+            # reads (event_id -> client_event_id, parent_event_id -> client_parent_event_id,
+            # + session_id/occurred_at/duration/tags/metadata), then attach the caller's
+            # payload verbatim. Without this the strict path drops parent-linking and
+            # idempotency dedup (LUC-941).
+            base = cls._extract_base_params(params)
+            base['type'] = params.get('type', 'generic')
+            base['payload'] = params['payload']
+            return base
         
         # normalize field names
         normalized = cls._normalize_fields(params)
