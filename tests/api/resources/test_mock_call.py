@@ -15,11 +15,13 @@ from lucidicai.api.client import HttpClient
 from lucidicai.api.resources.mock_call import MockCallResource
 from lucidicai.core.config import NetworkConfig, SDKConfig
 from lucidicai.core.errors import (
+    InsufficientScopeError,
     LucidicMockCallError,
     LucidicToolBlockedError,
     LucidicToolDriftError,
     LucidicUnknownToolError,
     LucidicUnsupportedSQLError,
+    RateLimitError,
 )
 
 
@@ -198,6 +200,27 @@ class TestCallErrors:
         with pytest.raises(LucidicMockCallError) as exc_info:
             resource.call(session_id="s", tool_name="t", kwargs={})
         assert exc_info.value.code == "malformed_response"
+
+
+class TestCallPropagatesTypedErrors:
+    """Well-typed non-mock errors (auth / scope / rate-limit) must propagate
+    with their type + fields intact — NOT be flattened to malformed_response.
+    Only a genuinely untyped/malformed body becomes a mock error."""
+
+    @respx.mock
+    def test_403_scope_propagates_with_fields(self, resource):
+        respx.post(_ENDPOINT).mock(return_value=httpx.Response(
+            403, json={"error": "missing scope", "required_scope": "tool:mock"}))
+        with pytest.raises(InsufficientScopeError) as ei:
+            resource.call(session_id="s", tool_name="t", kwargs={})
+        assert ei.value.required_scope == "tool:mock"
+
+    @respx.mock
+    def test_429_rate_limit_propagates(self, resource):
+        respx.post(_ENDPOINT).mock(return_value=httpx.Response(
+            429, json={"detail": "slow down"}))
+        with pytest.raises(RateLimitError):
+            resource.call(session_id="s", tool_name="t", kwargs={})
 
 
 # ---------- acall (async) ------------------------------------------------

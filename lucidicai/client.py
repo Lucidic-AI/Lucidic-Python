@@ -17,6 +17,7 @@ Example:
         my_function()
 """
 
+import asyncio
 import logging
 import os
 import threading
@@ -24,14 +25,24 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from .api.client import HttpClient
+from .api.resources.agents import AgentsResource
+from .api.resources.evaluator_results import EvaluatorResultsResource
+from .api.resources.evaluators import EvaluatorsResource
+from .api.resources.projects import ProjectsResource
+from .api.resources.resources import ResourcesResource
 from .api.resources.session import SessionResource
+from .api.resources.usage import UsageResource
 from .api.resources.event import EventResource
 from .api.resources.dataset import DatasetResource
 from .api.resources.experiment import ExperimentResource
 from .api.resources.prompt import PromptResource
 from .api.resources.feature_flag import FeatureFlagResource
-from .api.resources.evals import EvalsResource
-from .api.resources.evosim import EvoSimResource
+from .api.resources.evals import (
+    EVAL_FLUSH_TIMEOUT_SECONDS,
+    EvalsResource,
+    validate_flush_timeout,
+)
+from .api.resources.evosim import EvoSimsResource
 from .api.resources.mock_call import MockCallResource
 from .sdk.training_modules.resource import TrainingModulesResource
 from .sdk.tools.resource import ToolsResource
@@ -70,6 +81,8 @@ class LucidicAI:
         region: Deployment region ("us", "india"). Falls back to LUCIDIC_REGION env var.
         base_url: Custom base URL for API requests. Takes precedence over region.
                   Falls back to LUCIDIC_BASE_URL env var.
+        eval_flush_timeout: Seconds close()/aclose() wait for in-flight
+                  evals.emit() posts (default 5.0). close() blocks up to this long.
         **kwargs: Additional configuration options passed to SDKConfig.
 
     Raises:
@@ -117,6 +130,7 @@ class LucidicAI:
         production: Optional[bool] = None,
         region: Optional[str] = None,
         base_url: Optional[str] = None,
+        eval_flush_timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS,
         **kwargs,
     ):
         # Generate unique client ID for telemetry routing
@@ -126,6 +140,7 @@ class LucidicAI:
         if production is None:
             production = os.getenv("LUCIDIC_PRODUCTION", "").lower() in ("true", "1")
         self._production = production
+        self._eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
 
         # Build configuration
         self._config = SDKConfig.from_env(
@@ -155,6 +170,12 @@ class LucidicAI:
 
         # Initialize API resources
         self._resources: Dict[str, Any] = {
+            "agents": AgentsResource(self._http),
+            "evaluators": EvaluatorsResource(self._http, self._config.agent_id),
+            "evaluator_results": EvaluatorResultsResource(self._http),
+            "projects": ProjectsResource(self._http),
+            "resources": ResourcesResource(self._http),
+            "usage": UsageResource(self._http),
             "sessions": SessionResource(self._http, self, self._config, self._production),
             "events": EventResource(self._http, self._production),
             "datasets": DatasetResource(self._http, self._config.agent_id, self._production),
@@ -162,7 +183,7 @@ class LucidicAI:
             "prompts": PromptResource(self._http, self._config, self._production),
             "feature_flags": FeatureFlagResource(self._http, self._config.agent_id, self._production),
             "evals": EvalsResource(self._http, self._production),
-            "evosims": EvoSimResource(self._http, self._config.agent_id, self._production),
+            "evosims": EvoSimsResource(self._http, self._config.agent_id, self._production),
             "mock_calls": MockCallResource(self._http, self._production),
         }
 
@@ -236,9 +257,69 @@ class LucidicAI:
         return self._config.agent_id
 
     @property
+    def eval_flush_timeout(self) -> float:
+        """Seconds close() waits for in-flight evals.emit() posts by default."""
+        return self._eval_flush_timeout
+
+    @property
     def is_valid(self) -> bool:
         """Check if the client is properly configured."""
         return self._valid
+
+    @property
+    def agents(self) -> AgentsResource:
+        """Access agent reads (LUC-906): ``list()`` / ``get(id)`` + ``tool_catalog(id)``.
+
+        Enumerate the org's agents (discover their ``agent_id`` s), read one
+        back, or inspect an agent's tool catalog. (A client still needs an
+        ``agent_id`` to construct today; a read-only bootstrap mode is a planned
+        follow-up.)
+        """
+        return self._resources["agents"]
+
+    @property
+    def evaluators(self) -> EvaluatorsResource:
+        """Access evaluator reads (LUC-910): ``list()`` / ``get(id)``,
+        ``evals(id)`` (one evaluator's result distribution), and ``result(id)``
+        (a single evaluator result by id).
+
+        Distinct from ``client.evals`` (ad-hoc score ``emit``).
+        """
+        return self._resources["evaluators"]
+
+    @property
+    def evaluator_results(self) -> EvaluatorResultsResource:
+        """Read a single evaluator result by its id (LUC-910):
+        ``client.evaluator_results.get(eval_id)``.
+
+        Keyed by an ``EvalResult`` id — distinct from the evaluator-keyed reads
+        on ``client.evaluators``.
+        """
+        return self._resources["evaluator_results"]
+
+    @property
+    def projects(self) -> ProjectsResource:
+        """Access project CRUD (LUC-913): ``list`` / ``create`` / ``get`` /
+        ``update`` / ``delete``. Org-scoped; ``delete`` un-projects agents
+        (SET_NULL) rather than destroying them.
+        """
+        return self._resources["projects"]
+
+    @property
+    def resources(self) -> ResourcesResource:
+        """Access SQL-substrate Resource CRUD (LUC-917): ``list`` / ``create`` /
+        ``get`` / ``update`` / ``delete``. Org-scoped definitions of external
+        services the client mocks at runtime (SQL / API / CUSTOM), attached to
+        Datasets and Tools. ``delete`` is protected while the resource is in use.
+        """
+        return self._resources["resources"]
+
+    @property
+    def usage(self) -> UsageResource:
+        """Access org-aggregated usage counters (LUC-911):
+        ``client.usage.get()`` returns a read-only ``{stat_name: total}`` mapping.
+        """
+        return self._resources["usage"]
 
     @property
     def tools(self) -> ToolsResource:
@@ -350,8 +431,10 @@ class LucidicAI:
         return self._resources["evals"]
 
     @property
-    def evosims(self) -> EvoSimResource:
-        """Access EvoSim resource for agent optimization runs.
+    def evosims(self) -> EvoSimsResource:
+        """Access EvoSim run management (LUC-923): ``train`` kickoff, ``list`` /
+        ``get`` runs, ``cancel``, ``iteration_instances``, and ``wait_for`` a run to
+        a terminal status.
 
         Example:
             result = client.evosims.train("training_config.json")
@@ -429,12 +512,29 @@ class LucidicAI:
 
     # ==================== Lifecycle ====================
 
-    def close(self) -> None:
+    def _flush_evals(self, timeout: Optional[float] = None) -> None:
+        """Wait (bounded) for in-flight evals.emit() posts; never raises.
+
+        ``timeout`` defaults to the client's ``eval_flush_timeout``.
+        """
+        try:
+            self.evals.flush(self._eval_flush_timeout if timeout is None else timeout)
+        except Exception as e:
+            logger.debug(f"[LucidicAI] Error flushing evals on close: {e}")
+
+    def close(self, eval_flush_timeout: Optional[float] = None) -> None:
         """Close the client and clean up resources.
 
-        This ends all active sessions and unregisters from telemetry.
+        This waits for pending evals.emit() posts (blocking up to
+        ``eval_flush_timeout`` seconds, default: the client's setting), ends
+        all active sessions and unregisters from telemetry.
         """
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
         logger.info(f"[LucidicAI] Closing client {self._client_id[:8]}...")
+
+        # deliver pending evals.emit() posts while their sessions are still open
+        self._flush_evals(eval_flush_timeout)
 
         # Collect session IDs under lock (don't clear - let end() handle removal)
         with self._session_lock:
@@ -473,9 +573,20 @@ class LucidicAI:
 
         logger.info(f"[LucidicAI] Client {self._client_id[:8]}... closed")
 
-    async def aclose(self) -> None:
-        """Close the client (async version)."""
+    async def aclose(self, eval_flush_timeout: Optional[float] = None) -> None:
+        """Close the client (async version). See close()."""
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
         logger.info(f"[LucidicAI] Closing async client {self._client_id[:8]}...")
+
+        # flush() blocks on thread joins, so keep it off the event loop
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, self._flush_evals, eval_flush_timeout
+            )
+        except Exception as e:
+            # pending evals may be lost; say so where users will see it
+            logger.warning(f"[LucidicAI] Eval flush skipped on async close: {e}")
 
         # Collect session IDs under lock (don't clear - let aend() handle removal)
         with self._session_lock:

@@ -32,6 +32,16 @@ from .core.errors import (
     InvalidOperationError,
     PromptError,
     FeatureFlagError,
+    # Typed HTTP/API errors (LUC-900)
+    LucidicAPIError,
+    ValidationError,
+    AuthError,
+    InsufficientScopeError,
+    NotFoundError,
+    ConflictError,
+    RateLimitError,
+    ServiceUnavailableError,
+    APIError,
     # mock_call dispatch error family (LUC-607)
     LucidicMockCallError,
     LucidicToolDriftError,
@@ -44,8 +54,16 @@ from .core.errors import (
     LucidicImplError,
     LucidicMissingImplError,
     LucidicUnsupportedSQLError,
+    # lucidicai.load() errors (LUC-1138)
+    RunLoadError,
+    RunSignatureError,
+    RunPayloadError,
+    RunSecretMissingError,
 )
 from .sdk.training_modules import TrainingModulesResource
+
+# Typed response-model base (LUC-905)
+from .api.models import APIModel, CursorPage
 
 # Prompt object
 from .api.resources.prompt import Prompt
@@ -65,8 +83,17 @@ from .sdk.tools.adapters import (
 # Integrations
 from .integrations.livekit import setup_livekit
 
+# Eval-run webhook signatures
+from . import webhook
+
+# One object per run (LUC-1138)
+from .run import Run, RunIds, RunTools, load
+
+# Webhook runner (LUC-1151)
+from .runner import MemoryDedupe, Runner, serve
+
 # Version
-__version__ = "3.7.2"
+__version__ = "4.0.0"
 
 # All exports
 __all__ = [
@@ -81,6 +108,16 @@ __all__ = [
     "InvalidOperationError",
     "PromptError",
     "FeatureFlagError",
+    # Typed HTTP/API errors (LUC-900)
+    "LucidicAPIError",
+    "ValidationError",
+    "AuthError",
+    "InsufficientScopeError",
+    "NotFoundError",
+    "ConflictError",
+    "RateLimitError",
+    "ServiceUnavailableError",
+    "APIError",
     # mock_call dispatch error family (LUC-607)
     "LucidicMockCallError",
     "LucidicToolDriftError",
@@ -93,7 +130,15 @@ __all__ = [
     "LucidicImplError",
     "LucidicMissingImplError",
     "LucidicUnsupportedSQLError",
+    # lucidicai.load() errors (LUC-1138)
+    "RunLoadError",
+    "RunSignatureError",
+    "RunPayloadError",
+    "RunSecretMissingError",
     "TrainingModulesResource",
+    # Typed response-model base (LUC-905)
+    "APIModel",
+    "CursorPage",
     # Prompt object
     "Prompt",
     # Tool dispatch (v2 tool-backed)
@@ -110,6 +155,17 @@ __all__ = [
     "register_langchain_tools",
     # Integrations
     "setup_livekit",
+    # Eval-run webhook signatures
+    "webhook",
+    # One object per run (LUC-1138)
+    "load",
+    "Run",
+    "RunIds",
+    "RunTools",
+    # Webhook runner (LUC-1151)
+    "Runner",
+    "MemoryDedupe",
+    "serve",
     # Version
     "__version__",
 ]

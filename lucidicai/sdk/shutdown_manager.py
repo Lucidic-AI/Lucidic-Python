@@ -60,6 +60,10 @@ class ShutdownManager:
         self._clients: Dict[str, "LucidicAI"] = {}
         self._client_lock = threading.Lock()
 
+        # one flush deadline shared by all clients at shutdown
+        from ..api.resources.evals import EVAL_FLUSH_TIMEOUT_SECONDS
+        self.eval_flush_budget = EVAL_FLUSH_TIMEOUT_SECONDS
+
         debug("[ShutdownManager] Initialized")
     
     def register_session(self, session_id: str, state: SessionState) -> None:
@@ -245,11 +249,17 @@ class ShutdownManager:
                 clients_to_close = list(self._clients.values())
 
             if clients_to_close:
+                # flush all clients against the shared deadline, then close without waiting
+                deadline = time.monotonic() + self.eval_flush_budget
+                for client in clients_to_close:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    client._flush_evals(min(remaining, client.eval_flush_timeout))
+
                 debug(f"[ShutdownManager] Closing {len(clients_to_close)} registered client(s)")
                 for client in clients_to_close:
                     try:
                         debug(f"[ShutdownManager] Closing client {client._client_id[:8]}...")
-                        client.close()
+                        client.close(eval_flush_timeout=0)
                     except Exception as e:
                         error(f"[ShutdownManager] Error closing client: {e}")
 
