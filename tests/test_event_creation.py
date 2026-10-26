@@ -191,7 +191,7 @@ def main():
     finally:
         # End the session
         print("\nEnding session...")
-        lai.end_session(is_successful=True)
+        lai.end_session()
         print("Done!")
 
 

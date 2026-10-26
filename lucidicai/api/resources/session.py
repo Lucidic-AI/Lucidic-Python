@@ -26,6 +26,21 @@ def _truncate_id(id_str: Optional[str]) -> str:
     return f"{id_str[:8]}..." if len(id_str) > 8 else id_str
 
 
+# The session verdict fields that sessions no longer take. A session's result is
+# an eval: client.evals.emit(result, name=..., description=...).
+_VERDICT_FIELDS = ("is_successful", "is_successful_reason", "session_eval", "session_eval_reason")
+
+
+def _refuse_verdict_fields(method: str, updates: Dict[str, Any]) -> None:
+    """Raise TypeError if ``updates`` holds a session verdict field."""
+    given = [key for key in _VERDICT_FIELDS if key in updates]
+    if given:
+        raise TypeError(
+            f"sessions.{method}() no longer accepts {', '.join(given)}; report the "
+            f"session's result with client.evals.emit(result, name=..., description=...)"
+        )
+
+
 class SessionResource:
     """Handle session-related API operations."""
 
@@ -281,22 +296,14 @@ class SessionResource:
         logger.debug(f"[SessionResource] Created async session {real_session_id[:8]}...")
         return session
 
-    def end(
-        self,
-        session_id: Optional[str] = None,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None,
-    ) -> None:
+    def end(self, session_id: Optional[str] = None) -> None:
         """End a session.
+
+        To report the session's result, emit it before ending:
+        ``client.evals.emit(result, name=..., description=...)``.
 
         Args:
             session_id: Session ID to end. If None, attempts to use current context session.
-            is_successful: Whether the session was successful.
-            is_successful_reason: Reason for success/failure status.
-            session_eval: Evaluation score (0.0 to 1.0).
-            session_eval_reason: Reason for the evaluation score.
         """
         from ...sdk.shutdown_manager import ShutdownManager
 
@@ -313,13 +320,7 @@ class SessionResource:
             return
 
         try:
-            self.end_session(
-                session_id=session_id,
-                is_successful=is_successful,
-                is_successful_reason=is_successful_reason,
-                session_eval=session_eval,
-                session_eval_reason=session_eval_reason,
-            )
+            self.end_session(session_id=session_id)
         except Exception as e:
             if self._production:
                 logger.error(f"[SessionResource] Failed to end session: {e}")
@@ -336,14 +337,7 @@ class SessionResource:
 
         logger.debug(f"[SessionResource] Ended session {session_id[:8]}...")
 
-    async def aend(
-        self,
-        session_id: Optional[str] = None,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None,
-    ) -> None:
+    async def aend(self, session_id: Optional[str] = None) -> None:
         """End a session (async version).
 
         See end() for full documentation.
@@ -362,13 +356,7 @@ class SessionResource:
             return
 
         try:
-            await self.aend_session(
-                session_id=session_id,
-                is_successful=is_successful,
-                is_successful_reason=is_successful_reason,
-                session_eval=session_eval,
-                session_eval_reason=session_eval_reason,
-            )
+            await self.aend_session(session_id=session_id)
         except Exception as e:
             if self._production:
                 logger.error(f"[SessionResource] Failed to end session: {e}")
@@ -476,7 +464,7 @@ class SessionResource:
         silently skipped, and the call still succeeds. Finishing marks each session
         finished, recomputes its status, and — when it has evaluators — kicks off
         async evaluation/summarization. Unlike the single-session gen-3 ``update``,
-        this only closes sessions; it does not set per-session success/eval/tags.
+        this only closes sessions; it does not set per-session fields such as tags.
         Returns the number of sessions matched and finished.
 
         Data-bearing write — raises the typed transport error (does not swallow),
@@ -513,11 +501,17 @@ class SessionResource:
 
         Args:
             session_id: Session ID
-            **updates: Fields to update (task, is_finished, etc.)
+            **updates: Fields to update (task, is_finished, etc.). The session
+                verdict fields are not accepted: report a result with
+                ``client.evals.emit(result, name=..., description=...)``.
 
         Returns:
             Updated session data
+
+        Raises:
+            TypeError: If ``updates`` holds a session verdict field.
         """
+        _refuse_verdict_fields("update", updates)
         logger.debug(
             f"[Session] update() called - "
             f"session_id={_truncate_id(session_id)}, updates={updates}"
@@ -533,49 +527,19 @@ class SessionResource:
         )
         return response
 
-    def end_session(
-        self,
-        session_id: str,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def end_session(self, session_id: str) -> Dict[str, Any]:
         """End a session via API.
 
         Args:
             session_id: Session ID
-            is_successful: Whether session was successful
-            is_successful_reason: Reason for success or failure
-            session_eval: Session evaluation score
-            session_eval_reason: Reason for evaluation
 
         Returns:
             Final session data
         """
         logger.debug(
-            f"[Session] end_session() called - "
-            f"session_id={_truncate_id(session_id)}, is_successful={is_successful}, "
-            f"session_eval={session_eval}"
+            f"[Session] end_session() called - session_id={_truncate_id(session_id)}"
         )
-
-        updates: Dict[str, Any] = {
-            "is_finished": True
-        }
-
-        if is_successful is not None:
-            updates["is_successful"] = is_successful
-
-        if session_eval is not None:
-            updates["session_eval"] = session_eval
-
-        if session_eval_reason is not None:
-            updates["session_eval_reason"] = session_eval_reason
-
-        if is_successful_reason is not None:
-            updates["is_successful_reason"] = is_successful_reason
-
-        return self.update(session_id, **updates)
+        return self.update(session_id, is_finished=True)
 
     def list(
         self,
@@ -736,7 +700,7 @@ class SessionResource:
         return response
 
     async def aupdate(self, session_id: str, **updates) -> Dict[str, Any]:
-        """Update an existing session (asynchronous).
+        """Update an existing session (asynchronous). See update().
 
         Args:
             session_id: Session ID
@@ -745,6 +709,7 @@ class SessionResource:
         Returns:
             Updated session data
         """
+        _refuse_verdict_fields("aupdate", updates)
         logger.debug(
             f"[Session] aupdate() called - "
             f"session_id={_truncate_id(session_id)}, updates={updates}"
@@ -759,46 +724,16 @@ class SessionResource:
         )
         return response
 
-    async def aend_session(
-        self,
-        session_id: str,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None
-    ) -> Dict[str, Any]:
+    async def aend_session(self, session_id: str) -> Dict[str, Any]:
         """End a session via API (asynchronous).
 
         Args:
             session_id: Session ID
-            is_successful: Whether session was successful
-            is_successful_reason: Reason for success or failure
-            session_eval: Session evaluation score
-            session_eval_reason: Reason for evaluation
 
         Returns:
             Final session data
         """
         logger.debug(
-            f"[Session] aend_session() called - "
-            f"session_id={_truncate_id(session_id)}, is_successful={is_successful}, "
-            f"session_eval={session_eval}"
+            f"[Session] aend_session() called - session_id={_truncate_id(session_id)}"
         )
-
-        updates: Dict[str, Any] = {
-            "is_finished": True
-        }
-
-        if is_successful is not None:
-            updates["is_successful"] = is_successful
-
-        if session_eval is not None:
-            updates["session_eval"] = session_eval
-
-        if session_eval_reason is not None:
-            updates["session_eval_reason"] = session_eval_reason
-
-        if is_successful_reason is not None:
-            updates["is_successful_reason"] = is_successful_reason
-
-        return await self.aupdate(session_id, **updates)
+        return await self.aupdate(session_id, is_finished=True)

@@ -153,11 +153,7 @@ def main():
         break
     
     # End the session
-    lai.end_session(
-        is_successful=True,
-        session_eval=0.95,
-        session_eval_reason="Successfully handled all test support tickets"
-    )
+    lai.end_session()
     
     print("Session completed successfully!")
 

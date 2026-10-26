@@ -335,13 +335,10 @@ class ShutdownManager:
             try:
                 debug(f"[ShutdownManager] Ending session {truncate_id(session_id)} via API")
                 debug(f"[ShutdownManager] http_client type: {type(state.http_client)}, keys: {state.http_client.keys() if isinstance(state.http_client, dict) else 'not a dict'}")
-                # state.http_client is a resources dict with 'sessions' key
+                # state.http_client is a resources dict with 'sessions' key.
+                # Finish only: the session's result, if any, came from evals.emit.
                 if isinstance(state.http_client, dict) and 'sessions' in state.http_client:
-                    state.http_client['sessions'].end_session(
-                        session_id,
-                        is_successful=False,
-                        session_eval_reason="Process shutdown"
-                    )
+                    state.http_client['sessions'].end_session(session_id)
                     debug(f"[ShutdownManager] Session {truncate_id(session_id)} ended via API")
                 else:
                     debug(f"[ShutdownManager] Cannot end session - http_client not properly configured")

@@ -85,22 +85,14 @@ class Session:
         """Check if the session has been ended."""
         return self._ended
 
-    def update(
-        self,
-        task: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-    ) -> None:
+    def update(self, task: Optional[str] = None) -> None:
         """Update the session metadata.
+
+        To report the session's result, use
+        ``client.evals.emit(result, name=..., description=...)``.
 
         Args:
             task: Update the task description
-            session_eval: Evaluation score (0.0 to 1.0)
-            session_eval_reason: Reason for the evaluation score
-            is_successful: Whether the session was successful
-            is_successful_reason: Reason for success/failure status
         """
         if self._ended:
             logger.warning(f"[Session] Attempted to update ended session {self._session_id[:8]}...")
@@ -109,14 +101,6 @@ class Session:
         updates = {}
         if task is not None:
             updates["task"] = task
-        if session_eval is not None:
-            updates["session_eval"] = session_eval
-        if session_eval_reason is not None:
-            updates["session_eval_reason"] = session_eval_reason
-        if is_successful is not None:
-            updates["is_successful"] = is_successful
-        if is_successful_reason is not None:
-            updates["is_successful_reason"] = is_successful_reason
 
         if updates:
             logger.debug(
@@ -127,22 +111,11 @@ class Session:
         else:
             logger.debug(f"[Session] update() called with no updates for session {self._session_id[:8]}...")
 
-    async def aupdate(
-        self,
-        task: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-    ) -> None:
+    async def aupdate(self, task: Optional[str] = None) -> None:
         """Update the session metadata (async version).
 
         Args:
             task: Update the task description
-            session_eval: Evaluation score (0.0 to 1.0)
-            session_eval_reason: Reason for the evaluation score
-            is_successful: Whether the session was successful
-            is_successful_reason: Reason for success/failure status
         """
         if self._ended:
             logger.warning(f"[Session] Attempted to update ended session {self._session_id[:8]}...")
@@ -151,14 +124,6 @@ class Session:
         updates = {}
         if task is not None:
             updates["task"] = task
-        if session_eval is not None:
-            updates["session_eval"] = session_eval
-        if session_eval_reason is not None:
-            updates["session_eval_reason"] = session_eval_reason
-        if is_successful is not None:
-            updates["is_successful"] = is_successful
-        if is_successful_reason is not None:
-            updates["is_successful_reason"] = is_successful_reason
 
         if updates:
             logger.debug(
@@ -169,20 +134,11 @@ class Session:
         else:
             logger.debug(f"[Session] aupdate() called with no updates for session {self._session_id[:8]}...")
 
-    def end(
-        self,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None,
-    ) -> None:
+    def end(self) -> None:
         """End the session.
 
-        Args:
-            is_successful: Whether the session was successful
-            is_successful_reason: Reason for success/failure status
-            session_eval: Evaluation score (0.0 to 1.0)
-            session_eval_reason: Reason for the evaluation score
+        To report the session's result, emit it before ending:
+        ``client.evals.emit(result, name=..., description=...)``.
         """
         if self._ended:
             return
@@ -190,43 +146,18 @@ class Session:
         # Unbind context before ending
         self._unbind_context()
 
-        self._client.sessions.end(
-            session_id=self._session_id,
-            is_successful=is_successful,
-            is_successful_reason=is_successful_reason,
-            session_eval=session_eval,
-            session_eval_reason=session_eval_reason,
-        )
+        self._client.sessions.end(session_id=self._session_id)
         self._ended = True
 
-    async def aend(
-        self,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None,
-    ) -> None:
-        """End the session (async version).
-
-        Args:
-            is_successful: Whether the session was successful
-            is_successful_reason: Reason for success/failure status
-            session_eval: Evaluation score (0.0 to 1.0)
-            session_eval_reason: Reason for the evaluation score
-        """
+    async def aend(self) -> None:
+        """End the session (async version). See end()."""
         if self._ended:
             return
 
         # Unbind context before ending
         self._unbind_context()
 
-        await self._client.sessions.aend(
-            session_id=self._session_id,
-            is_successful=is_successful,
-            is_successful_reason=is_successful_reason,
-            session_eval=session_eval,
-            session_eval_reason=session_eval_reason,
-        )
+        await self._client.sessions.aend(session_id=self._session_id)
         self._ended = True
 
     def _bind_context(self) -> None:
