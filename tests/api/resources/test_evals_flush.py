@@ -123,7 +123,7 @@ def test_flush_is_bounded_by_its_timeout(client):
         return httpx.Response(201, json={})
 
     respx.post(_EVALS_ENDPOINT).mock(side_effect=_hang)
-    client.evals.emit(result=0.1, session_id=_SESSION_ID)
+    client.evals.emit(result=0.1, name="score", session_id=_SESSION_ID)
     try:
         started = time.monotonic()
         drained = client.evals.flush(timeout=0.2)
@@ -147,7 +147,7 @@ def test_flush_timeout_bounds_the_whole_wait_not_each_post(client):
 
     respx.post(_EVALS_ENDPOINT).mock(side_effect=_hang)
     for score in (0.1, 0.2, 0.3):
-        client.evals.emit(result=score, session_id=_SESSION_ID)
+        client.evals.emit(result=score, name="score", session_id=_SESSION_ID)
     try:
         started = time.monotonic()
         drained = client.evals.flush(timeout=0.3)
@@ -165,7 +165,7 @@ def test_flush_timeout_bounds_the_whole_wait_not_each_post(client):
 def test_flush_reports_drained_once_the_post_finishes(client):
     delivered = []
     _slow_eval_route(delivered)
-    client.evals.emit(result=3, session_id=_SESSION_ID)
+    client.evals.emit(result=3, name="score", session_id=_SESSION_ID)
 
     assert client.evals.flush(timeout=5) is True
     assert len(delivered) == 1
@@ -175,7 +175,7 @@ def test_flush_reports_drained_once_the_post_finishes(client):
 def test_failed_post_does_not_leave_the_emit_pending(client):
     delivered = []
     _slow_eval_route(delivered, delay=0.05, status=500)
-    client.evals.emit(result=2, session_id=_SESSION_ID)
+    client.evals.emit(result=2, name="score", session_id=_SESSION_ID)
 
     assert client.evals.flush(timeout=5) is True
     # a second flush has nothing left to wait for.
@@ -190,7 +190,7 @@ def test_an_emit_whose_thread_cannot_start_is_not_left_pending(client, monkeypat
 
     monkeypatch.setattr(threading.Thread, "start", _refuse)
     with pytest.raises(RuntimeError):
-        client.evals.emit(result=1.0, session_id=_SESSION_ID)
+        client.evals.emit(result=1.0, name="score", session_id=_SESSION_ID)
     monkeypatch.undo()
 
     assert client.evals.flush(timeout=1) is True
@@ -222,7 +222,7 @@ def test_client_setting_bounds_the_close_wait():
     release = threading.Event()
     _hang_evals(release)
     c = _make_client(eval_flush_timeout=0.2)
-    c.evals.emit(result=0.4, session_id=_SESSION_ID)
+    c.evals.emit(result=0.4, name="score", session_id=_SESSION_ID)
     try:
         started = time.monotonic()
         c.close()
@@ -236,7 +236,7 @@ def test_client_setting_bounds_the_close_wait():
 def test_close_keyword_overrides_the_client_setting(client):
     release = threading.Event()
     _hang_evals(release)
-    client.evals.emit(result=0.4, session_id=_SESSION_ID)
+    client.evals.emit(result=0.4, name="score", session_id=_SESSION_ID)
     try:
         started = time.monotonic()
         client.close(eval_flush_timeout=0.2)
@@ -274,7 +274,7 @@ def test_shutdown_shares_one_eval_flush_deadline_across_clients(isolated_shutdow
     _hang_evals(release)
     clients = [_make_client() for _ in range(3)]
     for c in clients:
-        c.evals.emit(result=0.5, session_id=_SESSION_ID)
+        c.evals.emit(result=0.5, name="score", session_id=_SESSION_ID)
     try:
         started = time.monotonic()
         manager._perform_shutdown()
@@ -293,7 +293,7 @@ def test_shutdown_never_waits_longer_than_a_clients_own_setting(isolated_shutdow
     release = threading.Event()
     _hang_evals(release)
     c = _make_client(eval_flush_timeout=0.2)
-    c.evals.emit(result=0.5, session_id=_SESSION_ID)
+    c.evals.emit(result=0.5, name="score", session_id=_SESSION_ID)
     try:
         started = time.monotonic()
         isolated_shutdown_manager._perform_shutdown()
@@ -327,7 +327,7 @@ async def test_aclose_keyword_bounds_the_wait(client):
     release = threading.Event()
     with respx.mock:
         _hang_evals(release)
-        client.evals.emit(result=0.4, session_id=_SESSION_ID)
+        client.evals.emit(result=0.4, name="score", session_id=_SESSION_ID)
         try:
             started = time.monotonic()
             await client.aclose(eval_flush_timeout=0.2)

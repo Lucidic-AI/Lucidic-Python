@@ -133,8 +133,9 @@ class EvalsResource:
 
         Args:
             result: The evaluation result. Can be bool, int, float, or str.
-            name: Optional name for the evaluation. If not provided, the backend
-                will generate a default name based on the result type.
+            name: Name for the evaluation. Required for a boolean or number
+                result. A string result may omit it, and the backend then files
+                it under a default name.
             description: Optional description of the evaluation.
             result_type: Optional explicit result type ("boolean", "number", "string").
                 If not provided, it will be inferred from the result value.
@@ -143,15 +144,17 @@ class EvalsResource:
             pass_threshold: Optional pass mark for a number result: the result
                 passes at or above it. Only allowed with a number result and must
                 be a finite number. It is stored on the agent's evaluator for this
-                name, and the latest value sent wins. Without ``name``, this sets
-                the mark on the agent's ``User Supplied (Number)``
-                evaluator, which all unnamed number emits share (a warning is
-                logged).
+                name, and the latest value sent wins.
+
+        Raises:
+            ValueError: If a boolean or number result has no name, the result
+                does not match ``result_type``, or ``pass_threshold`` is not
+                allowed. In production mode it is logged and nothing is sent.
 
         Example:
             # Basic usage - type inferred
-            client.evals.emit(result=True)
-            client.evals.emit(result=0.95)
+            client.evals.emit(result=True, name="task_passed")
+            client.evals.emit(result=0.95, name="accuracy")
             client.evals.emit(result="excellent")
 
             # With name and description
@@ -195,6 +198,9 @@ class EvalsResource:
                     else:
                         raise ValueError(error_msg)
                 inferred_type = result_type
+            # None or "" counts as no name, as on the API
+            if not name and inferred_type in ("boolean", "number"):
+                raise ValueError("name is required for boolean and number results")
             if pass_threshold is not None:
                 _validate_pass_threshold(pass_threshold, inferred_type)
         except ValueError as e:
@@ -203,14 +209,6 @@ class EvalsResource:
                 return
             else:
                 raise
-
-        # the backend files a missing or empty name under its default name
-        if pass_threshold is not None and not name:
-            logger.warning(
-                "[EvalsResource] pass_threshold without name sets the mark on the agent's "
-                "'User Supplied (Number)' evaluator, which all unnamed number "
-                "emits share"
-            )
 
         # Capture all data for background thread
         captured_result = result
