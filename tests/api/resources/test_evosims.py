@@ -1,4 +1,4 @@
-"""LUC-923 — client.evosims run management (list / get / cancel / iteration_instances
+"""client.evosims run management (list / get / cancel / iteration_instances
 / wait_for). The gen-3 train() kickoff is covered elsewhere (agent-id guard test)."""
 import httpx
 import pytest

@@ -224,7 +224,7 @@ class SDKConfig:
         if not self.api_key:
             errors.append("API key is required (LUCIDIC_API_KEY)")
 
-        # agent_id is intentionally NOT required (LUC-926): a client may be
+        # agent_id is intentionally NOT required: a client may be
         # constructed with just an api_key to run org-/id-scoped operations
         # (agents/projects/usage, get-by-id). Agent-scoped operations (telemetry
         # ingestion, prompt fetch, list-by-agent) guard with require_agent_id and

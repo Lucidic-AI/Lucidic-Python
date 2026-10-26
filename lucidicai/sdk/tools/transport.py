@@ -16,7 +16,7 @@ doesn't know about:
   session's ``tool_version_snapshot``. The transport logs WARNING and
   runs ``real_fn`` instead — never blocks the user's session on an SDK-
   side reproducibility concern. Future sessions get the new snapshot
-  automatically via LUC-608's auto-sync.
+  automatically via the session-start auto-sync.
 
 - **Network error wrapping**: ``httpx.RequestError`` (connect, timeout,
   read errors that fail before a response exists) get wrapped as
@@ -31,7 +31,7 @@ no silent fallback would hide them in any useful way.
 Positional args note: the v1 transport accepts ``args`` for API
 symmetry with the wrapper (which gets called as ``wrapper(*args, **kwargs)``)
 but ships them as ``kwargs["__args__"]``. The backend's tier executors
-(LUC-582, LUC-583) only consume named params from ``kwargs``, so
+only consume named params from ``kwargs``, so
 positional args don't reach the executor. ``@mockable`` users should
 prefer kwargs at call sites; LangChain / OpenAI / Anthropic adapters
 already invoke with kwargs natively.

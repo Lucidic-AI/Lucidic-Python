@@ -1,4 +1,4 @@
-"""client.projects — project CRUD (LUC-913).
+"""client.projects — project CRUD.
 
 A new namespace. Projects are org-level groupings agents can be filed under
 (``Agent.project``). Org-scoped: a bound key still reaches them all (agent

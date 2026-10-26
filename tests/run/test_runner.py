@@ -1,4 +1,4 @@
-"""lucidicai.Runner / lucidicai.serve: the stdlib webhook runner (LUC-1151)."""
+"""lucidicai.Runner / lucidicai.serve: the stdlib webhook runner."""
 import http.client
 import threading
 import time

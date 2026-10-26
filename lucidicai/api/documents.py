@@ -1,4 +1,4 @@
-"""Session document corpus into a local directory (LUC-1141).
+"""Session document corpus into a local directory.
 
 Pure helpers behind ``client.resources.download``: validate the
 ``GET sdk/v2/sessions/<id>/documents`` listing, map each ``path`` safely under

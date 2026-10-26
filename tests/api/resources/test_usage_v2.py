@@ -1,4 +1,4 @@
-"""LUC-911 — client.usage.get (org-aggregated usage counters)."""
+"""client.usage.get (org-aggregated usage counters)."""
 import httpx
 import pytest
 import respx

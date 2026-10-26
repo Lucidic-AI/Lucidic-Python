@@ -2,14 +2,14 @@
 
 Two public methods per envelope-style preference:
 
-- **`call()` / `acall()`** (new in LUC-607) — thin transport. Returns the
+- **`call()` / `acall()`** — thin transport. Returns the
   parsed v2 success body ``{return_value, tier, was_mocked}`` so the
   caller can inspect `was_mocked` and branch. Raises typed
   `LucidicMockCallError` subclasses on non-2xx. Consumed by the internal
   `sdk/tools/transport.py::emit_call_through_backend` helper that backs
   `@mockable` and the framework adapters.
 
-- **`create()` / `acreate()`** (legacy, LUC-483-era) — kept for the
+- **`create()` / `acreate()`** (legacy) — kept for the
   explicit-mock pattern customers built around M2:
 
       if os.getenv("LUCIDIC_TEST_MODE"):
@@ -47,7 +47,7 @@ def _truncate_id(id_str: Optional[str]) -> str:
 def _as_mock_error(exc: APIError) -> LucidicMockCallError:
     """Wrap a generic/untyped API error as a mock-call ``malformed_response``.
 
-    The central decoder (LUC-900) already produces the typed
+    The central decoder already produces the typed
     ``LucidicMockCallError`` family for the ``{"error": {"code"}}`` envelope
     (propagated untouched), and specific typed errors for recognized statuses
     — ``InsufficientScopeError`` / ``AuthError`` / ``RateLimitError`` /
@@ -145,7 +145,7 @@ class MockCallResource:
         except APIError as exc:
             raise _as_mock_error(exc) from exc
 
-    # ==================== create() / acreate() — legacy LUC-483 API ====================
+    # ==================== create() / acreate() — legacy API ====================
 
     def create(
         self,
@@ -158,7 +158,7 @@ class MockCallResource:
         """Legacy explicit-mock dispatch.
 
         Returns the tool's ``return_value`` directly (matching the
-        original LUC-483 "you get the tool's output" semantic). For
+        original "you get the tool's output" semantic). For
         tier=SQL_TEMPLATE the return shape is
         ``{"columns": [...], "rows": [[...]], "row_count": int}``;
         other tiers return whatever the executor produces.
@@ -231,7 +231,7 @@ class MockCallResource:
     def _resolve_session_id(self, session_id: Optional[str]) -> Optional[str]:
         """Resolve session_id from the legacy contextvar fallback.
 
-        Mirrors the LUC-483 behavior: if no session is bound and no
+        Mirrors the legacy behavior: if no session is bound and no
         explicit ``session_id`` was passed, log + short-circuit with
         None rather than hitting the backend with a guaranteed 4xx.
         """

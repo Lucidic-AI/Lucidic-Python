@@ -1,6 +1,6 @@
 """extraction utilities for LLM span attributes across OTel GenAI semconv shapes.
 
-three shapes are read, newest-first and richness-gated (LUC-667):
+three shapes are read, newest-first and richness-gated:
   1. new JSON attributes  - gen_ai.input.messages / gen_ai.output.messages
                             (+ gen_ai.system_instructions); parts carry text and
                             tool_call/tool_call_response items. (OTel semconv >= v1.37,
@@ -366,7 +366,7 @@ def extract_tool_calls(span, attrs: Dict[str, Any]) -> Optional[str]:
         if tool_calls:
             return "\n".join(json.dumps(tc, indent=4) for tc in tool_calls)
 
-    # 2. legacy flat-indexed (presence-based; no finish_reason gate - LUC-667)
+    # 2. legacy flat-indexed (presence-based; no finish_reason gate)
     tool_calls = []
     i = 0
     while True:

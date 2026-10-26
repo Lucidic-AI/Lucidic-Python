@@ -47,15 +47,15 @@ from .openai import (
 
 
 __all__ = [
-    # OpenAI (LUC-579)
+    # OpenAI
     "adispatch_openai_tool_call",
     "dispatch_openai_tool_call",
     "register_openai_tools",
-    # Anthropic (LUC-580)
+    # Anthropic
     "adispatch_anthropic_tool_call",
     "dispatch_anthropic_tool_call",
     "register_anthropic_tools",
-    # LangChain (LUC-578)
+    # LangChain
     "register_langchain_tools",
     # MCP (LUC-EnterpriseOps integration)
     "adispatch_mcp_tool_call",

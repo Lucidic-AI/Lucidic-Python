@@ -172,19 +172,11 @@ async def main():
         print(report['ai_analysis'])
         
         # End session successfully
-        lai.end_session(
-            is_successful=True,
-            session_eval=1.0,
-            session_eval_reason="Successfully completed async market analysis"
-        )
+        lai.end_session()
         
     except Exception as e:
         print(f"Error during analysis: {e}")
-        lai.end_session(
-            is_successful=False,
-            session_eval=0.0,
-            session_eval_reason=f"Analysis failed: {str(e)}"
-        )
+        lai.end_session()
     
     print("\nSession completed!")
 

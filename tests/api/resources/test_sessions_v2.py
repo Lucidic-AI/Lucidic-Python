@@ -1,6 +1,6 @@
-"""LUC-907 — client.sessions v2 reads (list/count/tags, detail+trace,
+"""client.sessions v2 reads (list/count/tags, detail+trace,
 evaluator-results, event raw).
-LUC-919 — client.sessions bulk finish."""
+client.sessions bulk finish."""
 import json
 
 import httpx
@@ -22,10 +22,21 @@ _BASE = "https://stub.lucidic.test"
 _SESSIONS = f"{_BASE}/sdk/v2/sessions"
 
 
+class _NoPendingEvals:
+    """Stands in for the client: finish() first waits for the sessions' emits, and there are none."""
+    eval_flush_timeout = 5.0
+
+    def _flush_evals(self, timeout=None, session_id=None):
+        pass
+
+    async def _aflush_evals(self, timeout=None, session_id=None):
+        pass
+
+
 @pytest.fixture
 def sessions(http):
-    # v2 reads only use self.http; client/config/production are irrelevant here.
-    return SessionResource(http, client=None, config=None, production=False)
+    # v2 reads only use self.http; finish() also asks the client to wait for emits.
+    return SessionResource(http, client=_NoPendingEvals(), config=None, production=False)
 
 
 def _session(i, **over):

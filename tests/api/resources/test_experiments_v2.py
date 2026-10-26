@@ -1,6 +1,6 @@
-"""LUC-908 — client.experiments reads (list / count / get).
-LUC-915 — client.experiments writes (delete + evaluators attach/detach/list).
-LUC-922 — client.experiments taxonomy + failure-modes (async, trigger-then-poll)."""
+"""client.experiments reads (list / count / get).
+client.experiments writes (delete + evaluators attach/detach/list).
+client.experiments taxonomy + failure-modes (async, trigger-then-poll)."""
 import json
 
 import httpx
@@ -179,7 +179,7 @@ class TestAsync:
         assert e.experiment_id == "x1"
 
 
-# ==================== LUC-915 writes ====================
+# ==================== writes ====================
 
 
 class TestDelete:
@@ -303,7 +303,7 @@ class TestWriteAsync:
         assert got == ["e1", "e2"]
 
 
-# ==================== LUC-922 taxonomy + failure-modes ====================
+# ==================== taxonomy + failure-modes ====================
 
 
 class TestWiring:

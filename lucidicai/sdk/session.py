@@ -88,7 +88,7 @@ def _build_session_params(
     Returns:
         Tuple of (real_session_id, session_params)
     """
-    # LUC-926: a session must attach to an agent. Raise loudly (even in
+    # A session must attach to an agent. Raise loudly (even in
     # production) if there's no agent_id, rather than POST a null one or let a
     # swallow silently drop the session. Shared by create_session + acreate.
     from ..core.errors import require_agent_id
@@ -337,7 +337,7 @@ def emit_session(
     """
     from .init import _sdk_state
 
-    # NOTE (LUC-926): emit_session is pre-existing-broken — the import above
+    # NOTE: emit_session is pre-existing-broken — the import above
     # (`_sdk_state`) doesn't exist in sdk/init.py, so this fire-and-forget path
     # raises ImportError on first use and is effectively dead (not in __all__).
     # It is therefore NOT a silent-loss risk; no agent_id guard is added here.
@@ -414,21 +414,11 @@ def flush_sessions(timeout: float = 5.0) -> None:
     debug(f"[Session] Flush completed in {time.time() - start_time:.2f}s")
 
 
-def end_session(
-    session_id: Optional[str] = None,
-    is_successful: Optional[bool] = None,
-    is_successful_reason: Optional[str] = None,
-    session_eval: Optional[float] = None,
-    session_eval_reason: Optional[str] = None,
-) -> None:
+def end_session(session_id: Optional[str] = None) -> None:
     """End the current or specified session.
     
     Args:
         session_id: Session ID to end (uses current if not provided)
-        is_successful: Whether session was successful
-        is_successful_reason: Reason for success or failure
-        session_eval: Session evaluation score
-        session_eval_reason: Reason for evaluation
     """
     from .init import get_session_id, get_resources
     
@@ -444,13 +434,7 @@ def end_session(
     resources = get_resources()
     if resources and 'sessions' in resources:
         try:
-            resources['sessions'].end_session(
-                session_id=session_id,
-                is_successful=is_successful,
-                is_successful_reason=is_successful_reason,
-                session_eval=session_eval,
-                session_eval_reason=session_eval_reason
-            )
+            resources['sessions'].end_session(session_id=session_id)
             info(f"[Session] Ended session {truncate_id(session_id)}")
         except Exception as e:
             error(f"[Session] Failed to end session {truncate_id(session_id)}: {e}")
@@ -464,21 +448,11 @@ def end_session(
 
 
 
-async def aend_session(
-    session_id: Optional[str] = None,
-    is_successful: Optional[bool] = None,
-    is_successful_reason: Optional[str] = None,
-    session_eval: Optional[float] = None,
-    session_eval_reason: Optional[str] = None,
-) -> None:
+async def aend_session(session_id: Optional[str] = None) -> None:
     """End the current or specified session (asynchronous).
     
     Args:
         session_id: Session ID to end (uses current if not provided)
-        is_successful: Whether session was successful
-        is_successful_reason: Reason for success or failure
-        session_eval: Session evaluation score
-        session_eval_reason: Reason for evaluation
     """
     from .init import get_session_id, get_resources
     
@@ -494,13 +468,7 @@ async def aend_session(
     resources = get_resources()
     if resources and 'sessions' in resources:
         try:
-            await resources['sessions'].aend_session(
-                session_id=session_id,
-                is_successful=is_successful,
-                is_successful_reason=is_successful_reason,
-                session_eval=session_eval,
-                session_eval_reason=session_eval_reason
-            )
+            await resources['sessions'].aend_session(session_id=session_id)
             info(f"[Session] Ended session {truncate_id(session_id)}")
         except Exception as e:
             error(f"[Session] Failed to end session {truncate_id(session_id)}: {e}")

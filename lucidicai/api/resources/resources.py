@@ -1,4 +1,4 @@
-"""client.resources — SQL-substrate Resource CRUD (LUC-917).
+"""client.resources — SQL-substrate Resource CRUD.
 
 A new namespace. Resources are the org-scoped definitions of external services the
 client mocks at runtime (SQL / API / CUSTOM), attached to Datasets and Tools — the
@@ -8,7 +8,7 @@ all of the org's resources (agent binding is a no-op here).
 Reads and writes are data-bearing — they do NOT swallow in production; typed
 transport errors propagate. Every method has an ``a``-prefixed async sibling.
 
-``download`` lands a session's document corpus in a local directory (LUC-1141).
+``download`` lands a session's document corpus in a local directory.
 """
 import os
 from pathlib import Path

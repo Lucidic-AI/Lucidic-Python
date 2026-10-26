@@ -15,7 +15,7 @@ from ..core.errors import exception_from_response
 from ..utils.logger import debug, info, warning, error, mask_sensitive, redact_url_queries, truncate_data
 
 
-# Status codes the transport retries with backoff (LUC-901). Connection-level
+# Status codes the transport retries with backoff. Connection-level
 # failures are retried separately by the httpx transport's own ``retries=``.
 # 429 (throttled) and 503 (unavailable / workflow couldn't start) are retried.
 _RETRY_STATUSES = frozenset({429, 503})
@@ -25,7 +25,7 @@ _RETRY_STATUSES = frozenset({429, 503})
 # commits the run row and only then 503s if Temporal can't start — so a blind
 # retry would duplicate it. GET/HEAD/PUT/DELETE are safe to replay. Trigger
 # endpoints that want at-least-once retry need a server-side idempotency key
-# first (LUC-808); until then POST/PATCH fail fast, as they did pre-C0.
+# first; until then POST/PATCH fail fast, as they did pre-C0.
 _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
 
 # Hard ceiling on a single retry sleep, so a large (or proxy-injected)
@@ -166,7 +166,7 @@ class HttpClient:
         return data
     
     def _raise_if_error(self, response: httpx.Response) -> None:
-        """Decode a non-2xx response and raise a typed ``LucidicError`` (LUC-900).
+        """Decode a non-2xx response and raise a typed ``LucidicError``.
 
         The single decode point: the backend ``{"error": ...}`` /
         ``{"detail": ...}`` / mock-call ``{"error": {"code"}}`` envelopes all
@@ -218,7 +218,7 @@ class HttpClient:
         json: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> httpx.Response:
-        """Send one request, retrying transient 429/503 on idempotent methods (LUC-901).
+        """Send one request, retrying transient 429/503 on idempotent methods.
 
         Connection-level failures are retried by the httpx transport's own
         ``retries=``; this loop adds status-based retries for 429/503, but only
@@ -362,7 +362,7 @@ class HttpClient:
         return self.request("DELETE", endpoint, params=params, json=data)
 
     def head(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> httpx.Headers:
-        """Make a synchronous HEAD request and return the response headers (LUC-903).
+        """Make a synchronous HEAD request and return the response headers.
 
         List endpoints answer HEAD with counts in headers (e.g. ``X-Total-Count``,
         and sessions' ``X-Tags``) so callers can get a cheap count/tag summary
@@ -485,7 +485,7 @@ class HttpClient:
         return await self.arequest("DELETE", endpoint, params=params, json=data)
 
     async def ahead(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> httpx.Headers:
-        """Async sibling of ``head`` (LUC-903)."""
+        """Async sibling of ``head``."""
         url = f"/{endpoint}"
         debug(f"[HTTP] HEAD {self.base_url}{url}")
         response = await self._asend_with_retry("HEAD", url, params=params)

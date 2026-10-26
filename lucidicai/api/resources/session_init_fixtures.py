@@ -1,8 +1,8 @@
 """Session-init-fixtures resource — ``POST /sdk/session-init-fixtures``.
 
 Backend prerequisite for any subsequent ``mock_call`` against a
-tool-backed session: materializes the per-session DuckDB file (LUC-574)
-and writes ``Session.tool_version_snapshot`` (LUC-585). Without this
+tool-backed session: materializes the per-session DuckDB file
+and writes ``Session.tool_version_snapshot``. Without this
 the mock_call view returns 400 ``session_not_initialized``.
 
 The backend is gracefully tolerant of non-tool-backed sessions:

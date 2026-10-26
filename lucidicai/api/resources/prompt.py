@@ -17,7 +17,7 @@ logger = logging.getLogger("Lucidic")
 
 
 def _current_session_id() -> Optional[str]:
-    """The active session id (LUC-795), so a prompt fetch resolves through the
+    """The active session id, so a prompt fetch resolves through the
     session's bound/pre-linked checkpoint. Never let context lookup break a fetch.
     """
     try:
@@ -71,7 +71,7 @@ class PromptResource:
         self.http = http
         self._config = config
         self._production = production
-        # LUC-795: keyed by (prompt_name, label, checkpoint_id, session_id) so entries
+        # Keyed by (prompt_name, label, checkpoint_id, session_id) so entries
         # for different sessions/checkpoints never collide. prompt_name stays first so
         # _invalidate_cache(prompt_name) still matches by k[0].
         self._cache: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
@@ -127,7 +127,7 @@ class PromptResource:
             label: Prompt version label (default: "production").
             cache_ttl: Cache TTL in seconds. 0 = no cache, -1 = cache indefinitely,
                        positive value = seconds before refetching.
-            checkpoint_id: Explicitly resolve against a loaded checkpoint (LUC-795).
+            checkpoint_id: Explicitly resolve against a loaded checkpoint.
                            Rarely needed inside a session — the active session already
                            carries its checkpoint server-side. Defaults to None.
             session_id: Override the session context. Defaults to the active session,
@@ -139,7 +139,7 @@ class PromptResource:
             and metadata. Use str(prompt) for backward-compatible string access.
         """
         try:
-            # LUC-795: resolve the session context so a session running a checkpoint
+            # Resolve the session context so a session running a checkpoint
             # gets that checkpoint's trained prompt version. The backend overrides the
             # label only for prompts the checkpoint trained and falls back to the label
             # otherwise, so this is safe for non-checkpoint sessions.
@@ -198,7 +198,7 @@ class PromptResource:
         See get() for full documentation.
         """
         try:
-            # LUC-795: resolve the session context (see get()).
+            # Resolve the session context (see get()).
             resolved_session_id = session_id if session_id is not None else _current_session_id()
             cache_key = (prompt_name, label, checkpoint_id, resolved_session_id)
 
@@ -390,7 +390,7 @@ class PromptResource:
                 return Prompt(raw_content="", content="", metadata={})
             raise
 
-    # ==================== v2 reads (LUC-909) ====================
+    # ==================== v2 reads ====================
     #
     # Prompt-ops discovery: list the agent's prompts, walk a prompt's full
     # version history, read the agent's label set. Data-bearing reads — they do
@@ -482,10 +482,10 @@ class PromptResource:
         resp = await self.http.aget("sdk/v2/prompts/labels", {"agent_id": agent})
         return resp.get("labels", [])
 
-    # ==================== v2 writes (LUC-914) ====================
+    # ==================== v2 writes ====================
     #
-    # create makes a brand-new prompt (+ its first version, via POST /sdk/v2/prompts,
-    # LUC-931); rename / set_labels / delete operate on EXISTING prompts. (``update()``
+    # create makes a brand-new prompt (+ its first version, via POST /sdk/v2/prompts);
+    # rename / set_labels / delete operate on EXISTING prompts. (``update()``
     # above, the gen-3 PUT /sdk/prompts, adds a *version* to an existing prompt.)
     # Data-bearing writes → no production swallow. Each has an async sibling.
 

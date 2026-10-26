@@ -1,4 +1,4 @@
-"""LUC-677: offline tests for the LiteLLM bridge (no live API keys).
+"""Offline tests for the LiteLLM bridge (no live API keys).
 
 fixtures are faithful to REAL litellm 1.87.0 standard_logging_object payloads captured via
 Azure OpenAI + Anthropic (docs/telemetry/validation/capture_litellm.py).

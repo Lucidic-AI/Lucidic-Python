@@ -13,12 +13,12 @@ Two storage targets:
 - ``_PENDING_BUFFER`` — append-only list captured when no ``LucidicAI``
   client exists at decoration time (e.g. ``@mockable`` at module import,
   ``LucidicAI(...)`` constructed later in ``main()``). ``LucidicAI.__init__``
-  in LUC-577c calls ``drain_buffer_into(client)`` to flush these into the
+  calls ``drain_buffer_into(client)`` to flush these into the
   client's tools resource registry.
 
-The module exposes shared capture helpers used by ``@mockable`` (LUC-577a),
-the OpenAI adapter (LUC-579), the Anthropic adapter (LUC-580), and the
-LangChain adapter (LUC-578) so all four paths emit identical ``ToolSurface``
+The module exposes shared capture helpers used by ``@mockable``,
+the OpenAI adapter, the Anthropic adapter, and the
+LangChain adapter so all four paths emit identical ``ToolSurface``
 shapes and consistent ``source_hash`` values.
 """
 import hashlib
@@ -61,16 +61,15 @@ def register_tool(surface: ToolSurface) -> None:
 
     When a ``LucidicAI`` client is active (set via the ``current_client``
     contextvar by ``LucidicAI.__init__``), the surface lands directly in
-    the client's tool registry — implemented in LUC-577c when the
-    ``client.tools`` namespace exists. Until then, all calls fall through
+    the client's tool registry. With no active client, calls fall through
     to ``_PENDING_BUFFER``.
 
     Last-wins on duplicate names. Re-decorating a function (e.g. in a hot
     reload) replaces the prior surface; the registry never grows unbounded
     from repeated decoration.
     """
-    # Direct-to-client path activates in LUC-577c. Until then everything
-    # buffers, and 577c's drain_buffer_into flushes on first sync.
+    # With no active client everything buffers, and drain_buffer_into flushes
+    # it into the next client.
     from ..context import get_active_client
 
     client = get_active_client()
@@ -87,7 +86,7 @@ def snapshot_registry() -> list[ToolSurface]:
 
     Caller is typically ``client.tools.sync()`` building the
     ``/sdk/agent-tools/sync`` request body. Stable ordering keeps the
-    debounce fingerprint (LUC-577c) deterministic across runs.
+    debounce fingerprint deterministic across runs.
     """
     return sorted(_REGISTRY.values(), key=lambda s: s.name)
 
@@ -95,15 +94,15 @@ def snapshot_registry() -> list[ToolSurface]:
 def drain_buffer_into(client: "LucidicAI") -> int:
     """Flush ``_PENDING_BUFFER`` into ``client.tools._registry`` and clear it.
 
-    Called by ``LucidicAI.__init__`` in LUC-577c. Returns the number of
+    Called by ``LucidicAI.__init__``. Returns the number of
     surfaces drained so the caller can decide whether to trigger an
     opportunistic sync. Idempotent — calling on an empty buffer is a
     cheap no-op.
 
     Multi-client processes: this attaches *all* buffered surfaces to the
     client that calls it. Whichever client constructs first wins; later
-    clients see an empty buffer. Documented as the explicit semantic in
-    LUC-577c — multi-client workflows should decorate per-client via
+    clients see an empty buffer. This is the documented semantic —
+    multi-client workflows should decorate per-client via
     ``client.tools.mockable(fn)`` rather than module-level ``@mockable``.
     """
     if not _PENDING_BUFFER:
@@ -169,8 +168,8 @@ def _serialize_default(default: Any) -> Any:
 def _params_from_callable(fn: Callable) -> list[dict]:
     """Extract parameter specs from a Python callable.
 
-    Used by ``@mockable`` (LUC-577a) and the LangChain legacy ``Tool(func=...)``
-    path (LUC-578). The OpenAI / Anthropic adapters call
+    Used by ``@mockable`` and the LangChain legacy ``Tool(func=...)``
+    path. The OpenAI / Anthropic adapters call
     ``_params_from_json_schema`` instead because their tool surface is JSON
     Schema, not a Python callable.
     """

@@ -1,4 +1,4 @@
-"""EventBuilder.build strict-format regression (LUC-941).
+"""EventBuilder.build strict-format regression.
 
 A caller-supplied `payload` dict (strict format) must still map the identity fields to
 the backend wire names (client_event_id / client_parent_event_id). Previously the strict
@@ -54,7 +54,7 @@ def test_strict_format_without_parent_is_fine():
 
 
 def test_strict_format_empty_payload_still_maps_ids():
-    # payload={} is the exact LUC-941 / SE-E4 trigger — still strict (isinstance({}, dict)),
+    # payload={} is the exact regression trigger — still strict (isinstance({}, dict)),
     # ids still mapped.
     out = EventBuilder.build(_public_params(payload={}))
     assert out["client_event_id"] == "ev-1"

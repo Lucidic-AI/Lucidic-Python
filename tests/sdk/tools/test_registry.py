@@ -2,7 +2,7 @@
 
 Pins the contract that the backend ``SyncAgentToolsSerializer`` validates:
 ToolSurface shape, source_hash determinism, and the buffered-registration
-path that ``LucidicAI.__init__`` will drain in LUC-577c.
+path that ``LucidicAI.__init__`` drains.
 
 Hash stability tests are the most important — drift detection relies on
 both ends producing identical bytes for the same input. A refactor that
@@ -334,7 +334,7 @@ class TestRegistry:
 
 class _FakeClient:
     """Stand-in for LucidicAI. The actual ToolsResource attribute is
-    added by LUC-577c; for these tests we only need ``tools._registry``."""
+    ``client.tools``; for these tests we only need ``tools._registry``."""
     def __init__(self):
         self.tools = _FakeToolsResource()
 

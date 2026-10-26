@@ -1,4 +1,4 @@
-"""LUC-901 — 429/503 retry + backoff + Retry-After.
+"""429/503 retry + backoff + Retry-After.
 
 Retry sleeps are patched out (and recorded) so the tests assert the retry
 count and computed delays without actually waiting.

@@ -105,14 +105,14 @@ class ToolsResource:
     def register(self, surface: ToolSurface) -> None:
         """Add a ``ToolSurface`` directly to this client's registry.
 
-        Used by adapter helpers (LUC-578/579/580) that build surfaces
+        Used by adapter helpers that build surfaces
         from external tool definitions (LangChain ``BaseTool``, OpenAI
         function spec, Anthropic tool block) rather than via the
         ``@mockable`` decoration path.
         """
         self._registry[surface.name] = surface
 
-    # ==================== Framework adapters (LUC-578/579/580) ====================
+    # ==================== Framework adapters ====================
 
     def register_openai(self, tools: List[Dict[str, Any]]) -> List[ToolSurface]:
         """Canonical instance-bound version of ``register_openai_tools``.
@@ -165,7 +165,7 @@ class ToolsResource:
             client_event_id=client_event_id,
         )
 
-    # ----- Anthropic adapter (LUC-580) -----
+    # ----- Anthropic adapter -----
 
     def register_anthropic(self, tools: List[Dict[str, Any]]) -> List[ToolSurface]:
         """Canonical instance-bound version of ``register_anthropic_tools``.
@@ -300,7 +300,7 @@ class ToolsResource:
             client_event_id=client_event_id or str(uuid.uuid4()),
         )
 
-    # ----- LangChain adapter (LUC-578) -----
+    # ----- LangChain adapter -----
 
     def register_langchain_tools(self, tools: List[Any]) -> List[ToolSurface]:
         """Canonical instance-bound version of ``register_langchain_tools``.
@@ -419,7 +419,7 @@ class ToolsResource:
         # Session.tool_version_snapshot from the tools' *current* backend
         # source_hashes; syncing *after* that snapshot (the old order) would
         # rewrite those hashes, so the very first mock_call of a fresh process
-        # would 409 tool_drift against its own just-written snapshot (LUC-591).
+        # would 409 tool_drift against its own just-written snapshot.
         # Syncing first makes the snapshot capture the post-sync hashes — the
         # first tool-backed session now dispatches cleanly. Debounced: a no-op
         # when the registry fingerprint is unchanged. Also ensures the backend
@@ -461,7 +461,7 @@ class ToolsResource:
         contracts including the no-raise guarantee and the sync-before-
         snapshot ordering (see ``_init_session`` for the drift rationale)."""
         # Sync before snapshotting so the backend snapshot captures the
-        # post-sync source_hashes (prevents first-call tool_drift, LUC-591).
+        # post-sync source_hashes (prevents first-call tool_drift).
         # _maybe_async_sync_on_session_start swallows LucidicError internally.
         await self._maybe_async_sync_on_session_start()
 

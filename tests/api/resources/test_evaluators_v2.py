@@ -1,6 +1,6 @@
-"""LUC-910 — client.evaluators reads (list / get / evals / result).
-LUC-916 — client.evaluators writes (create LLM / update / delete).
-LUC-1147 — client.evaluators.set_primary."""
+"""client.evaluators reads (list / get / evals / result).
+client.evaluators writes (create LLM / update / delete).
+client.evaluators.set_primary."""
 import json
 
 import httpx
@@ -103,7 +103,7 @@ class TestAgentIdGuard:
     def test_list_without_agent_id_raises(self, http):
         # No configured agent + none passed -> a clear AgentIdRequiredError
         # (raised eagerly at the .list() call, before any HTTP), not a backend
-        # 400 or an empty-string param (LUC-926).
+        # 400 or an empty-string param.
         from lucidicai.core.errors import AgentIdRequiredError
         with pytest.raises(AgentIdRequiredError):
             EvaluatorsResource(http, agent_id=None).list()
@@ -129,7 +129,7 @@ class TestAsync:
         assert got == ["r1"]
 
 
-# ==================== LUC-916 writes ====================
+# ==================== writes ====================
 
 
 class TestCreate:

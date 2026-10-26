@@ -98,7 +98,7 @@ def test_step_tracking():
         print(f"Step {step_id}: is_finished = {step.is_finished}")
     
     # End session
-    lai.end_session(is_successful=True, is_successful_reason="All steps completed successfully")
+    lai.end_session()
     print("\nSession ended successfully")
 
 if __name__ == "__main__":

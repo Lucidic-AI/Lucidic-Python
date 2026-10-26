@@ -1,4 +1,4 @@
-"""Typed response models for client.prompts reads (LUC-909).
+"""Typed response models for client.prompts reads.
 
 Distinct from the SDK's grandfathered ``Prompt`` dataclass
 (``api/resources/prompt.py``), which is a *rendered* prompt (content + metadata,

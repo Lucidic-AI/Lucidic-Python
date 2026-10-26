@@ -1,4 +1,4 @@
-"""LUC-905 — typed response-model base."""
+"""Typed response-model base."""
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 

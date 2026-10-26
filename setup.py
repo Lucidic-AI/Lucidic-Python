@@ -19,7 +19,7 @@ setup(
         "opentelemetry-api",
         "opentelemetry-sdk",
         "opentelemetry-instrumentation",
-        # LUC-667: floor pins on the openllmetry instrumentation packages. these control the
+        # Floor pins on the openllmetry instrumentation packages. these control the
         # span shape Lucidic consumes; <0.53.4 predates fixes we rely on. the extractor reads
         # both the legacy flat and the new gen_ai.input/output.messages shapes, so newer
         # versions are supported without a ceiling.

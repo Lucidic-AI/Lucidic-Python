@@ -1,4 +1,4 @@
-"""LUC-920 — the generic wait_for / await_for poll primitive."""
+"""The generic wait_for / await_for poll primitive."""
 import pytest
 
 from lucidicai.api.polling import await_for, wait_for

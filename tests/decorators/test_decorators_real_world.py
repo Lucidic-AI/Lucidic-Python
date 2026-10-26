@@ -343,19 +343,11 @@ def main():
         print(f"\nExecutive Insights:\n{batch_summary['executive_insights']}")
         
         # End session successfully
-        lai.end_session(
-            is_successful=True,
-            session_eval=0.98,
-            session_eval_reason="Successfully processed all documents with high-quality insights"
-        )
+        lai.end_session()
         
     except Exception as e:
         print(f"\nError during processing: {e}")
-        lai.end_session(
-            is_successful=False,
-            session_eval=0.0,
-            session_eval_reason=f"Pipeline failed: {str(e)}"
-        )
+        lai.end_session()
     
     print("\n=== Session Completed ===")
 

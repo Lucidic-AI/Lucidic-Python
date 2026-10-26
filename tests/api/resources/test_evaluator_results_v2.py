@@ -1,4 +1,4 @@
-"""LUC-910 — client.evaluator_results.get (single evaluator result by id)."""
+"""client.evaluator_results.get (single evaluator result by id)."""
 import httpx
 import pytest
 import respx

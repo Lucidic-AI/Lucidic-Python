@@ -1,9 +1,9 @@
 """Agent-tools-sync resource — ``POST /sdk/agent-tools/sync``.
 
 Sister of ``MockCallResource``. Consumed by ``ToolsResource.sync()``
-(LUC-608) to push the captured tool registry to the backend so the
-dashboard's Tools tab (LUC-586) and the ``mock_call`` dispatch
-(LUC-584) have the latest source_hash + signature + docstring per tool.
+to push the captured tool registry to the backend so the
+dashboard's Tools tab and the ``mock_call`` dispatch
+have the latest source_hash + signature + docstring per tool.
 
 Backend contract (``api/views/sdk_agent_tools.py``, frozen):
 

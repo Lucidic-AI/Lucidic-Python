@@ -68,7 +68,7 @@ class EventBuilder:
             # reads (event_id -> client_event_id, parent_event_id -> client_parent_event_id,
             # + session_id/occurred_at/duration/tags/metadata), then attach the caller's
             # payload verbatim. Without this the strict path drops parent-linking and
-            # idempotency dedup (LUC-941).
+            # idempotency dedup.
             base = cls._extract_base_params(params)
             base['type'] = params.get('type', 'generic')
             base['payload'] = params['payload']

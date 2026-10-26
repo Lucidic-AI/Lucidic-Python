@@ -22,7 +22,7 @@ import logging
 import os
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, TypeVar, Union
 
 from .api.client import HttpClient
 from .api.resources.agents import AgentsResource
@@ -83,6 +83,9 @@ class LucidicAI:
                   Falls back to LUCIDIC_BASE_URL env var.
         eval_flush_timeout: Seconds close()/aclose() wait for in-flight
                   evals.emit() posts (default 5.0). close() blocks up to this long.
+                  It is also the default wait for a session's own posts in
+                  sessions.end()/aend()/finish(), Session.end() and leaving a
+                  session's ``with`` block. 0 means no wait.
         **kwargs: Additional configuration options passed to SDKConfig.
 
     Raises:
@@ -189,7 +192,7 @@ class LucidicAI:
 
         self._resources["training_modules"] = TrainingModulesResource(client=self)
 
-        # LUC-608: client.tools — namespace for @mockable + adapter
+        # client.tools — namespace for @mockable + adapter
         # registration. ToolsResource is constructed BEFORE the buffer
         # is drained so the client.tools property resolves correctly.
         self._resources["tools"] = ToolsResource(client=self)
@@ -258,7 +261,11 @@ class LucidicAI:
 
     @property
     def eval_flush_timeout(self) -> float:
-        """Seconds close() waits for in-flight evals.emit() posts by default."""
+        """Seconds close() waits for in-flight evals.emit() posts by default.
+
+        Also the default wait for a session's own posts when it ends:
+        sessions.end()/aend()/finish(), Session.end() and leaving its ``with`` block.
+        """
         return self._eval_flush_timeout
 
     @property
@@ -268,7 +275,7 @@ class LucidicAI:
 
     @property
     def agents(self) -> AgentsResource:
-        """Access agent reads (LUC-906): ``list()`` / ``get(id)`` + ``tool_catalog(id)``.
+        """Access agent reads: ``list()`` / ``get(id)`` + ``tool_catalog(id)``.
 
         Enumerate the org's agents (discover their ``agent_id`` s), read one
         back, or inspect an agent's tool catalog. (A client still needs an
@@ -279,7 +286,7 @@ class LucidicAI:
 
     @property
     def evaluators(self) -> EvaluatorsResource:
-        """Access evaluator reads (LUC-910): ``list()`` / ``get(id)``,
+        """Access evaluator reads: ``list()`` / ``get(id)``,
         ``evals(id)`` (one evaluator's result distribution), and ``result(id)``
         (a single evaluator result by id).
 
@@ -289,7 +296,7 @@ class LucidicAI:
 
     @property
     def evaluator_results(self) -> EvaluatorResultsResource:
-        """Read a single evaluator result by its id (LUC-910):
+        """Read a single evaluator result by its id:
         ``client.evaluator_results.get(eval_id)``.
 
         Keyed by an ``EvalResult`` id — distinct from the evaluator-keyed reads
@@ -299,7 +306,7 @@ class LucidicAI:
 
     @property
     def projects(self) -> ProjectsResource:
-        """Access project CRUD (LUC-913): ``list`` / ``create`` / ``get`` /
+        """Access project CRUD: ``list`` / ``create`` / ``get`` /
         ``update`` / ``delete``. Org-scoped; ``delete`` un-projects agents
         (SET_NULL) rather than destroying them.
         """
@@ -307,7 +314,7 @@ class LucidicAI:
 
     @property
     def resources(self) -> ResourcesResource:
-        """Access SQL-substrate Resource CRUD (LUC-917): ``list`` / ``create`` /
+        """Access SQL-substrate Resource CRUD: ``list`` / ``create`` /
         ``get`` / ``update`` / ``delete``. Org-scoped definitions of external
         services the client mocks at runtime (SQL / API / CUSTOM), attached to
         Datasets and Tools. ``delete`` is protected while the resource is in use.
@@ -316,14 +323,14 @@ class LucidicAI:
 
     @property
     def usage(self) -> UsageResource:
-        """Access org-aggregated usage counters (LUC-911):
+        """Access org-aggregated usage counters:
         ``client.usage.get()`` returns a read-only ``{stat_name: total}`` mapping.
         """
         return self._resources["usage"]
 
     @property
     def tools(self) -> ToolsResource:
-        """Access the client's tool registry + mock dispatch surface (LUC-608).
+        """Access the client's tool registry + mock dispatch surface.
 
         ``@client.tools.mockable`` decorates a function; ``client.tools.sync()``
         flushes the registry to the backend. See ``ToolsResource`` for the
@@ -432,7 +439,7 @@ class LucidicAI:
 
     @property
     def evosims(self) -> EvoSimsResource:
-        """Access EvoSim run management (LUC-923): ``train`` kickoff, ``list`` /
+        """Access EvoSim run management: ``train`` kickoff, ``list`` /
         ``get`` runs, ``cancel``, ``iteration_instances``, and ``wait_for`` a run to
         a terminal status.
 
@@ -512,15 +519,38 @@ class LucidicAI:
 
     # ==================== Lifecycle ====================
 
-    def _flush_evals(self, timeout: Optional[float] = None) -> None:
+    def _flush_evals(
+        self,
+        timeout: Optional[float] = None,
+        session_id: Union[str, Iterable[str], None] = None,
+    ) -> None:
         """Wait (bounded) for in-flight evals.emit() posts; never raises.
 
-        ``timeout`` defaults to the client's ``eval_flush_timeout``.
+        ``timeout`` defaults to the client's ``eval_flush_timeout``. With a
+        ``session_id`` (one id or several), only those sessions' posts are
+        waited for.
         """
         try:
-            self.evals.flush(self._eval_flush_timeout if timeout is None else timeout)
+            self.evals.flush(
+                self._eval_flush_timeout if timeout is None else timeout,
+                session_id=session_id,
+            )
         except Exception as e:
-            logger.debug(f"[LucidicAI] Error flushing evals on close: {e}")
+            logger.debug(f"[LucidicAI] Error flushing evals: {e}")
+
+    async def _aflush_evals(
+        self,
+        timeout: Optional[float] = None,
+        session_id: Union[str, Iterable[str], None] = None,
+    ) -> None:
+        """Async sibling of ``_flush_evals``; never raises (cancellation passes through)."""
+        try:
+            await self.evals.aflush(
+                self._eval_flush_timeout if timeout is None else timeout,
+                session_id=session_id,
+            )
+        except Exception as e:
+            logger.debug(f"[LucidicAI] Error flushing evals: {e}")
 
     def close(self, eval_flush_timeout: Optional[float] = None) -> None:
         """Close the client and clean up resources.
@@ -541,10 +571,11 @@ class LucidicAI:
             session_ids = list(self._sessions.keys())
 
         # End sessions WITHOUT holding lock (HTTP calls can be slow)
-        # end() will acquire lock and pop each session from _sessions
+        # end() will acquire lock and pop each session from _sessions;
+        # the flush above already waited for every session's evals
         for session_id in session_ids:
             try:
-                self.sessions.end(session_id)
+                self.sessions.end(session_id, eval_flush_timeout=0)
             except Exception as e:
                 logger.debug(f"[LucidicAI] Error ending session on close: {e}")
 
@@ -593,10 +624,11 @@ class LucidicAI:
             session_ids = list(self._sessions.keys())
 
         # End sessions WITHOUT holding lock (HTTP calls can be slow)
-        # aend() will acquire lock and pop each session from _sessions
+        # aend() will acquire lock and pop each session from _sessions;
+        # the flush above already waited for every session's evals
         for session_id in session_ids:
             try:
-                await self.sessions.aend(session_id)
+                await self.sessions.aend(session_id, eval_flush_timeout=0)
             except Exception as e:
                 logger.debug(f"[LucidicAI] Error ending session on close: {e}")
 

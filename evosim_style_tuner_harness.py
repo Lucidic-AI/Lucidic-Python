@@ -1,18 +1,18 @@
-"""LUC-797 Phase 2 — webhook harness: the client "agent" that gets rolled out.
+"""Webhook harness: the client "agent" that gets rolled out.
 
 Run a tiny HTTP server and point the EvoSim's ``webhook_url`` at it. On each rollout
 dispatch the backend POSTs ``{"session_id": ..., ...params}``; this harness then:
 
   1. starts a Lucidic session with that session_id — the backend binds the in-training
-     candidate checkpoint to it server-side via the LUC-790 pre-link (the SDK does not
+     candidate checkpoint to it server-side via a pre-link (the SDK does not
      know the checkpoint id);
   2. fetches the target prompt (``client.prompts.get`` auto-sends the session context,
-     so with LUC-795 it resolves the CANDIDATE prompt version, not the base label);
+     so it resolves the CANDIDATE prompt version, not the base label);
   3. calls the style_tuner tool (an inference against the candidate artifact);
   4. ends the session — which signals rollout completion back to the training loop.
 
-Requires an SDK build that includes LUC-795 (the checkpoint-scoped prompt fetch): the
-``luc-795-sdk-checkpoint-scoped-prompt-fetch`` branch or a ``lucidicai>=3.7.2`` release.
+Requires an SDK build that includes the checkpoint-scoped prompt fetch:
+a ``lucidicai>=3.7.2`` release.
 
 Usage (env points the client at your local sst-dev backend):
     LUCIDIC_API_KEY=... LUCIDIC_AGENT_ID=... LUCIDIC_BASE_URL=http://localhost:8000 \

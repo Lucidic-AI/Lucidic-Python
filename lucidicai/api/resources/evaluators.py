@@ -1,10 +1,10 @@
-"""client.evaluators — evaluator reads (LUC-910) + writes (LUC-916).
+"""client.evaluators — evaluator reads + writes.
 
 A new namespace (today only ``client.evals.emit`` — a different concept, ad-hoc
 score submission — exists). Reads the agent's evaluator definitions, one
 evaluator's eval distribution across runs, and a single evaluator result by id.
 Writes create / update / delete evaluator definitions, and ``set_primary``
-picks the agent's verdict source (LUC-1147).
+picks the agent's verdict source.
 
 The per-result reads reuse the ``EvalResult`` model (both endpoints serialize
 with the backend's ``EvaluatorResultSerializer``). Data-bearing reads + writes —
@@ -72,11 +72,11 @@ class EvaluatorsResource:
         """Async sibling of ``get``."""
         return Evaluator.from_dict(await self.http.aget(f"{_EVALUATORS}/{evaluator_id}"))
 
-    # ==================== writes (LUC-916) ====================
+    # ==================== writes ====================
     #
     # create / update / delete evaluator definitions. Data-bearing writes → no
     # production swallow. Each has an async sibling. ``create`` is LLM/rubric only
-    # (CODE creation is deferred backend-side, LUC-829) and rejects a non-LLM
+    # (CODE creation is deferred backend-side) and rejects a non-LLM
     # ``type`` client-side, since the backend silently coerces every create to LLM.
 
     def create(
@@ -97,7 +97,7 @@ class EvaluatorsResource:
         / ``config`` are not (call ``get(id)`` for the full built rubric).
 
         Only LLM/rubric evaluators can be created from the SDK — CODE creation is
-        deferred (LUC-829). Passing any ``type`` other than ``"llm"`` raises
+        deferred. Passing any ``type`` other than ``"llm"`` raises
         ``InvalidOperationError`` (create CODE evaluators in the dashboard)."""
         self._reject_non_llm(type)
         return Evaluator.from_dict(self.http.post(
@@ -231,8 +231,8 @@ class EvaluatorsResource:
         if normalized != "llm":
             raise InvalidOperationError(
                 f"creating a '{type_}' evaluator from the SDK is not supported — only "
-                "LLM/rubric evaluators can be created (CODE creation is deferred, "
-                "LUC-829; create CODE evaluators in the dashboard)."
+                "LLM/rubric evaluators can be created (CODE creation is deferred; "
+                "create CODE evaluators in the dashboard)."
             )
 
     def _create_body(

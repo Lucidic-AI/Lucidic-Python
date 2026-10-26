@@ -20,7 +20,7 @@ _content_capture_checked = False
 
 
 def check_content_capture_env() -> None:
-    """warn once if message-content capture is likely disabled (LUC-667).
+    """warn once if message-content capture is likely disabled.
 
     openllmetry emits prompt/completion content by default (TRACELOOP_TRACE_CONTENT=true).
     The official opentelemetry-instrumentation-openai-v2 path, however, keeps content OFF
@@ -51,7 +51,7 @@ def check_content_capture_env() -> None:
 
 
 def _warn_litellm_double_instrumentation(providers: list) -> None:
-    """warn when litellm + a raw openai provider are both enabled (LUC-677).
+    """warn when litellm + a raw openai provider are both enabled.
 
     litellm routes OpenAI/Azure calls through the real openai SDK, which openllmetry's
     OpenAIInstrumentor also wraps -> the same call is captured twice (litellm callback +
@@ -85,7 +85,7 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
     global _global_instrumentors
     new_instrumentors = {}
 
-    # surface content-capture misconfiguration early (LUC-667)
+    # surface content-capture misconfiguration early
     if providers:
         check_content_capture_env()
 
@@ -115,7 +115,7 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
                 _global_instrumentors["openai"] = inst
                 new_instrumentors["openai"] = inst
 
-                # NOTE (LUC-667): openllmetry's OpenAIInstrumentor natively instruments the
+                # NOTE: openllmetry's OpenAIInstrumentor natively instruments the
                 # Responses API (responses.create / responses.parse), including tool calls and
                 # tool definitions. We rely on it directly. The previous custom openai_patch +
                 # clean_openai_instrumentation() stripped that working instrumentation and

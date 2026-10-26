@@ -1,4 +1,4 @@
-"""LUC-801: ``client.training_modules`` per-edit-site tool discovery.
+"""``client.training_modules`` per-edit-site tool discovery.
 
 Exercises the full high-level -> HTTP path with respx mocking the backend at the
 request boundary, so we verify the real query-param shape (session vs checkpoint,

@@ -59,5 +59,5 @@ result3 = process_data(7)
 print(f"Process result: {result3}\n")
 
 # End session
-lai.end_session(is_successful=True)
+lai.end_session()
 print("Session completed!")

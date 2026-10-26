@@ -3,7 +3,7 @@
 Covers surface capture for plain/typed/optional params, async detection,
 lambda rejection, and registry integration. The actual dispatch
 interception (consult ``_current_mock_context()``, route through transport)
-is wired in LUC-577c; the v1 of this ticket's wrapper is intentionally
+is covered in ``test_mockable_dispatch.py``; with no mock context the wrapper is
 transparent — these tests pin "decorating doesn't change call semantics".
 """
 import asyncio

@@ -187,3 +187,61 @@ def test_ids_and_params_are_read_only(run):
         run.params["style"] = "casual"
     with pytest.raises(AttributeError):
         run.input = "other"
+
+
+def _spy(monkeypatch, obj, name):
+    """Record the session_id of every call to ``obj.<name>`` (flush or aflush)."""
+    calls = []
+    real = getattr(obj, name)
+
+    def _record(timeout=5.0, session_id=None):
+        calls.append(session_id)
+        return real(timeout, session_id=session_id)
+
+    monkeypatch.setattr(obj, name, _record)
+    return calls
+
+
+def test_exit_waits_once_for_the_sessions_emits(run, backend, monkeypatch):
+    flushes = _spy(monkeypatch, run.client.evals, "flush")
+    backend.post("/sdk/evals").mock(return_value=httpx.Response(201, json={}))
+    with run:
+        run.client.evals.emit(result=0.9, name="self_score")
+    # only end()'s wait for the run's session; no extra wait for every session
+    assert flushes == [SESSION_ID]
+
+
+@pytest.mark.asyncio
+async def test_async_exit_waits_once_for_the_sessions_emits(run, backend, monkeypatch):
+    flushes = _spy(monkeypatch, run.client.evals, "flush")
+    aflushes = _spy(monkeypatch, run.client.evals, "aflush")
+    backend.post("/sdk/evals").mock(return_value=httpx.Response(201, json={}))
+    async with run:
+        run.client.evals.emit(result=0.9, name="self_score")
+    assert (flushes, aflushes) == ([], [SESSION_ID])
+
+
+def test_a_child_of_an_open_run_waits_for_its_own_emits(run, backend, monkeypatch):
+    order = []
+
+    def _slow_eval(request):
+        time.sleep(0.2)
+        order.append("eval")
+        return httpx.Response(201, json={})
+
+    backend.post("/sdk/evals").mock(side_effect=_slow_eval)
+    flushes = _spy(monkeypatch, run.client.evals, "flush")
+
+    def child_process():
+        with lucidic.load(client=run.client) as child:
+            child.client.evals.emit(result=0.9, name="self_score")
+        # the child doesn't end the session, so its exit waited for the post
+        order.append("child exited")
+
+    with run:
+        monkeypatch.setenv("LUCIDIC_RUN", run.to_json())
+        contextvars.Context().run(child_process)
+    assert order == ["eval", "child exited"]
+    # the child's wait, then the parent's end(); both for the one session
+    assert flushes == [SESSION_ID, SESSION_ID]
+    assert _ended(backend) == [True]

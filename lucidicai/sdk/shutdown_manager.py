@@ -243,6 +243,9 @@ class ShutdownManager:
             except Exception as e:
                 error(f"[ShutdownManager] Error flushing events: {e}")
 
+            # one eval flush deadline for the whole shutdown
+            deadline = time.monotonic() + self.eval_flush_budget
+
             # Close all registered clients (this will also end their sessions)
             clients_to_close = []
             with self._client_lock:
@@ -250,7 +253,6 @@ class ShutdownManager:
 
             if clients_to_close:
                 # flush all clients against the shared deadline, then close without waiting
-                deadline = time.monotonic() + self.eval_flush_budget
                 for client in clients_to_close:
                     remaining = max(0.0, deadline - time.monotonic())
                     client._flush_evals(min(remaining, client.eval_flush_timeout))
@@ -275,11 +277,14 @@ class ShutdownManager:
 
             debug(f"[ShutdownManager] Found {len(sessions_to_end)} sessions to end")
 
-            # end all sessions
+            # end all sessions, each after its pending evals (same deadline)
             for session_id, state in sessions_to_end:
                 try:
                     debug(f"[ShutdownManager] Ending session {truncate_id(session_id)}")
-                    self._end_session(session_id, state)
+                    self._end_session(
+                        session_id, state,
+                        eval_flush_timeout=max(0.0, deadline - time.monotonic()),
+                    )
                 except Exception as e:
                     error(f"[ShutdownManager] Error ending session {truncate_id(session_id)}: {e}")
             
@@ -309,12 +314,17 @@ class ShutdownManager:
             debug("[ShutdownManager] Setting shutdown_complete event")
             self.shutdown_complete.set()
     
-    def _end_session(self, session_id: str, state: SessionState) -> None:
+    def _end_session(
+        self, session_id: str, state: SessionState, eval_flush_timeout: Optional[float] = None
+    ) -> None:
         """End a single session with cleanup.
         
         Args:
             session_id: Session identifier
             state: Session state
+            eval_flush_timeout: Upper bound in seconds for the wait for the
+                session's pending evals.emit() posts (default: the shutdown's
+                eval budget, never more than the client's own setting)
         """
         # Flush OpenTelemetry spans first
         try:
@@ -335,13 +345,12 @@ class ShutdownManager:
             try:
                 debug(f"[ShutdownManager] Ending session {truncate_id(session_id)} via API")
                 debug(f"[ShutdownManager] http_client type: {type(state.http_client)}, keys: {state.http_client.keys() if isinstance(state.http_client, dict) else 'not a dict'}")
-                # state.http_client is a resources dict with 'sessions' key
+                # state.http_client is a resources dict with 'sessions' key.
+                # Finish only: the session's result, if any, came from evals.emit.
                 if isinstance(state.http_client, dict) and 'sessions' in state.http_client:
-                    state.http_client['sessions'].end_session(
-                        session_id,
-                        is_successful=False,
-                        session_eval_reason="Process shutdown"
-                    )
+                    sessions = state.http_client['sessions']
+                    self._flush_session_evals(sessions, session_id, eval_flush_timeout)
+                    sessions.end_session(session_id)
                     debug(f"[ShutdownManager] Session {truncate_id(session_id)} ended via API")
                 else:
                     debug(f"[ShutdownManager] Cannot end session - http_client not properly configured")
@@ -351,6 +360,23 @@ class ShutdownManager:
         # unregister the session
         self.unregister_session(session_id)
     
+    def _flush_session_evals(
+        self, sessions: object, session_id: str, timeout: Optional[float]
+    ) -> None:
+        """Wait (bounded) for the session's pending evals.emit() posts; never raises."""
+        try:
+            # the client that owns the sessions resource (the module-level API has none)
+            client = getattr(sessions, "_client", None)
+            if client is None or not hasattr(client, "_flush_evals"):
+                return
+            if timeout is None:
+                timeout = self.eval_flush_budget
+            timeout = min(timeout, client.eval_flush_timeout)
+            if timeout > 0:
+                client._flush_evals(timeout, session_id=session_id)
+        except Exception as e:
+            debug(f"[ShutdownManager] Error flushing evals for session {truncate_id(session_id)}: {e}")
+
     def reset(self) -> None:
         """Reset shutdown manager (for testing)."""
         with self._session_lock:

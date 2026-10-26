@@ -1,6 +1,6 @@
 """Integration test for the SessionResource auto-init-fixtures wiring.
 
-Bridges LUC-608's two halves: (1) when `client.sessions.create()` is
+Bridges the two halves of tool-backed session start: (1) when `client.sessions.create()` is
 called with `datasetitem_id`, the SessionResource auto-fires
 `/sdk/session-init-fixtures`; (2) on success, ToolsResource binds a
 MockContext so subsequent `@mockable` calls in the same context route

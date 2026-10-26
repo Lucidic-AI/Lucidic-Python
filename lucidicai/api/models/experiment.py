@@ -1,4 +1,4 @@
-"""Typed response model for client.experiments reads (LUC-908)."""
+"""Typed response model for client.experiments reads."""
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -39,7 +39,7 @@ class Experiment(APIModel):
 
 @dataclass
 class FailureGroup(APIModel):
-    """One clustered failure mode in an experiment (LUC-922) — a named group of
+    """One clustered failure mode in an experiment — a named group of
     failing events, produced by ``experiments.generate_failure_modes`` and read
     back via ``experiments.failure_groups``. ``events`` is a list of
     ``{event_id, session_id}``. Keyed by ``id`` (the backend serializes it plain,

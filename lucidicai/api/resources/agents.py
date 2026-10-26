@@ -1,7 +1,7 @@
-"""client.agents — agent reads + writes (LUC-906 / LUC-912).
+"""client.agents — agent reads + writes.
 
 Read the org's agents (``list`` / ``get`` / ``tool_catalog``) and provision them
-(``create`` / ``update``). ``create`` is the SDK-first bootstrap — since LUC-926
+(``create`` / ``update``). ``create`` is the SDK-first bootstrap —
 a client needs only an api_key to construct, so ``client.agents.create(...)``
 can mint an org's first agent purely from code. There is no ``delete`` (that
 cascades to every session/event/tool/prompt under the agent — dashboard-only).
@@ -88,7 +88,7 @@ class AgentsResource:
         """Async sibling of ``get``."""
         return Agent.from_dict(await self.http.aget(f"{_AGENTS}/{agent_id}"))
 
-    # ==================== write (LUC-912) ====================
+    # ==================== write ====================
 
     def create(
         self, name: str, *, icon: Optional[str] = None, project_id: Optional[str] = None,

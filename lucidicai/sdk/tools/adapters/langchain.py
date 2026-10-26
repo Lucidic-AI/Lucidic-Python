@@ -1,4 +1,4 @@
-"""LangChain framework adapter (LUC-578).
+"""LangChain framework adapter.
 
 Structurally different from the OpenAI / Anthropic adapters because
 LangChain hands us **Python callables** (``BaseTool.func``), not JSON

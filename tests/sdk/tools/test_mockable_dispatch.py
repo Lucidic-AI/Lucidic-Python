@@ -1,6 +1,6 @@
 """Tests for the live-dispatch wiring of ``@mockable``.
 
-LUC-577 covered surface capture + the fast path (no mock context).
+``test_mockable.py`` covers surface capture + the fast path (no mock context).
 This file pins the behavior with mock context bound: every @mockable
 call should route through ``emit_call_through_backend`` and hit the
 mocked backend endpoint.

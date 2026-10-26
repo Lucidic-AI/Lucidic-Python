@@ -6,7 +6,7 @@ route a call through the backend: the bound ``LucidicAI`` client (the
 dispatches per session, with drift-checked against the session's
 ``tool_version_snapshot``).
 
-Set by ``ToolsResource._init_session`` (LUC-608) when a tool-backed
+Set by ``ToolsResource._init_session`` when a tool-backed
 session is created and ``/sdk/session-init-fixtures`` reports
 ``initialized=True``. Cleared on session end. ``@mockable`` wrappers
 read via ``_current_mock_context()`` on every call — a single

@@ -1,4 +1,5 @@
 """Session resource API operations."""
+import asyncio
 import logging
 import threading
 import uuid
@@ -9,6 +10,7 @@ from ..client import HttpClient
 from ..models import session as session_models
 from ..models.base import CursorPage
 from ..pagination import apaginate, paginate
+from .evals import validate_flush_timeout
 from ...core.errors import require_agent_id
 
 if TYPE_CHECKING:
@@ -24,6 +26,30 @@ def _truncate_id(id_str: Optional[str]) -> str:
     if not id_str:
         return "None"
     return f"{id_str[:8]}..." if len(id_str) > 8 else id_str
+
+
+# The session verdict fields that sessions no longer take. A session's result is
+# an eval: client.evals.emit(result, name=..., description=...).
+_VERDICT_FIELDS = ("is_successful", "is_successful_reason", "session_eval", "session_eval_reason")
+
+
+def _refuse_verdict_fields(method: str, updates: Dict[str, Any]) -> None:
+    """Raise TypeError if ``updates`` holds a session verdict field."""
+    given = [key for key in _VERDICT_FIELDS if key in updates]
+    if given:
+        raise TypeError(
+            f"{method}() no longer accepts {', '.join(given)}; report the "
+            f"session's result with client.evals.emit(result, name=..., description=...)"
+        )
+
+
+def _refuse_extra_kwargs(method: str, kwargs: Dict[str, Any]) -> None:
+    """For a method whose ``**kwargs`` exist only to explain the removed verdict
+    fields: refuse those with the ``evals.emit`` pointer, and any other keyword
+    as Python would."""
+    _refuse_verdict_fields(method, kwargs)
+    if kwargs:
+        raise TypeError(f"{method}() got an unexpected keyword argument {next(iter(kwargs))!r}")
 
 
 class SessionResource:
@@ -104,7 +130,7 @@ class SessionResource:
                 )
             raise LucidicError("Client is not properly configured")
 
-        # LUC-926: a session must attach to an agent. Raise loudly (even in
+        # A session must attach to an agent. Raise loudly (even in
         # production) BEFORE the swallow below, rather than POST a null agent_id
         # and silently drop this session + all its events.
         require_agent_id(self._config.agent_id, "sessions.create")
@@ -172,7 +198,7 @@ class SessionResource:
             )
             shutdown_manager.register_session(real_session_id, state)
 
-        # LUC-608: when the user passes datasetitem_id they intend tool-backed
+        # When the user passes datasetitem_id they intend tool-backed
         # dispatch. Init per-session fixture state + bind MockContext so
         # subsequent @mockable calls in this session route through the backend.
         # ToolsResource._init_session NEVER raises — session creation must not
@@ -216,7 +242,7 @@ class SessionResource:
                 )
             raise LucidicError("Client is not properly configured")
 
-        # LUC-926: same guard as create() — raise before the swallow.
+        # Same guard as create() — raise before the swallow.
         require_agent_id(self._config.agent_id, "sessions.create")
 
         if auto_end is None:
@@ -274,7 +300,7 @@ class SessionResource:
             )
             shutdown_manager.register_session(real_session_id, state)
 
-        # LUC-608: see create() for full rationale. Async sibling.
+        # See create() for full rationale. Async sibling.
         if datasetitem_id and self._client._has_tools_resource():
             await self._client.tools._ainit_session(real_session_id)
 
@@ -284,21 +310,29 @@ class SessionResource:
     def end(
         self,
         session_id: Optional[str] = None,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None,
+        *,
+        eval_flush_timeout: Optional[float] = None,
+        **kwargs: Any,
     ) -> None:
         """End a session.
 
+        To report the session's result, emit it before ending:
+        ``client.evals.emit(result, name=..., description=...)``. end() first
+        waits for this session's pending emits, so the backend has the result
+        when the session finishes. Other sessions' emits are not waited for.
+
         Args:
             session_id: Session ID to end. If None, attempts to use current context session.
-            is_successful: Whether the session was successful.
-            is_successful_reason: Reason for success/failure status.
-            session_eval: Evaluation score (0.0 to 1.0).
-            session_eval_reason: Reason for the evaluation score.
+            eval_flush_timeout: Upper bound in seconds for that wait. Defaults to
+                the client's ``eval_flush_timeout`` (5.0); 0 skips the wait. On
+                timeout a warning is logged and the session ends anyway.
+
+        Raises:
+            TypeError: If given a session verdict field such as ``is_successful``.
         """
-        from ...sdk.shutdown_manager import ShutdownManager
+        _refuse_extra_kwargs("sessions.end", kwargs)
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
 
         if not self._client.is_valid:
             return
@@ -312,14 +346,69 @@ class SessionResource:
             logger.debug("[SessionResource] No session to end")
             return
 
+        # deliver this session's pending evals.emit() posts before it finishes
+        timeout = self._flush_timeout(eval_flush_timeout)
+        if timeout:
+            self._client._flush_evals(timeout, session_id=session_id)
+
+        self._end_and_untrack(session_id)
+
+    async def aend(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        eval_flush_timeout: Optional[float] = None,
+        **kwargs: Any,
+    ) -> None:
+        """End a session (async version).
+
+        See end() for full documentation. The wait runs on the event loop, so it
+        ends on time however busy the loop's executor is. If the task is
+        cancelled during the wait, the session is still ended before the
+        cancellation is raised.
+        """
+        _refuse_extra_kwargs("sessions.aend", kwargs)
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
+
+        if not self._client.is_valid:
+            return
+
+        if not session_id:
+            from ...sdk.context import current_session_id
+            session_id = current_session_id.get(None)
+
+        if not session_id:
+            logger.debug("[SessionResource] No session to end")
+            return
+
+        # deliver this session's pending evals.emit() posts before it finishes
+        timeout = self._flush_timeout(eval_flush_timeout)
+        if timeout:
+            try:
+                await self._client._aflush_evals(timeout, session_id=session_id)
+            except asyncio.CancelledError:
+                # still end the session, then let the cancellation through
+                try:
+                    await self._aend_and_untrack(session_id)
+                except Exception as e:
+                    logger.error(f"[SessionResource] Failed to end session: {e}")
+                raise
+
+        await self._aend_and_untrack(session_id)
+
+    def _flush_timeout(self, eval_flush_timeout: Optional[float]) -> float:
+        """The wait for a session's pending emits: the given one, else the client's."""
+        if eval_flush_timeout is None:
+            return self._client.eval_flush_timeout
+        return eval_flush_timeout
+
+    def _end_and_untrack(self, session_id: str) -> None:
+        """Finish the session (errors swallowed in production), then stop tracking it."""
+        from ...sdk.shutdown_manager import ShutdownManager
+
         try:
-            self.end_session(
-                session_id=session_id,
-                is_successful=is_successful,
-                is_successful_reason=is_successful_reason,
-                session_eval=session_eval,
-                session_eval_reason=session_eval_reason,
-            )
+            self.end_session(session_id=session_id)
         except Exception as e:
             if self._production:
                 logger.error(f"[SessionResource] Failed to end session: {e}")
@@ -336,39 +425,12 @@ class SessionResource:
 
         logger.debug(f"[SessionResource] Ended session {session_id[:8]}...")
 
-    async def aend(
-        self,
-        session_id: Optional[str] = None,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None,
-    ) -> None:
-        """End a session (async version).
-
-        See end() for full documentation.
-        """
+    async def _aend_and_untrack(self, session_id: str) -> None:
+        """Async sibling of ``_end_and_untrack``."""
         from ...sdk.shutdown_manager import ShutdownManager
 
-        if not self._client.is_valid:
-            return
-
-        if not session_id:
-            from ...sdk.context import current_session_id
-            session_id = current_session_id.get(None)
-
-        if not session_id:
-            logger.debug("[SessionResource] No session to end")
-            return
-
         try:
-            await self.aend_session(
-                session_id=session_id,
-                is_successful=is_successful,
-                is_successful_reason=is_successful_reason,
-                session_eval=session_eval,
-                session_eval_reason=session_eval_reason,
-            )
+            await self.aend_session(session_id=session_id)
         except Exception as e:
             if self._production:
                 logger.error(f"[SessionResource] Failed to end session: {e}")
@@ -416,14 +478,14 @@ class SessionResource:
         )
         return response
 
-    # ==================== v2 reads (LUC-907) ====================
+    # ==================== v2 reads ====================
     #
     # These reads are data-bearing, so — unlike the telemetry lifecycle methods
     # above — they do NOT swallow errors in production: a failure raises the
     # typed LucidicError the transport decoded. Each has an async sibling.
 
     def get(self, session_id: str) -> "session_models.SessionTrace":
-        """Read a session's detail + trace (LUC-817).
+        """Read a session's detail + trace.
 
         Accepts the session UUID or the client-supplied ``custom_session_id``.
         Returns a ``SessionTrace`` (session meta + flat ``occurred_at``-ordered
@@ -469,25 +531,43 @@ class SessionResource:
             await self.http.aget(f"sdk/v2/sessions/{quote(session_id, safe='')}/events/{event_id}", params)
         )
 
-    def finish(self, session_ids: List[str]) -> int:
+    def finish(self, session_ids: List[str], *, eval_flush_timeout: Optional[float] = None) -> int:
         """Bulk-finish sessions by id (POST /sdk/v2/sessions/finish; needs
         ``session:write``). Idempotent and best-effort — unknown, cross-org,
         already-finished, non-UUID, or (for an agent-bound key) other-agent ids are
         silently skipped, and the call still succeeds. Finishing marks each session
         finished, recomputes its status, and — when it has evaluators — kicks off
         async evaluation/summarization. Unlike the single-session gen-3 ``update``,
-        this only closes sessions; it does not set per-session success/eval/tags.
+        this only closes sessions; it does not set per-session fields such as tags.
         Returns the number of sessions matched and finished.
+
+        Like ``end()``, it first waits for these sessions' pending
+        ``evals.emit()`` posts, all under one deadline: ``eval_flush_timeout``
+        seconds, default the client's ``eval_flush_timeout``; 0 skips the wait.
+        On timeout a warning is logged and the sessions finish anyway.
 
         Data-bearing write — raises the typed transport error (does not swallow),
         unlike the gen-3 ``create``/``end`` above."""
-        resp = self.http.post("sdk/v2/sessions/finish", self._finish_body(session_ids))
+        body = self._finish_body(session_ids)
+        timeout = self._finish_flush_timeout(eval_flush_timeout)
+        if timeout and body["session_ids"]:
+            self._client._flush_evals(timeout, session_id=body["session_ids"])
+        resp = self.http.post("sdk/v2/sessions/finish", body)
         return self._finished_count(resp)
 
-    async def afinish(self, session_ids: List[str]) -> int:
-        """Async sibling of ``finish``."""
-        resp = await self.http.apost("sdk/v2/sessions/finish", self._finish_body(session_ids))
+    async def afinish(self, session_ids: List[str], *, eval_flush_timeout: Optional[float] = None) -> int:
+        """Async sibling of ``finish``; the wait runs on the event loop."""
+        body = self._finish_body(session_ids)
+        timeout = self._finish_flush_timeout(eval_flush_timeout)
+        if timeout and body["session_ids"]:
+            await self._client._aflush_evals(timeout, session_id=body["session_ids"])
+        resp = await self.http.apost("sdk/v2/sessions/finish", body)
         return self._finished_count(resp)
+
+    def _finish_flush_timeout(self, eval_flush_timeout: Optional[float]) -> float:
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
+        return self._flush_timeout(eval_flush_timeout)
 
     @staticmethod
     def _finish_body(session_ids: List[str]) -> Dict[str, Any]:
@@ -513,11 +593,17 @@ class SessionResource:
 
         Args:
             session_id: Session ID
-            **updates: Fields to update (task, is_finished, etc.)
+            **updates: Fields to update (task, is_finished, etc.). The session
+                verdict fields are not accepted: report a result with
+                ``client.evals.emit(result, name=..., description=...)``.
 
         Returns:
             Updated session data
+
+        Raises:
+            TypeError: If ``updates`` holds a session verdict field.
         """
+        _refuse_verdict_fields("sessions.update", updates)
         logger.debug(
             f"[Session] update() called - "
             f"session_id={_truncate_id(session_id)}, updates={updates}"
@@ -533,49 +619,19 @@ class SessionResource:
         )
         return response
 
-    def end_session(
-        self,
-        session_id: str,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def end_session(self, session_id: str) -> Dict[str, Any]:
         """End a session via API.
 
         Args:
             session_id: Session ID
-            is_successful: Whether session was successful
-            is_successful_reason: Reason for success or failure
-            session_eval: Session evaluation score
-            session_eval_reason: Reason for evaluation
 
         Returns:
             Final session data
         """
         logger.debug(
-            f"[Session] end_session() called - "
-            f"session_id={_truncate_id(session_id)}, is_successful={is_successful}, "
-            f"session_eval={session_eval}"
+            f"[Session] end_session() called - session_id={_truncate_id(session_id)}"
         )
-
-        updates: Dict[str, Any] = {
-            "is_finished": True
-        }
-
-        if is_successful is not None:
-            updates["is_successful"] = is_successful
-
-        if session_eval is not None:
-            updates["session_eval"] = session_eval
-
-        if session_eval_reason is not None:
-            updates["session_eval_reason"] = session_eval_reason
-
-        if is_successful_reason is not None:
-            updates["is_successful_reason"] = is_successful_reason
-
-        return self.update(session_id, **updates)
+        return self.update(session_id, is_finished=True)
 
     def list(
         self,
@@ -594,7 +650,7 @@ class SessionResource:
         ordering: Optional[str] = None,
         page_size: Optional[int] = None,
     ) -> Iterator["session_models.Session"]:
-        """Lazily iterate an agent's sessions, following pages (LUC-816).
+        """Lazily iterate an agent's sessions, following pages.
 
         Filters (all optional): ``experiment_id``; ``production`` (bool);
         ``cost`` / ``duration`` / ``num_events`` as ``"min:max"`` range strings
@@ -736,7 +792,7 @@ class SessionResource:
         return response
 
     async def aupdate(self, session_id: str, **updates) -> Dict[str, Any]:
-        """Update an existing session (asynchronous).
+        """Update an existing session (asynchronous). See update().
 
         Args:
             session_id: Session ID
@@ -745,6 +801,7 @@ class SessionResource:
         Returns:
             Updated session data
         """
+        _refuse_verdict_fields("sessions.aupdate", updates)
         logger.debug(
             f"[Session] aupdate() called - "
             f"session_id={_truncate_id(session_id)}, updates={updates}"
@@ -759,46 +816,16 @@ class SessionResource:
         )
         return response
 
-    async def aend_session(
-        self,
-        session_id: str,
-        is_successful: Optional[bool] = None,
-        is_successful_reason: Optional[str] = None,
-        session_eval: Optional[float] = None,
-        session_eval_reason: Optional[str] = None
-    ) -> Dict[str, Any]:
+    async def aend_session(self, session_id: str) -> Dict[str, Any]:
         """End a session via API (asynchronous).
 
         Args:
             session_id: Session ID
-            is_successful: Whether session was successful
-            is_successful_reason: Reason for success or failure
-            session_eval: Session evaluation score
-            session_eval_reason: Reason for evaluation
 
         Returns:
             Final session data
         """
         logger.debug(
-            f"[Session] aend_session() called - "
-            f"session_id={_truncate_id(session_id)}, is_successful={is_successful}, "
-            f"session_eval={session_eval}"
+            f"[Session] aend_session() called - session_id={_truncate_id(session_id)}"
         )
-
-        updates: Dict[str, Any] = {
-            "is_finished": True
-        }
-
-        if is_successful is not None:
-            updates["is_successful"] = is_successful
-
-        if session_eval is not None:
-            updates["session_eval"] = session_eval
-
-        if session_eval_reason is not None:
-            updates["session_eval_reason"] = session_eval_reason
-
-        if is_successful_reason is not None:
-            updates["is_successful_reason"] = is_successful_reason
-
-        return await self.aupdate(session_id, **updates)
+        return await self.aupdate(session_id, is_finished=True)
