@@ -143,7 +143,7 @@ class EvalsResource:
                 passes at or above it. Only allowed with a number result and must
                 be a finite number. It is stored on the agent's evaluator for this
                 name, and the latest value sent wins. Without ``name``, this sets
-                the mark on the agent's default ``User Supplied (Number)``
+                the mark on the agent's ``User Supplied (Number)``
                 evaluator, which all unnamed number emits share (a warning is
                 logged).
 
@@ -207,7 +207,7 @@ class EvalsResource:
         if pass_threshold is not None and not name:
             logger.warning(
                 "[EvalsResource] pass_threshold without name sets the mark on the agent's "
-                "default 'User Supplied (Number)' evaluator, which all unnamed number "
+                "'User Supplied (Number)' evaluator, which all unnamed number "
                 "emits share"
             )
 
