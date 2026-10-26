@@ -1,6 +1,6 @@
 """LUC-918 — client.datasets v2: items + schemas (CRUD) + fixtures.create.
-LUC-921 generation; LUC-1195 eval runs (start_run / runs), case evaluators and the
-fallback evaluator."""
+LUC-921 generation; LUC-1195 eval runs (start_run / runs), case evaluators, the
+fallback evaluator and the cases list."""
 import json
 
 import httpx
@@ -9,6 +9,8 @@ import respx
 
 from lucidicai.api.models.dataset import (
     CaseEvaluatorUpdate,
+    CaseGrader,
+    DatasetCase,
     DatasetGenerationRun,
     DatasetItem,
     DatasetSchema,
@@ -1057,3 +1059,134 @@ class TestFallbackEvaluatorAsync:
         route = respx.delete(_FALLBACK_URL).mock(return_value=httpx.Response(204))
         assert await datasets.aremove_fallback_evaluator(_DS) is None
         assert route.called
+
+
+# ==================== LUC-1195 cases list (over LUC-1194) ====================
+
+_FB = "33333333-3333-3333-3333-333333333333"
+_METRIC = "44444444-4444-4444-4444-444444444444"
+
+
+def _cases_url(dataset_id=_DS):
+    return f"{_BASE}/sdk/v2/datasets/{dataset_id}/cases"
+
+
+def _grader(evaluator_id=_EV, **over):
+    # case_evaluator_services._grader
+    d = {"evaluator_id": evaluator_id, "name": "cites-clause", "type": "LLM", "result_type": "boolean",
+         "scope": "case", "graded_by": "case_evaluator", "pass_threshold": None, "criteria": _BOOL_CRIT}
+    d.update(over)
+    return d
+
+
+def _case_row(i, **over):
+    # DatasetCaseSerializer: the item fields + dataset_cases' four keys
+    d = {**_item(i, case_evaluator_id=None), "scored": True, "graded_by": None,
+         "grader": None, "if_not_reported": None}
+    d.update(over)
+    return d
+
+
+_BY_CASE = dict(case_evaluator_id=_EV, graded_by="case_evaluator", grader=_grader())
+_BY_AGENT = dict(
+    graded_by="agent_reported",
+    grader=_grader(_METRIC, name="task_passed", type="RUNTIME", scope="agent",
+                   graded_by="agent_reported", criteria=None),
+    if_not_reported=_grader(_FB, name="answers-the-question", result_type="number", scope="dataset",
+                            graded_by="fallback", pass_threshold=0.7, criteria=_NUM_CRIT),
+)
+
+
+class TestDatasetCaseModel:
+    def test_case_evaluator_row(self):
+        case = DatasetCase.from_dict(_case_row(1, **_BY_CASE))
+        assert isinstance(case, DatasetItem)  # a case is an item plus how it's graded
+        assert case.datasetitem_id == "it1" and case.input == {"q": "hi"}
+        assert case.case_evaluator_id == _EV and case.scored is True
+        assert case.graded_by == "case_evaluator"
+        assert isinstance(case.grader, CaseGrader) and case.grader.scope == "case"
+        assert case.grader.criteria == _BOOL_CRIT and case.if_not_reported is None
+
+    def test_agent_reported_row_with_a_fallback(self):
+        case = DatasetCase.from_dict(_case_row(2, **_BY_AGENT))
+        assert case.graded_by == "agent_reported" and case.grader.evaluator_id == _METRIC
+        assert case.grader.criteria is None
+        fb = case.if_not_reported
+        assert isinstance(fb, CaseGrader) and fb.evaluator_id == _FB
+        assert (fb.scope, fb.graded_by, fb.pass_threshold) == ("dataset", "fallback", 0.7)
+
+    def test_ungraded_row(self):
+        case = DatasetCase.from_dict(_case_row(3))
+        assert case.scored is True and case.graded_by is None
+        assert case.grader is None and case.if_not_reported is None
+
+    def test_world_entry_item_is_not_scored(self):
+        assert DatasetCase.from_dict(_case_row(4, scored=False)).scored is False
+
+    def test_criteria_hidden_without_evaluator_read(self):
+        case = DatasetCase.from_dict(_case_row(5, **{**_BY_CASE, "grader": _grader(criteria=None)}))
+        assert case.grader.criteria is None and case.grader.name == "cites-clause"
+
+
+class TestCases:
+    @respx.mock
+    def test_follows_pages_typed(self, datasets):
+        url = _cases_url()
+        route = respx.get(url).mock(side_effect=[
+            httpx.Response(200, json={"results": [_case_row(1, **_BY_CASE), _case_row(2, **_BY_AGENT)],
+                                      "next": f"{url}?cursor=c2"}),
+            httpx.Response(200, json={"results": [_case_row(3)], "next": None}),
+        ])
+        got = list(datasets.cases(_DS, page_size=2))
+        assert [c.datasetitem_id for c in got] == ["it1", "it2", "it3"]
+        assert all(isinstance(c, DatasetCase) for c in got)
+        assert [c.graded_by for c in got] == ["case_evaluator", "agent_reported", None]
+        first, second = (dict(c.request.url.params) for c in route.calls)
+        assert first == {"page_size": "2"} and second == {"page_size": "2", "cursor": "c2"}
+
+    @respx.mock
+    def test_no_page_size_sends_no_params(self, datasets):
+        route = respx.get(_cases_url()).mock(
+            return_value=httpx.Response(200, json={"results": [], "next": None}))
+        assert list(datasets.cases(_DS)) == []
+        assert dict(route.calls.last.request.url.params) == {}
+
+    @respx.mock
+    def test_cases_page(self, datasets):
+        url = _cases_url()
+        route = respx.get(url).mock(return_value=httpx.Response(
+            200, json={"results": [_case_row(1, **_BY_CASE)], "next": f"{url}?cursor=c2", "previous": None}))
+        page = datasets.cases_page(_DS, cursor="c1", page_size=50)
+        assert isinstance(page.results[0], DatasetCase) and page.next_cursor == "c2"
+        assert isinstance(page.results[0].grader, CaseGrader)
+        assert dict(route.calls.last.request.url.params) == {"page_size": "50", "cursor": "c1"}
+
+    @respx.mock
+    def test_unknown_dataset_404(self, datasets):
+        respx.get(_cases_url("missing")).mock(return_value=httpx.Response(
+            404, json={"error": "Specified Dataset not found"}))
+        with pytest.raises(NotFoundError):
+            list(datasets.cases("missing"))
+
+
+class TestCasesAsync:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_acases_follows_pages(self, datasets):
+        url = _cases_url()
+        respx.get(url).mock(side_effect=[
+            httpx.Response(200, json={"results": [_case_row(1, **_BY_CASE)], "next": f"{url}?cursor=c2"}),
+            httpx.Response(200, json={"results": [_case_row(2, **_BY_AGENT)], "next": None}),
+        ])
+        got = [c async for c in datasets.acases(_DS)]
+        assert [c.datasetitem_id for c in got] == ["it1", "it2"]
+        assert isinstance(got[1].if_not_reported, CaseGrader)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_acases_page(self, datasets):
+        route = respx.get(_cases_url()).mock(return_value=httpx.Response(
+            200, json={"results": [_case_row(1)], "next": None}))
+        page = await datasets.acases_page(_DS, page_size=10)
+        assert isinstance(page.results[0], DatasetCase) and page.has_next is False
+        assert dict(route.calls.last.request.url.params) == {"page_size": "10"}

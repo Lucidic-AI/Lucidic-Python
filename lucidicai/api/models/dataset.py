@@ -48,6 +48,54 @@ class DatasetItem(APIModel):
 
 
 @dataclass
+class CaseGrader(APIModel):
+    """The evaluator that will grade a case, as the cases list reports it.
+    ``graded_by`` is the step of the grading order that picks it
+    (``case_evaluator`` / ``agent_reported`` / ``fallback``); ``scope`` is the
+    outcome rows' ``grader_scope`` (``case`` / ``agent`` / ``dataset`` / ``world``).
+    ``pass_threshold`` is the mark a number result must reach (``None`` for a
+    boolean evaluator). ``criteria`` is the LLM rubric's criteria — ``None`` for a
+    non-LLM evaluator, or when the API key lacks ``evaluator:read``."""
+
+    evaluator_id: str
+    name: Optional[str] = None
+    type: Optional[str] = None
+    result_type: Optional[str] = None
+    scope: Optional[str] = None
+    graded_by: Optional[str] = None
+    pass_threshold: Optional[float] = None
+    criteria: Optional[List[Any]] = None
+
+
+@dataclass
+class DatasetCase(DatasetItem):
+    """A case with what will grade it under the grading order, from the current
+    links (``client.datasets.cases``): every ``DatasetItem`` field plus
+
+    - ``scored``: False only for a World's entry item (a way in, not a case);
+    - ``graded_by`` / ``grader``: the first step that applies and its evaluator, or
+      ``None`` when nothing will grade the case (it reads as ungraded);
+    - ``if_not_reported``: for an ``agent_reported`` case, what grades it if the
+      agent reports nothing (the Dataset's fallback), or ``None`` — then a silent
+      agent leaves the case ungraded.
+    """
+
+    scored: bool = True
+    graded_by: Optional[str] = None
+    grader: Optional[CaseGrader] = None
+    if_not_reported: Optional[CaseGrader] = None
+
+    @classmethod
+    def from_dict(cls, data):
+        obj = super().from_dict(data)
+        for key in ("grader", "if_not_reported"):
+            value = getattr(obj, key)
+            if isinstance(value, dict):
+                setattr(obj, key, CaseGrader.from_dict(value))
+        return obj
+
+
+@dataclass
 class CaseEvaluatorUpdate(APIModel):
     """The result of pointing cases at a case evaluator, or unlinking them
     (``client.datasets.set_case_evaluator`` / ``remove_case_evaluator``).

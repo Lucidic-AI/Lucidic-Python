@@ -6,6 +6,7 @@ from ..client import HttpClient
 from ..models.base import CursorPage
 from ..models.dataset import (
     CaseEvaluatorUpdate,
+    DatasetCase,
     DatasetGenerationRun,
     DatasetItem,
     DatasetSchema,
@@ -591,6 +592,47 @@ class DatasetResource:
     @staticmethod
     def _fallback_path(dataset_id: str) -> str:
         return f"sdk/v2/datasets/{dataset_id}/fallback-evaluator"
+
+    # ==================== cases list (LUC-1195) ====================
+    #
+    # A Dataset's cases, each with what will grade it (the same pick grading makes),
+    # in run order. Cursor-paginated like items; a page holds at most 50, since each
+    # row carries its grader's criteria. Data-bearing → no swallow.
+
+    def cases(self, dataset_id: str, *, page_size: Optional[int] = None) -> Iterator[DatasetCase]:
+        """Lazily iterate a Dataset's cases with what will grade each one, in run order
+        (oldest first, as a run takes them; GET /sdk/v2/datasets/{id}/cases; needs
+        ``dataset-item:read``). Each ``DatasetCase`` is the item plus ``scored``,
+        ``graded_by``, ``grader`` and ``if_not_reported``, decided from the current
+        case evaluators, the agent's pass/fail metric and the Dataset's fallback.
+        ``page_size`` is capped at 50. A grader's ``criteria`` is ``None`` unless the
+        key also has ``evaluator:read``. Unknown / not-visible Dataset →
+        ``NotFoundError`` on first iteration."""
+        base = {"page_size": page_size} if page_size is not None else {}
+        path = f"sdk/v2/datasets/{dataset_id}/cases"
+        return paginate(lambda c: self._v2_page_get(path, base, c), model=DatasetCase)
+
+    def acases(self, dataset_id: str, *, page_size: Optional[int] = None) -> AsyncIterator[DatasetCase]:
+        """Async sibling of ``cases``."""
+        base = {"page_size": page_size} if page_size is not None else {}
+        path = f"sdk/v2/datasets/{dataset_id}/cases"
+        return apaginate(lambda c: self._v2_apage_get(path, base, c), model=DatasetCase)
+
+    def cases_page(
+        self, dataset_id: str, *, cursor: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Fetch a single page of a Dataset's cases."""
+        base = {"page_size": page_size} if page_size is not None else {}
+        body = self._v2_page_get(f"sdk/v2/datasets/{dataset_id}/cases", base, cursor)
+        return CursorPage.from_body(body, model=DatasetCase)
+
+    async def acases_page(
+        self, dataset_id: str, *, cursor: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Async sibling of ``cases_page``."""
+        base = {"page_size": page_size} if page_size is not None else {}
+        body = await self._v2_apage_get(f"sdk/v2/datasets/{dataset_id}/cases", base, cursor)
+        return CursorPage.from_body(body, model=DatasetCase)
 
     # ==================== Dataset Methods ====================
 
