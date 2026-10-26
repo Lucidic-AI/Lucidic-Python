@@ -340,3 +340,170 @@ async def test_aclose_keyword_bounds_the_wait(client):
 def test_close_rejects_an_invalid_keyword_timeout(client):
     with pytest.raises(ValueError):
         client.close(eval_flush_timeout=-1)
+
+
+# ---- the queue: start under the lock, per-session waits, async waits -----------
+
+_SESSION_B = "99999999-8888-7777-6666-555555555555"
+_SESSION_C = "77777777-6666-5555-4444-333333333333"
+
+
+def _slow_emit_start(monkeypatch, starting, delay=0.2):
+    """Make each emit thread's start() take ``delay`` seconds, signalling ``starting`` first."""
+    real_start = threading.Thread.start
+
+    def _start(self):
+        target = getattr(self, "_target", None)
+        if getattr(target, "__name__", "") == "_background_emit":
+            starting.set()
+            time.sleep(delay)  # a flush runs meanwhile
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", _start)
+
+
+@respx.mock
+def test_a_flush_waits_for_an_emit_still_starting(client, monkeypatch):
+    delivered = []
+    _slow_eval_route(delivered, delay=0.05)
+    starting = threading.Event()
+    _slow_emit_start(monkeypatch, starting)
+    emitter = threading.Thread(target=client.evals.emit, args=(0.5,),
+                               kwargs={"name": "score", "session_id": _SESSION_ID})
+    emitter.start()
+    assert starting.wait(2)
+    # a flush that saw the thread before it started would fail to join it
+    assert client.evals.flush(timeout=5) is True
+    emitter.join(5)
+    assert len(delivered) == 1
+
+
+@respx.mock
+def test_end_waits_for_an_emit_still_starting(client, monkeypatch):
+    order = []
+
+    def _eval(request):
+        time.sleep(0.05)
+        order.append("eval")
+        return httpx.Response(201, json={})
+
+    respx.post(_EVALS_ENDPOINT).mock(side_effect=_eval)
+    respx.put(_UPDATESESSION_ENDPOINT).mock(
+        side_effect=lambda request: order.append("end") or httpx.Response(200, json={}))
+    starting = threading.Event()
+    _slow_emit_start(monkeypatch, starting)
+    emitter = threading.Thread(target=client.evals.emit, args=(True,),
+                               kwargs={"name": "task_passed", "session_id": _SESSION_ID})
+    emitter.start()
+    assert starting.wait(2)
+    client.sessions.end(_SESSION_ID)
+    emitter.join(5)
+    assert client.evals.flush(timeout=5) is True  # nothing lands after the mock
+    assert order == ["eval", "end"]
+
+
+@respx.mock
+def test_a_per_session_flush_leaves_only_the_other_sessions_posts(client):
+    hold_b = threading.Event()
+
+    def _eval(request):
+        if b'"' + _SESSION_B.encode() + b'"' in request.read():
+            hold_b.wait(5)
+        return httpx.Response(201, json={})
+
+    respx.post(_EVALS_ENDPOINT).mock(side_effect=_eval)
+    for sid in (_SESSION_ID, _SESSION_B, _SESSION_ID, _SESSION_B):
+        client.evals.emit(True, name="task_passed", session_id=sid)
+    try:
+        assert client.evals.flush(timeout=5, session_id=_SESSION_ID) is True
+        assert sorted(client.evals._pending.values()) == [_SESSION_B, _SESSION_B]
+    finally:
+        hold_b.set()
+    assert client.evals.flush(timeout=5) is True
+    assert client.evals._pending == {}
+
+
+@respx.mock
+def test_flush_takes_several_sessions(client):
+    delivered = []
+    hold_c = threading.Event()
+
+    def _eval(request):
+        body = request.read()
+        if _SESSION_C.encode() in body:
+            hold_c.wait(5)
+        else:
+            time.sleep(0.1)
+        delivered.append(body)
+        return httpx.Response(201, json={})
+
+    respx.post(_EVALS_ENDPOINT).mock(side_effect=_eval)
+    for sid in (_SESSION_ID, _SESSION_B, _SESSION_C):
+        client.evals.emit(0.5, name="score", session_id=sid)
+    try:
+        assert client.evals.flush(timeout=5, session_id=[_SESSION_ID, _SESSION_B]) is True
+        assert len(delivered) == 2
+        assert list(client.evals._pending.values()) == [_SESSION_C]
+    finally:
+        hold_c.set()
+    assert client.evals.flush(timeout=5) is True
+
+
+@respx.mock
+def test_one_sessions_posts_share_one_deadline(client, caplog):
+    release = threading.Event()
+    _hang_evals(release)
+    for score in (0.1, 0.2, 0.3, 0.4, 0.5):
+        client.evals.emit(result=score, name="score", session_id=_SESSION_ID)
+    client.evals.emit(result=0.6, name="score", session_id=_SESSION_B)
+    try:
+        with caplog.at_level("WARNING", logger="Lucidic"):
+            started = time.monotonic()
+            drained = client.evals.flush(timeout=0.2, session_id=[_SESSION_ID])
+            elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert client.evals.flush(timeout=5) is True
+    assert drained is False
+    # five hung posts share one 0.2 s budget (1 s if each got its own)
+    assert 0.15 <= elapsed < 0.8
+    assert "5 eval(s) still in flight for the given sessions" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_aflush_waits_for_the_sessions_posts(client):
+    delivered = []
+    with respx.mock:
+        _slow_eval_route(delivered, delay=0.1)
+        client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+        assert await client.evals.aflush(timeout=5, session_id=_SESSION_ID) is True
+    assert len(delivered) == 1
+    assert client.evals._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_aflush_ends_on_time_with_the_executor_busy(client, caplog):
+    import concurrent.futures
+
+    loop = asyncio.get_running_loop()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(executor)
+    busy, release = threading.Event(), threading.Event()
+    blocker = loop.run_in_executor(None, lambda: (busy.set(), release.wait(5)))
+    with respx.mock:
+        _hang_evals(release)
+        client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+        try:
+            assert busy.wait(2)  # the executor's only worker is taken
+            with caplog.at_level("WARNING", logger="Lucidic"):
+                started = time.monotonic()
+                drained = await client.evals.aflush(timeout=0.2, session_id=_SESSION_ID)
+                elapsed = time.monotonic() - started
+        finally:
+            release.set()
+        await blocker
+        assert client.evals.flush(timeout=5) is True
+    executor.shutdown(wait=True)
+    assert drained is False
+    assert elapsed < 1.0  # it did not queue behind the busy worker (5 s)
+    assert "aflush() timed out" in caplog.text

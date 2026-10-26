@@ -66,7 +66,7 @@ class TestPassThresholdSent:
 
 class TestNameRequired:
     @respx.mock
-    @pytest.mark.parametrize("name", [None, ""])
+    @pytest.mark.parametrize("name", [None, "", "   ", "\t\n"])
     @pytest.mark.parametrize("result, result_type", [
         (True, None), (0.9, None), (3, None), (False, "boolean"), (0.5, "number"),
     ])
@@ -105,6 +105,13 @@ class TestNameRequired:
         }
 
     @respx.mock
+    def test_a_name_with_spaces_inside_is_a_name(self, evals):
+        route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        evals.emit(True, name=" task passed ", session_id=_SESSION_ID)
+        assert evals.flush(timeout=5) is True
+        assert _sent(route)["name"] == " task passed "
+
+    @respx.mock
     def test_production_logs_and_sends_nothing(self, http, caplog):
         evals = EvalsResource(http, production=True)
         route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
@@ -113,6 +120,48 @@ class TestNameRequired:
         assert evals.flush(timeout=5) is True
         assert not route.called
         assert "name is required" in caplog.text
+
+
+class TestCheckedWithoutASession:
+    """The checks run before emit looks for a session, so a bad call fails the
+    same way inside and outside one."""
+
+    @respx.mock
+    def test_a_missing_name(self, evals):
+        route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        with pytest.raises(ValueError, match="name is required"):
+            evals.emit(True)  # no session_id, no session in context
+        assert not route.called
+
+    @respx.mock
+    def test_a_type_mismatch(self, evals):
+        route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        with pytest.raises(ValueError, match="Result type mismatch"):
+            evals.emit(1, name="m", result_type="boolean")
+        assert not route.called
+
+    @respx.mock
+    def test_a_refused_pass_mark(self, evals):
+        route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        with pytest.raises(ValueError, match="only applies to a number result"):
+            evals.emit(True, name="m", pass_threshold=0.5)
+        assert not route.called
+
+    @respx.mock
+    def test_production_logs_it(self, http, caplog):
+        evals = EvalsResource(http, production=True)
+        route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        with caplog.at_level("ERROR", logger="Lucidic"):
+            assert evals.emit(0.9) is None
+        assert not route.called
+        assert "name is required" in caplog.text
+
+    @respx.mock
+    def test_a_valid_emit_still_needs_a_session(self, evals):
+        route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        assert evals.emit(True, name="task_passed") is None
+        assert evals.flush(timeout=5) is True
+        assert not route.called
 
 
 class TestPassThresholdRefused:

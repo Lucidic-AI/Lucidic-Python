@@ -22,7 +22,7 @@ import logging
 import os
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, TypeVar, Union
 
 from .api.client import HttpClient
 from .api.resources.agents import AgentsResource
@@ -83,6 +83,9 @@ class LucidicAI:
                   Falls back to LUCIDIC_BASE_URL env var.
         eval_flush_timeout: Seconds close()/aclose() wait for in-flight
                   evals.emit() posts (default 5.0). close() blocks up to this long.
+                  It is also the default wait for a session's own posts in
+                  sessions.end()/aend()/finish(), Session.end() and leaving a
+                  session's ``with`` block. 0 means no wait.
         **kwargs: Additional configuration options passed to SDKConfig.
 
     Raises:
@@ -258,7 +261,11 @@ class LucidicAI:
 
     @property
     def eval_flush_timeout(self) -> float:
-        """Seconds close() waits for in-flight evals.emit() posts by default."""
+        """Seconds close() waits for in-flight evals.emit() posts by default.
+
+        Also the default wait for a session's own posts when it ends:
+        sessions.end()/aend()/finish(), Session.end() and leaving its ``with`` block.
+        """
         return self._eval_flush_timeout
 
     @property
@@ -513,15 +520,32 @@ class LucidicAI:
     # ==================== Lifecycle ====================
 
     def _flush_evals(
-        self, timeout: Optional[float] = None, session_id: Optional[str] = None
+        self,
+        timeout: Optional[float] = None,
+        session_id: Union[str, Iterable[str], None] = None,
     ) -> None:
         """Wait (bounded) for in-flight evals.emit() posts; never raises.
 
         ``timeout`` defaults to the client's ``eval_flush_timeout``. With a
-        ``session_id``, only that session's posts are waited for.
+        ``session_id`` (one id or several), only those sessions' posts are
+        waited for.
         """
         try:
             self.evals.flush(
+                self._eval_flush_timeout if timeout is None else timeout,
+                session_id=session_id,
+            )
+        except Exception as e:
+            logger.debug(f"[LucidicAI] Error flushing evals: {e}")
+
+    async def _aflush_evals(
+        self,
+        timeout: Optional[float] = None,
+        session_id: Union[str, Iterable[str], None] = None,
+    ) -> None:
+        """Async sibling of ``_flush_evals``; never raises (cancellation passes through)."""
+        try:
+            await self.evals.aflush(
                 self._eval_flush_timeout if timeout is None else timeout,
                 session_id=session_id,
             )

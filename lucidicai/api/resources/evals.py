@@ -1,9 +1,10 @@
 """Evals resource API operations."""
+import asyncio
 import logging
 import math
 import threading
 import time
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 from ..client import HttpClient
 
@@ -11,6 +12,8 @@ logger = logging.getLogger("Lucidic")
 
 # default close() / sessions.end() wait for in-flight emit() posts
 EVAL_FLUSH_TIMEOUT_SECONDS = 5.0
+# how often aflush() looks at the pending posts
+_AFLUSH_POLL_SECONDS = 0.02
 
 
 def validate_flush_timeout(value: Any) -> float:
@@ -77,6 +80,11 @@ def _validate_result_type(result: Any, result_type: str) -> bool:
     return False
 
 
+def _is_blank_name(name: Any) -> bool:
+    """No name, as the API counts it: None, or a string that is empty or only whitespace."""
+    return name is None or (isinstance(name, str) and not name.strip())
+
+
 def _validate_pass_threshold(pass_threshold: Any, result_type: str) -> None:
     """The API's rule for ``pass_threshold`` on POST /sdk/evals: a pass mark only
     with a number result, and only as a finite number.
@@ -134,8 +142,9 @@ class EvalsResource:
         Args:
             result: The evaluation result. Can be bool, int, float, or str.
             name: Name for the evaluation. Required for a boolean or number
-                result. A string result may omit it, and the backend then files
-                it under a default name.
+                result: None, an empty string or whitespace only counts as no
+                name. A string result may omit it, and the backend then files it
+                under a default name.
             description: Optional description of the evaluation.
             result_type: Optional explicit result type ("boolean", "number", "string").
                 If not provided, it will be inferred from the result value.
@@ -149,7 +158,8 @@ class EvalsResource:
         Raises:
             ValueError: If a boolean or number result has no name, the result
                 does not match ``result_type``, or ``pass_threshold`` is not
-                allowed. In production mode it is logged and nothing is sent.
+                allowed, whether or not a session is active. In production mode
+                it is logged and nothing is sent.
 
         Example:
             # Basic usage - type inferred
@@ -172,16 +182,8 @@ class EvalsResource:
         """
         from ...sdk.context import current_session_id
 
-        # Capture session from context if not provided
-        captured_session_id = session_id
-        if not captured_session_id:
-            captured_session_id = current_session_id.get(None)
-
-        if not captured_session_id:
-            logger.debug("[EvalsResource] No active session for emit()")
-            return
-
-        # Infer or validate result_type
+        # Infer or validate result_type, before the session lookup, so a bad call
+        # fails the same way inside and outside a session
         try:
             if result_type is None:
                 inferred_type = _infer_result_type(result)
@@ -198,8 +200,7 @@ class EvalsResource:
                     else:
                         raise ValueError(error_msg)
                 inferred_type = result_type
-            # None or "" counts as no name, as on the API
-            if not name and inferred_type in ("boolean", "number"):
+            if _is_blank_name(name) and inferred_type in ("boolean", "number"):
                 raise ValueError("name is required for boolean and number results")
             if pass_threshold is not None:
                 _validate_pass_threshold(pass_threshold, inferred_type)
@@ -209,6 +210,15 @@ class EvalsResource:
                 return
             else:
                 raise
+
+        # Capture session from context if not provided
+        captured_session_id = session_id
+        if not captured_session_id:
+            captured_session_id = current_session_id.get(None)
+
+        if not captured_session_id:
+            logger.debug("[EvalsResource] No active session for emit()")
+            return
 
         # Capture all data for background thread
         captured_result = result
@@ -240,47 +250,97 @@ class EvalsResource:
 
         # daemon so a hung post never blocks exit; flush() waits
         thread = threading.Thread(target=_background_emit, daemon=True)
+        # register and start under one lock, so a flush never sees an unstarted
+        # thread (the thread only takes the lock when it finishes)
         with self._pending_lock:
             self._pending[thread] = captured_session_id
-        try:
-            thread.start()
-        except Exception:
-            # an unstarted thread can never be joined; don't leave it pending
-            with self._pending_lock:
+            try:
+                thread.start()
+            except Exception:
+                # an unstarted thread can never be joined; don't leave it pending
                 self._pending.pop(thread, None)
-            raise
+                raise
 
     def flush(
         self,
         timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS,
-        session_id: Optional[str] = None,
+        session_id: Union[str, Iterable[str], None] = None,
     ) -> bool:
         """Wait for in-flight emit() posts to finish.
 
         Args:
             timeout: Upper bound in seconds for the whole wait, shared across
                 all pending posts.
-            session_id: Wait only for the posts for this session. If None,
-                wait for every session's posts.
+            session_id: Wait only for the posts for this session, or for these
+                sessions (an iterable of ids). If None, wait for every
+                session's posts.
 
         Returns:
-            True if every post started before this call has finished (sent or
-            failed), False if the timeout ran out first.
+            True if every post it waits for (those started before this call,
+            for the given sessions when ``session_id`` is set) has finished,
+            sent or failed. False if the timeout ran out first.
         """
         deadline = time.monotonic() + timeout
-        with self._pending_lock:
-            pending = [
-                thread for thread, sid in self._pending.items()
-                if session_id is None or sid == session_id
-            ]
+        pending = self._pending_for(session_id)
         for thread in pending:
             thread.join(max(0.0, deadline - time.monotonic()))
+        return self._report_unfinished("flush", timeout, session_id, pending)
+
+    async def aflush(
+        self,
+        timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS,
+        session_id: Union[str, Iterable[str], None] = None,
+    ) -> bool:
+        """Async sibling of ``flush``.
+
+        It waits on the event loop, with no executor thread, so the wait ends
+        on time however busy the loop's executor is.
+        """
+        deadline = time.monotonic() + timeout
+        pending = self._pending_for(session_id)
+        while self._still_pending(pending):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(_AFLUSH_POLL_SECONDS, remaining))
+        return self._report_unfinished("aflush", timeout, session_id, pending)
+
+    def _pending_for(self, session_id: Union[str, Iterable[str], None]) -> List[threading.Thread]:
+        """The in-flight posts for these sessions (all of them for None)."""
+        if session_id is None:
+            wanted = None
+        elif isinstance(session_id, str):
+            wanted = {session_id}
+        else:
+            wanted = set(session_id)
         with self._pending_lock:
-            unfinished = [t for t in pending if t in self._pending]
+            return [
+                thread for thread, sid in self._pending.items()
+                if wanted is None or sid in wanted
+            ]
+
+    def _still_pending(self, threads: List[threading.Thread]) -> List[threading.Thread]:
+        with self._pending_lock:
+            return [t for t in threads if t in self._pending]
+
+    def _report_unfinished(
+        self,
+        method: str,
+        timeout: float,
+        session_id: Union[str, Iterable[str], None],
+        pending: List[threading.Thread],
+    ) -> bool:
+        """Warn about posts still in flight after a wait; True if there are none."""
+        unfinished = self._still_pending(pending)
         if unfinished:
-            for_session = f" for session {_truncate_id(session_id)}" if session_id else ""
+            if session_id is None:
+                for_session = ""
+            elif isinstance(session_id, str):
+                for_session = f" for session {_truncate_id(session_id)}"
+            else:
+                for_session = " for the given sessions"
             logger.warning(
-                f"[EvalsResource] flush() timed out after {timeout}s with "
+                f"[EvalsResource] {method}() timed out after {timeout}s with "
                 f"{len(unfinished)} eval(s) still in flight{for_session}"
             )
         return not unfinished
