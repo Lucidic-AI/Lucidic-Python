@@ -700,6 +700,10 @@ def _case_ev(**over):
     return d
 
 
+# CaseEvaluatorBulkSerializer's item_ids (allow_empty=False), in the backend's envelope
+_EMPTY_IDS_400 = {"error": "Validation failed", "details": {"item_ids": ["This list may not be empty."]}}
+
+
 def _put_body(route):
     body = json.loads(route.calls.last.request.read())
     body.pop("current_time")  # the transport stamps every PUT
@@ -763,6 +767,8 @@ class TestSetCaseEvaluator:
         ({}, "pass evaluator_id, or name"),
         ({"name": "x", "criteria": _BOOL_CRIT}, "missing result_type"),
         ({"pass_threshold": 0.5}, "missing name, criteria, result_type"),
+        ({"evaluator_id": _EV, "pass_threshold": 0}, "not both"),  # 0 is a mark, not "none"
+        ({"description": ""}, "missing name"),
     ])
     def test_bad_mode_raises_before_any_request(self, datasets, kwargs, match):
         route = respx.put(_CASES_URL).mock(return_value=httpx.Response(200, json=_update()))
@@ -771,6 +777,33 @@ class TestSetCaseEvaluator:
             datasets.set_case_evaluator(_DS, ids, **kwargs)
         assert not route.called
         assert list(ids) == ["i1", "i2"]  # the caller's generator is untouched
+
+    @respx.mock
+    def test_falsy_spec_values_are_sent(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(201, json=_update(created=True)))
+        datasets.set_case_evaluator(_DS, "i1", name="accuracy", criteria=_NUM_CRIT, result_type="number",
+                                    description="", pass_threshold=0)
+        spec = _put_body(route)["evaluator"]
+        assert spec["pass_threshold"] == 0 and spec["description"] == ""
+
+    @respx.mock
+    def test_empty_item_ids_are_sent(self, datasets):
+        # sent as [], so the backend refuses it (allow_empty=False) rather than the SDK guessing
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(400, json=_EMPTY_IDS_400))
+        with pytest.raises(ValidationError):
+            datasets.set_case_evaluator(_DS, [], evaluator_id=_EV)
+        assert _put_body(route)["item_ids"] == []
+
+    @respx.mock
+    @pytest.mark.parametrize("call", [
+        lambda ds: ds.set_case_evaluator(_DS, None, evaluator_id=_EV),
+        lambda ds: ds.remove_case_evaluator(_DS, None),
+    ])
+    def test_none_item_ids_raise_before_any_request(self, datasets, call):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(200, json=_update()))
+        with pytest.raises(InvalidOperationError, match="item_ids: pass one id or a list"):
+            call(datasets)
+        assert not route.called
 
     @respx.mock
     def test_ids_not_in_the_dataset_400(self, datasets):
@@ -841,6 +874,13 @@ class TestRemoveCaseEvaluator:
         u = datasets.remove_case_evaluator(_DS, given)
         assert u.evaluator_id is None and u.changed == 1
         assert _put_body(route) == {"item_ids": sent, "evaluator_id": None}
+
+    @respx.mock
+    def test_empty_item_ids_are_sent(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(400, json=_EMPTY_IDS_400))
+        with pytest.raises(ValidationError):
+            datasets.remove_case_evaluator(_DS, [])
+        assert _put_body(route) == {"item_ids": [], "evaluator_id": None}
 
     @respx.mock
     def test_unknown_dataset_404(self, datasets):
@@ -939,6 +979,8 @@ class TestSetFallbackEvaluator:
         ((), {}, "pass evaluator_id, or name"),  # a bare call never clears
         ((_EV,), {"name": "x"}, "not both"),
         ((), {"criteria": _BOOL_CRIT, "result_type": "boolean"}, "missing name"),
+        ((_EV,), {"pass_threshold": 0}, "not both"),
+        ((), {"description": ""}, "missing name"),
     ])
     def test_bad_mode_raises_before_any_request(self, datasets, args, kwargs, match):
         put = respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(200, json=_fallback_ev()))

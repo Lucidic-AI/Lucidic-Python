@@ -26,7 +26,10 @@ _GENERATE = "sdk/v2/datasets/generate"
 
 
 def _id_list(ids: Union[str, Iterable[str]]) -> List[str]:
-    """One id or many, as a list: a bare ``str`` is one id, not its characters."""
+    """One id or many, as a list: a bare ``str`` is one id, not its characters.
+    ``None`` is refused: only ``start_run`` reads it (as every case), before calling this."""
+    if ids is None:
+        raise InvalidOperationError("item_ids: pass one id or a list")
     return [ids] if isinstance(ids, str) else list(ids)
 
 
@@ -427,13 +430,14 @@ class DatasetResource:
         retried call whose first try created the evaluator reads ``created=False``.
 
         Raises ``ValidationError`` (an id not in the Dataset; the World entry item; an
-        evaluator that can't grade cases — another agent's, not LLM/CODE, a string
-        result, a number without a pass mark, the agent's pass/fail metric, a World's
-        grader; a malformed spec), ``NotFoundError`` (Dataset not visible to the key,
-        or an unknown ``evaluator_id``) or ``ConflictError`` (a run of the Dataset is in
-        progress — a run reads its cases' evaluators live, so change them after it
-        finishes; or the agent has an evaluator by that name with another rubric —
-        edit it with ``client.evaluators.update`` or pass its ``evaluator_id``)."""
+        evaluator that can't grade cases — not LLM/CODE, a string result, a number
+        without a pass mark, the agent's pass/fail metric, a World's grader; a
+        malformed spec), ``NotFoundError`` (Dataset not visible to the key, or an
+        ``evaluator_id`` that is unknown or another agent's) or ``ConflictError`` (a
+        run of the Dataset is in progress — a run reads its cases' evaluators live, so
+        change them after it finishes; or the agent has an evaluator by that name with
+        another rubric — edit it with ``client.evaluators.update`` or pass its
+        ``evaluator_id``)."""
         return CaseEvaluatorUpdate.from_dict(self.http.put(
             self._case_evaluators_path(dataset_id),
             self._case_evaluator_body(
@@ -460,8 +464,9 @@ class DatasetResource:
         /sdk/v2/datasets/{id}/items/{item_id}/case-evaluator; needs
         ``evaluator:read``), in detail shape with ``datasetitem_id`` set. A case with
         no case evaluator raises ``NotFoundError``, as do an unknown Dataset or item;
-        to check without an exception, read ``case_evaluator_id`` on ``items()``. A
-        link to another agent's evaluator reads as none, since grading ignores it."""
+        to check without an exception, read ``case_evaluator_id`` on ``items()``, or
+        ``graded_by`` / ``grader`` on ``cases()``. A link to another agent's evaluator
+        reads as none, since grading ignores it."""
         return Evaluator.from_dict(self.http.get(self._case_evaluator_path(dataset_id, item_id)))
 
     async def acase_evaluator(self, dataset_id: str, item_id: str) -> Evaluator:
@@ -541,7 +546,8 @@ class DatasetResource:
 
         Raises ``ValidationError`` (an evaluator that can't grade cases — the same
         refusals as ``set_case_evaluator``; a malformed spec), ``NotFoundError``
-        (Dataset not visible to the key, or an unknown ``evaluator_id``) or
+        (Dataset not visible to the key, or an ``evaluator_id`` that is unknown or
+        another agent's) or
         ``ConflictError`` (a run of the Dataset is in progress — change it after the
         run finishes; or the agent has an evaluator by that name with another
         rubric)."""

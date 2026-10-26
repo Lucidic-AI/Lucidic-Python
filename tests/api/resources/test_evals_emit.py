@@ -66,7 +66,7 @@ class TestPassThresholdSent:
 class TestPassThresholdWithoutName:
     @respx.mock
     @pytest.mark.parametrize("name", [None, ""])
-    def test_warns_about_the_shared_default_evaluator(self, evals, caplog, name):
+    def test_warns_about_the_shared_number_evaluator(self, evals, caplog, name):
         route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
         with caplog.at_level("WARNING", logger="Lucidic"):
             evals.emit(0.9, name=name, pass_threshold=0.5, session_id=_SESSION_ID)
