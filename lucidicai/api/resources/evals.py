@@ -77,6 +77,29 @@ def _validate_result_type(result: Any, result_type: str) -> bool:
     return False
 
 
+def _validate_pass_threshold(pass_threshold: Any, result_type: str) -> None:
+    """Mirror the backend's rule (``scoring_services._check_threshold``): a pass mark
+    only with a number result, and only as a finite number.
+
+    Raises:
+        ValueError: If the pass mark is not allowed or not a finite number.
+    """
+    if result_type != "number":
+        raise ValueError(
+            f"pass_threshold only applies to a number result, not '{result_type}'"
+        )
+    finite = False
+    if not isinstance(pass_threshold, bool) and isinstance(pass_threshold, (int, float)):
+        try:
+            finite = math.isfinite(pass_threshold)
+        except OverflowError:  # an int too large for a float, as the backend's _finite_float
+            pass
+    if not finite:
+        raise ValueError(
+            f"pass_threshold must be a finite number, got {pass_threshold!r}"
+        )
+
+
 class EvalsResource:
     """Handle evaluation-related API operations."""
 
@@ -99,6 +122,7 @@ class EvalsResource:
         description: Optional[str] = None,
         result_type: Optional[str] = None,
         session_id: Optional[str] = None,
+        pass_threshold: Optional[float] = None,
     ) -> None:
         """Fire-and-forget evaluation submission that returns instantly.
 
@@ -115,6 +139,10 @@ class EvalsResource:
                 If not provided, it will be inferred from the result value.
             session_id: Optional session ID. If not provided, uses the current
                 session from context.
+            pass_threshold: Optional pass mark for a number result: the result
+                passes at or above it. Only allowed with a number result and must
+                be a finite number. It is stored on the agent's evaluator for this
+                name, and the latest value sent wins.
 
         Example:
             # Basic usage - type inferred
@@ -131,6 +159,9 @@ class EvalsResource:
 
             # Explicit session_id
             client.evals.emit(result=0.87, name="accuracy_score", session_id="abc-123")
+
+            # A number with a pass mark: passes at 0.8 or above
+            client.evals.emit(0.85, name="criterion_pass_rate", pass_threshold=0.8)
         """
         from ...sdk.context import current_session_id
 
@@ -160,6 +191,8 @@ class EvalsResource:
                     else:
                         raise ValueError(error_msg)
                 inferred_type = result_type
+            if pass_threshold is not None:
+                _validate_pass_threshold(pass_threshold, inferred_type)
         except ValueError as e:
             if self._production:
                 logger.error(f"[EvalsResource] {e}")
@@ -172,6 +205,7 @@ class EvalsResource:
         captured_name = name
         captured_description = description
         captured_type = inferred_type
+        captured_pass_threshold = pass_threshold
 
         def _background_emit():
             try:
@@ -184,6 +218,8 @@ class EvalsResource:
                     params["name"] = captured_name
                 if captured_description is not None:
                     params["description"] = captured_description
+                if captured_pass_threshold is not None:
+                    params["pass_threshold"] = captured_pass_threshold
 
                 self._create_eval(params)
             except Exception as e:
@@ -239,6 +275,7 @@ class EvalsResource:
                 - result_type: Type of result ("boolean", "number", "string")
                 - name: Optional evaluation name
                 - description: Optional description
+                - pass_threshold: Optional pass mark (number results only)
 
         Returns:
             API response (typically empty for 201 Created)
