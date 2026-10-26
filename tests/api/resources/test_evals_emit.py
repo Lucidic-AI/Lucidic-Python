@@ -41,6 +41,13 @@ class TestPassThresholdSent:
         }
 
     @respx.mock
+    def test_zero_is_sent(self, evals):
+        route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        evals.emit(0.0, name="criterion_pass_rate", pass_threshold=0, session_id=_SESSION_ID)
+        assert evals.flush(timeout=5) is True
+        assert _sent(route)["pass_threshold"] == 0
+
+    @respx.mock
     def test_omitted_when_not_given(self, evals):
         route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
         evals.emit(0.85, name="criterion_pass_rate", session_id=_SESSION_ID)
@@ -54,6 +61,26 @@ class TestPassThresholdSent:
         assert evals.flush(timeout=5) is True
         body = _sent(route)
         assert body["pass_threshold"] == 5 and body["result_type"] == "number"
+
+
+class TestPassThresholdWithoutName:
+    @respx.mock
+    @pytest.mark.parametrize("name", [None, ""])
+    def test_warns_about_the_shared_default_evaluator(self, evals, caplog, name):
+        route = respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        with caplog.at_level("WARNING", logger="Lucidic"):
+            evals.emit(0.9, name=name, pass_threshold=0.5, session_id=_SESSION_ID)
+        assert evals.flush(timeout=5) is True
+        assert "User Supplied (Number)" in caplog.text
+        assert _sent(route)["pass_threshold"] == 0.5  # still sent
+
+    @respx.mock
+    def test_no_warning_with_a_name(self, evals, caplog):
+        respx.post(_EVALS).mock(return_value=httpx.Response(201))
+        with caplog.at_level("WARNING", logger="Lucidic"):
+            evals.emit(0.9, name="criterion_pass_rate", pass_threshold=0.5, session_id=_SESSION_ID)
+        assert evals.flush(timeout=5) is True
+        assert "User Supplied (Number)" not in caplog.text
 
 
 class TestPassThresholdRefused:

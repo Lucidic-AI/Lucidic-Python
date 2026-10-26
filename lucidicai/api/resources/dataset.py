@@ -1,6 +1,6 @@
 """Dataset resource API operations."""
 import logging
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Sequence, Union
+from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Optional, Union
 
 from ..client import HttpClient
 from ..models.base import CursorPage
@@ -24,7 +24,7 @@ _FIXTURES = "sdk/v2/fixtures"
 _GENERATE = "sdk/v2/datasets/generate"
 
 
-def _id_list(ids: Union[str, Sequence[str]]) -> List[str]:
+def _id_list(ids: Union[str, Iterable[str]]) -> List[str]:
     """One id or many, as a list: a bare ``str`` is one id, not its characters."""
     return [ids] if isinstance(ids, str) else list(ids)
 
@@ -276,7 +276,7 @@ class DatasetResource:
     def start_run(
         self, dataset_id: str, *, webhook_url: str, repeats: Optional[int] = None,
         role: Optional[str] = None, checkpoint_id: Optional[str] = None,
-        item_ids: Optional[Union[str, Sequence[str]]] = None, window: Optional[int] = None,
+        item_ids: Optional[Union[str, Iterable[str]]] = None, window: Optional[int] = None,
         repeat_deadline_seconds: Optional[int] = None,
     ) -> EvalRun:
         """Start an eval run on a Dataset (POST /sdk/v2/datasets/{id}/runs; needs
@@ -291,14 +291,15 @@ class DatasetResource:
         with ``client.evosims.cancel(run.evosim_id)``.
 
         Raises ``ValidationError`` (an option out of range; empty, repeated or foreign
-        ``item_ids``; no cases; over 1000 sessions; a refused runner URL),
-        ``NotFoundError`` (Dataset not visible to the key, or a checkpoint not on its
-        agent), ``RateLimitError`` (the fan-out throttle) or ``ServiceUnavailableError``
-        (503 — the workflow didn't start). It's a POST, so none of these is retried
-        and a failed call never starts a second run. On the 503,
-        ``exc.response_body`` holds the run's ids with ``status="start_failed"``; if
-        its message says the run may have started, cancel it by ``evosim_id`` before
-        retrying."""
+        ``item_ids``; a World's entry item; no cases; over 1000 sessions; case inputs
+        over 1 MB; a refused runner URL), ``NotFoundError`` (Dataset not visible to the
+        key, or a checkpoint not on its agent), ``RateLimitError`` (the fan-out
+        throttle) or ``ServiceUnavailableError`` (503 — the workflow didn't start).
+        It's a POST, so none of these is retried and a failed call never starts a
+        second run. On the 503, ``exc.response_body`` holds the run's ids with
+        ``status="start_failed"``; if its message says the run may have started,
+        cancel it by ``evosim_id`` before retrying. After a timeout, look for a new
+        ``running`` row in ``runs(dataset_id)`` before retrying."""
         return EvalRun.from_dict(self.http.post(
             f"sdk/v2/datasets/{dataset_id}/runs",
             self._run_body(webhook_url, repeats, role, checkpoint_id, item_ids, window,
@@ -308,7 +309,7 @@ class DatasetResource:
     async def astart_run(
         self, dataset_id: str, *, webhook_url: str, repeats: Optional[int] = None,
         role: Optional[str] = None, checkpoint_id: Optional[str] = None,
-        item_ids: Optional[Union[str, Sequence[str]]] = None, window: Optional[int] = None,
+        item_ids: Optional[Union[str, Iterable[str]]] = None, window: Optional[int] = None,
         repeat_deadline_seconds: Optional[int] = None,
     ) -> EvalRun:
         """Async sibling of ``start_run``."""
@@ -362,7 +363,7 @@ class DatasetResource:
     @staticmethod
     def _run_body(
         webhook_url: str, repeats: Optional[int], role: Optional[str],
-        checkpoint_id: Optional[str], item_ids: Optional[Union[str, Sequence[str]]],
+        checkpoint_id: Optional[str], item_ids: Optional[Union[str, Iterable[str]]],
         window: Optional[int], repeat_deadline_seconds: Optional[int],
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"webhook_url": webhook_url}
@@ -404,7 +405,7 @@ class DatasetResource:
     # Data-bearing → no swallow. PUT is idempotent (and retried on 429/503).
 
     def set_case_evaluator(
-        self, dataset_id: str, item_ids: Union[str, Sequence[str]], *,
+        self, dataset_id: str, item_ids: Union[str, Iterable[str]], *,
         evaluator_id: Optional[str] = None, name: Optional[str] = None,
         criteria: Optional[List[Dict[str, Any]]] = None, result_type: Optional[str] = None,
         description: Optional[str] = None, pass_threshold: Optional[float] = None,
@@ -439,7 +440,7 @@ class DatasetResource:
         ))
 
     async def aset_case_evaluator(
-        self, dataset_id: str, item_ids: Union[str, Sequence[str]], *,
+        self, dataset_id: str, item_ids: Union[str, Iterable[str]], *,
         evaluator_id: Optional[str] = None, name: Optional[str] = None,
         criteria: Optional[List[Dict[str, Any]]] = None, result_type: Optional[str] = None,
         description: Optional[str] = None, pass_threshold: Optional[float] = None,
@@ -466,7 +467,7 @@ class DatasetResource:
         return Evaluator.from_dict(await self.http.aget(self._case_evaluator_path(dataset_id, item_id)))
 
     def remove_case_evaluator(
-        self, dataset_id: str, item_ids: Union[str, Sequence[str]]
+        self, dataset_id: str, item_ids: Union[str, Iterable[str]]
     ) -> CaseEvaluatorUpdate:
         """Unlink one case or many from their case evaluator (PUT
         /sdk/v2/datasets/{id}/case-evaluator with ``evaluator_id: null``; needs
@@ -480,7 +481,7 @@ class DatasetResource:
         ))
 
     async def aremove_case_evaluator(
-        self, dataset_id: str, item_ids: Union[str, Sequence[str]]
+        self, dataset_id: str, item_ids: Union[str, Iterable[str]]
     ) -> CaseEvaluatorUpdate:
         """Async sibling of ``remove_case_evaluator``."""
         return CaseEvaluatorUpdate.from_dict(await self.http.aput(
@@ -498,7 +499,7 @@ class DatasetResource:
 
     @staticmethod
     def _case_evaluator_body(
-        operation: str, item_ids: Union[str, Sequence[str]], evaluator_id: Optional[str],
+        operation: str, item_ids: Union[str, Iterable[str]], evaluator_id: Optional[str],
         name: Optional[str], criteria: Optional[List[Dict[str, Any]]],
         result_type: Optional[str], description: Optional[str], pass_threshold: Optional[float],
     ) -> Dict[str, Any]:

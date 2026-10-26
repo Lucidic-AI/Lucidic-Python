@@ -142,7 +142,10 @@ class EvalsResource:
             pass_threshold: Optional pass mark for a number result: the result
                 passes at or above it. Only allowed with a number result and must
                 be a finite number. It is stored on the agent's evaluator for this
-                name, and the latest value sent wins.
+                name, and the latest value sent wins. Without ``name``, this sets
+                the mark on the agent's default ``User Supplied (Number)``
+                evaluator, which all unnamed number emits share (a warning is
+                logged).
 
         Example:
             # Basic usage - type inferred
@@ -199,6 +202,14 @@ class EvalsResource:
                 return
             else:
                 raise
+
+        # the backend files a missing or empty name under its default name
+        if pass_threshold is not None and not name:
+            logger.warning(
+                "[EvalsResource] pass_threshold without name sets the mark on the agent's "
+                "default 'User Supplied (Number)' evaluator, which all unnamed number "
+                "emits share"
+            )
 
         # Capture all data for background thread
         captured_result = result

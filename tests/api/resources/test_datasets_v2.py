@@ -515,6 +515,7 @@ class TestStartRun:
         ("i1", ["i1"]),  # one id, not its characters
         (("i1", "i2"), ["i1", "i2"]),
         ((i for i in ["i1", "i2"]), ["i1", "i2"]),
+        ([], []),  # sent, so the backend refuses it, never "every case"
     ])
     def test_item_ids_one_or_many(self, datasets, given, sent):
         route = respx.post(_runs_url()).mock(return_value=httpx.Response(202, json=_eval_run()))
@@ -555,7 +556,8 @@ class TestStartRun:
     @respx.mock
     def test_throttled_429_is_not_retried(self, datasets):
         route = respx.post(_runs_url()).mock(return_value=httpx.Response(
-            429, json={"detail": "Request was throttled."}, headers={"Retry-After": "7"}))
+            429, json={"error": "Request was throttled. Expected available in 7 seconds."},
+            headers={"Retry-After": "7"}))
         with pytest.raises(RateLimitError) as exc:
             datasets.start_run(_DS, webhook_url=_RUNNER)
         assert route.call_count == 1 and exc.value.retry_after == 7
@@ -631,6 +633,17 @@ class TestEvalRunsAsync:
         assert isinstance(run, EvalRun) and run.eval_run_id == "er1"
         body = json.loads(route.calls.last.request.read())
         assert body["item_ids"] == ["i1"] and body["repeats"] == 1
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_astart_run_start_failed_503_is_not_retried(self, datasets):
+        route = respx.post(_runs_url()).mock(return_value=httpx.Response(
+            503, json={**_eval_run(), "status": "start_failed",
+                       "error": "Workflow service is temporarily unavailable; the run did not start. Please retry."}))
+        with pytest.raises(ServiceUnavailableError) as exc:
+            await datasets.astart_run(_DS, webhook_url=_RUNNER)
+        assert route.call_count == 1  # a retry could start a second run
+        assert exc.value.response_body["evosim_id"] == "ev1"
 
     @respx.mock
     @pytest.mark.asyncio
