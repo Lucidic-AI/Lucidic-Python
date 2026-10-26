@@ -1,6 +1,4 @@
-"""LUC-918 — client.datasets v2: items + schemas (CRUD) + fixtures.create.
-LUC-921 generation; LUC-1195 eval runs (start_run / runs), case evaluators, the
-fallback evaluator and the cases list."""
+"""LUC-918 — client.datasets v2: items + schemas (CRUD) + fixtures.create."""
 import json
 
 import httpx
@@ -425,7 +423,7 @@ class TestGenerationAsync:
         assert run.succeeded is True
 
 
-# ==================== LUC-1195 eval runs ====================
+# ==================== eval runs ====================
 
 _DS = "11111111-1111-1111-1111-111111111111"
 _RUNNER = "https://runner.example.test/hook"
@@ -436,7 +434,7 @@ def _runs_url(dataset_id=_DS):
 
 
 def _eval_run(i=1, **over):
-    # EvalRunStart.as_dict (eval_run_services.py) — the 202 body
+    # the start response (202)
     d = {
         "eval_run_id": f"er{i}", "experiment_id": f"ex{i}", "evosim_id": f"ev{i}",
         "tmi_id": f"tmi{i}", "dataset_id": _DS, "world_id": None, "role": "baseline",
@@ -669,7 +667,7 @@ class TestEvalRunsAsync:
         assert dict(route.calls.last.request.url.params) == {"status": "complete"}
 
 
-# ==================== LUC-1195 case evaluators (over LUC-1190) ====================
+# ==================== case evaluators ====================
 
 _CASES_URL = f"{_BASE}/sdk/v2/datasets/{_DS}/case-evaluator"
 _EV = "22222222-2222-2222-2222-222222222222"
@@ -684,14 +682,14 @@ def _case_url(item_id):
 
 
 def _update(**over):
-    # DatasetCaseEvaluator.put (dataset_views.py, LUC-1190)
+    # the PUT's response
     d = {"evaluator_id": _EV, "created": False, "item_count": 1, "changed": 1}
     d.update(over)
     return d
 
 
 def _case_ev(**over):
-    # _case_evaluator_body: EvaluatorDetailSerializer + datasetitem_id
+    # the one-case GET: the evaluator in detail shape plus datasetitem_id
     d = {"evaluator_id": _EV, "name": "cites-clause", "description": "", "icon": "compass",
          "type": "LLM", "result_type": "boolean", "is_default": False, "is_primary": False,
          "created_at": "2026-10-25T00:00:00Z", "updated_at": "2026-10-25T00:00:00Z",
@@ -700,7 +698,7 @@ def _case_ev(**over):
     return d
 
 
-# CaseEvaluatorBulkSerializer's item_ids (allow_empty=False), in the backend's envelope
+# the API's 400 for an empty item_ids list
 _EMPTY_IDS_400 = {"error": "Validation failed", "details": {"item_ids": ["This list may not be empty."]}}
 
 
@@ -788,7 +786,7 @@ class TestSetCaseEvaluator:
 
     @respx.mock
     def test_empty_item_ids_are_sent(self, datasets):
-        # sent as [], so the backend refuses it (allow_empty=False) rather than the SDK guessing
+        # sent as [], so the API refuses it rather than the SDK guessing
         route = respx.put(_CASES_URL).mock(return_value=httpx.Response(400, json=_EMPTY_IDS_400))
         with pytest.raises(ValidationError):
             datasets.set_case_evaluator(_DS, [], evaluator_id=_EV)
@@ -924,14 +922,14 @@ class TestCaseEvaluatorsAsync:
         assert u.changed == 0 and _put_body(route) == {"item_ids": ["i1"], "evaluator_id": None}
 
 
-# ==================== LUC-1195 fallback evaluator (over LUC-1191) ====================
+# ==================== fallback evaluator ====================
 
 _FALLBACK_URL = f"{_BASE}/sdk/v2/datasets/{_DS}/fallback-evaluator"
 _RUN_IN_PROGRESS = {"error": f"Dataset {_DS} has a run in progress; change its fallback evaluator after it finishes."}
 
 
 def _fallback_ev(**over):
-    # _fallback_body: EvaluatorDetailSerializer + dataset_id (the PUT adds created)
+    # the evaluator in detail shape plus dataset_id (the PUT adds created)
     d = _case_ev()
     d.pop("datasetitem_id")
     d.update(dataset_id=_DS)
@@ -1026,9 +1024,9 @@ class TestFallbackEvaluatorRead:
 
     @respx.mock
     def test_dataset_dict_carries_fallback_evaluator_id(self, datasets):
-        # no typed Dataset model: the gen-3 get() dict (DatasetSerializer) carries the id
+        # no typed Dataset model: the get() dict carries the id
         route = respx.get(f"{_BASE}/getdataset").mock(return_value=httpx.Response(
-            200, json={"dataset_id": _DS, "name": "harvey", "fallback_evaluator_id": _EV}))
+            200, json={"dataset_id": _DS, "name": "contracts", "fallback_evaluator_id": _EV}))
         assert datasets.get(_DS)["fallback_evaluator_id"] == _EV
         assert route.calls.last.request.url.params["dataset_id"] == _DS
 
@@ -1055,7 +1053,7 @@ class TestRemoveFallbackEvaluator:
 
 
 class TestCaseEvaluatorRunInProgress:
-    # LUC-1190's review fix: case-evaluator writes answer 409 while a run is in progress
+    # the API answers 409 to case-evaluator writes while a run of the Dataset is in progress
     @respx.mock
     def test_set_409(self, datasets):
         respx.put(_CASES_URL).mock(return_value=httpx.Response(409, json={
@@ -1103,7 +1101,7 @@ class TestFallbackEvaluatorAsync:
         assert route.called
 
 
-# ==================== LUC-1195 cases list (over LUC-1194) ====================
+# ==================== cases list ====================
 
 _FB = "33333333-3333-3333-3333-333333333333"
 _METRIC = "44444444-4444-4444-4444-444444444444"
@@ -1114,7 +1112,7 @@ def _cases_url(dataset_id=_DS):
 
 
 def _grader(evaluator_id=_EV, **over):
-    # case_evaluator_services._grader
+    # a grader as the cases list reports it
     d = {"evaluator_id": evaluator_id, "name": "cites-clause", "type": "LLM", "result_type": "boolean",
          "scope": "case", "graded_by": "case_evaluator", "pass_threshold": None, "criteria": _BOOL_CRIT}
     d.update(over)
@@ -1122,7 +1120,7 @@ def _grader(evaluator_id=_EV, **over):
 
 
 def _case_row(i, **over):
-    # DatasetCaseSerializer: the item fields + dataset_cases' four keys
+    # a cases-list row: the item fields plus the four grading keys
     d = {**_item(i, case_evaluator_id=None), "scored": True, "graded_by": None,
          "grader": None, "if_not_reported": None}
     d.update(over)

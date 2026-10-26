@@ -78,8 +78,8 @@ def _validate_result_type(result: Any, result_type: str) -> bool:
 
 
 def _validate_pass_threshold(pass_threshold: Any, result_type: str) -> None:
-    """Mirror the backend's rule (``scoring_services._check_threshold``): a pass mark
-    only with a number result, and only as a finite number.
+    """The API's rule for ``pass_threshold`` on POST /sdk/evals: a pass mark only
+    with a number result, and only as a finite number.
 
     Raises:
         ValueError: If the pass mark is not allowed or not a finite number.
@@ -92,7 +92,7 @@ def _validate_pass_threshold(pass_threshold: Any, result_type: str) -> None:
     if not isinstance(pass_threshold, bool) and isinstance(pass_threshold, (int, float)):
         try:
             finite = math.isfinite(pass_threshold)
-        except OverflowError:  # an int too large for a float, as the backend's _finite_float
+        except OverflowError:  # an int too large for a float, which the API refuses too
             pass
     if not finite:
         raise ValueError(

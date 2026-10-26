@@ -1,9 +1,9 @@
-"""LUC-1195 — evals.emit(pass_threshold=...): the pass mark for a number result.
+"""evals.emit(pass_threshold=...): the pass mark for a number result.
 
-The backend's POST /sdk/evals takes ``pass_threshold`` only with a number result and
-only as a finite number (``scoring_services._check_threshold``). emit posts from a
-background thread, so a backend 4xx would never reach the caller: the SDK checks the
-same rule up front, as it does for ``result_type``.
+The API's POST /sdk/evals takes ``pass_threshold`` only with a number result and
+only as a finite number. emit posts from a background thread, so an API 4xx would
+never reach the caller: the SDK checks the same rule up front, as it does for
+``result_type``.
 """
 import json
 import math

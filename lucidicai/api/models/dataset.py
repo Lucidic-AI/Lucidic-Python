@@ -2,7 +2,7 @@
 
 Distinct from the SDK's grandfathered gen-3 dataset helpers (which return raw
 dicts). These model the v2 schemas / items / fixtures surface, generation runs
-(LUC-921) and eval runs (LUC-1195).
+and eval runs.
 """
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -51,8 +51,8 @@ class DatasetItem(APIModel):
 class CaseGrader(APIModel):
     """The evaluator that will grade a case, as the cases list reports it.
     ``graded_by`` is the step of the grading order that picks it
-    (``case_evaluator`` / ``agent_reported`` / ``fallback``); ``scope`` is the
-    outcome rows' ``grader_scope`` (``case`` / ``agent`` / ``dataset`` / ``world``).
+    (``case_evaluator`` / ``agent_reported`` / ``fallback``); ``scope`` is what
+    the evaluator is attached to (``case`` / ``agent`` / ``dataset`` / ``world``).
     ``pass_threshold`` is the mark a number result must reach (``None`` for a
     boolean evaluator). ``criteria`` is the LLM rubric's criteria — ``None`` for a
     non-LLM evaluator, or when the API key lacks ``evaluator:read``."""
@@ -169,8 +169,8 @@ class DatasetGenerationRun(APIModel):
         return self.status == "completed"
 
 
-# Terminal eval-run statuses. ``running`` / ``grading`` are ongoing. Mirrors the
-# backend's RUN_* constants (api/services/eval_run_outcomes.py).
+# Terminal eval-run statuses, as the API reports them. ``running`` / ``grading``
+# are ongoing.
 _TERMINAL_RUN_STATUSES = frozenset({"complete", "failed", "canceled"})
 
 

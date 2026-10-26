@@ -270,7 +270,7 @@ class DatasetResource:
             body["resource_ids"] = resource_ids
         return body
 
-    # ==================== eval runs (LUC-1195) ====================
+    # ==================== eval runs ====================
     #
     # An eval run sends a Dataset's cases (every one, or those ``item_ids`` names) to
     # the agent's runner ``repeats`` times, then grades and freezes them. start_run
@@ -400,7 +400,7 @@ class DatasetResource:
             params["page_size"] = page_size
         return params
 
-    # ==================== case evaluators (LUC-1195) ====================
+    # ==================== case evaluators ====================
     #
     # A case evaluator is the evaluator a case points at: it grades that case first
     # in the grading order, and many cases can share one. Writes go through the
@@ -517,7 +517,7 @@ class DatasetResource:
             operation, evaluator_id, name, criteria, result_type, description, pass_threshold)
         return {"item_ids": _id_list(item_ids), **choice}
 
-    # ==================== fallback evaluator (LUC-1195) ====================
+    # ==================== fallback evaluator ====================
     #
     # The Dataset's fallback evaluator grades a case that has no case evaluator and no
     # agent-reported result; it runs only then. One per Dataset. Set it like a case
@@ -599,7 +599,7 @@ class DatasetResource:
     def _fallback_path(dataset_id: str) -> str:
         return f"sdk/v2/datasets/{dataset_id}/fallback-evaluator"
 
-    # ==================== cases list (LUC-1195) ====================
+    # ==================== cases list ====================
     #
     # A Dataset's cases, each with what will grade it (the same pick grading makes),
     # in run order. Cursor-paginated like items; a page holds at most 50, since each
