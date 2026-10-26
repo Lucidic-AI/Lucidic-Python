@@ -1,10 +1,10 @@
 """Dataset resource API operations."""
 import logging
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Sequence, Union
 
 from ..client import HttpClient
 from ..models.base import CursorPage
-from ..models.dataset import DatasetGenerationRun, DatasetItem, DatasetSchema, Fixture
+from ..models.dataset import DatasetGenerationRun, DatasetItem, DatasetSchema, EvalRun, Fixture
 from ..pagination import apaginate, paginate
 from ..polling import await_for, wait_for
 
@@ -13,6 +13,11 @@ logger = logging.getLogger("Lucidic")
 _SCHEMAS = "sdk/v2/datasets/schemas"
 _FIXTURES = "sdk/v2/fixtures"
 _GENERATE = "sdk/v2/datasets/generate"
+
+
+def _id_list(ids: Union[str, Sequence[str]]) -> List[str]:
+    """One id or many, as a list: a bare ``str`` is one id, not its characters."""
+    return [ids] if isinstance(ids, str) else list(ids)
 
 
 class DatasetResource:
@@ -217,6 +222,135 @@ class DatasetResource:
         if resource_ids is not None:
             body["resource_ids"] = resource_ids
         return body
+
+    # ==================== eval runs (LUC-1195) ====================
+    #
+    # An eval run sends a Dataset's cases (every one, or those ``item_ids`` names) to
+    # the agent's runner ``repeats`` times, then grades and freezes them. start_run
+    # kicks off the Temporal workflow (202) and returns the run's ids; runs lists the
+    # Dataset's runs newest first, World runs included. Data-bearing → no swallow.
+
+    def start_run(
+        self, dataset_id: str, *, webhook_url: str, repeats: Optional[int] = None,
+        role: Optional[str] = None, checkpoint_id: Optional[str] = None,
+        item_ids: Optional[Union[str, Sequence[str]]] = None, window: Optional[int] = None,
+        repeat_deadline_seconds: Optional[int] = None,
+    ) -> EvalRun:
+        """Start an eval run on a Dataset (POST /sdk/v2/datasets/{id}/runs; needs
+        ``evosim:run``): send every case, or the cases ``item_ids`` names (one id or a
+        list; they run in the Dataset's order), to the agent's runner at
+        ``webhook_url``, ``repeats`` times, ``window`` sessions at a time, each repeat
+        within ``repeat_deadline_seconds``. Omit an option to take the backend
+        default: ``repeats`` 3 (1–10), ``role`` ``"baseline"`` (or ``"candidate"``),
+        no checkpoint, every case, ``window`` 10 (1–50), ``repeat_deadline_seconds``
+        1800 (60–43200). A run holds at most 1000 sessions (cases × repeats). Returns
+        the started run (``status="running"``); follow it with ``runs``, cancel it
+        with ``client.evosims.cancel(run.evosim_id)``.
+
+        Raises ``ValidationError`` (an option out of range; empty, repeated or foreign
+        ``item_ids``; no cases; over 1000 sessions; a refused runner URL),
+        ``NotFoundError`` (Dataset not visible to the key, or a checkpoint not on its
+        agent), ``RateLimitError`` (the fan-out throttle) or ``ServiceUnavailableError``
+        (503 — the workflow didn't start). It's a POST, so none of these is retried
+        and a failed call never starts a second run. On the 503,
+        ``exc.response_body`` holds the run's ids with ``status="start_failed"``; if
+        its message says the run may have started, cancel it by ``evosim_id`` before
+        retrying."""
+        return EvalRun.from_dict(self.http.post(
+            f"sdk/v2/datasets/{dataset_id}/runs",
+            self._run_body(webhook_url, repeats, role, checkpoint_id, item_ids, window,
+                           repeat_deadline_seconds),
+        ))
+
+    async def astart_run(
+        self, dataset_id: str, *, webhook_url: str, repeats: Optional[int] = None,
+        role: Optional[str] = None, checkpoint_id: Optional[str] = None,
+        item_ids: Optional[Union[str, Sequence[str]]] = None, window: Optional[int] = None,
+        repeat_deadline_seconds: Optional[int] = None,
+    ) -> EvalRun:
+        """Async sibling of ``start_run``."""
+        return EvalRun.from_dict(await self.http.apost(
+            f"sdk/v2/datasets/{dataset_id}/runs",
+            self._run_body(webhook_url, repeats, role, checkpoint_id, item_ids, window,
+                           repeat_deadline_seconds),
+        ))
+
+    def runs(
+        self, dataset_id: str, *, role: Optional[str] = None, status: Optional[str] = None,
+        page_size: Optional[int] = None,
+    ) -> Iterator[EvalRun]:
+        """Lazily iterate a Dataset's eval runs, newest first, World runs included (GET
+        /sdk/v2/datasets/{id}/runs; needs ``evosim:read``). Filters: ``role``
+        (``"baseline"`` / ``"candidate"``) and ``status`` (only ``"complete"`` today);
+        another value → ``ValidationError``. A complete run's row carries its compact
+        ``summary``. Unknown / not-visible Dataset → ``NotFoundError`` on first
+        iteration."""
+        base = self._runs_params(role, status, page_size)
+        path = f"sdk/v2/datasets/{dataset_id}/runs"
+        return paginate(lambda c: self._v2_page_get(path, base, c), model=EvalRun)
+
+    def aruns(
+        self, dataset_id: str, *, role: Optional[str] = None, status: Optional[str] = None,
+        page_size: Optional[int] = None,
+    ) -> AsyncIterator[EvalRun]:
+        """Async sibling of ``runs``."""
+        base = self._runs_params(role, status, page_size)
+        path = f"sdk/v2/datasets/{dataset_id}/runs"
+        return apaginate(lambda c: self._v2_apage_get(path, base, c), model=EvalRun)
+
+    def runs_page(
+        self, dataset_id: str, *, cursor: Optional[str] = None, role: Optional[str] = None,
+        status: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Fetch a single page of a Dataset's eval runs."""
+        body = self._v2_page_get(
+            f"sdk/v2/datasets/{dataset_id}/runs", self._runs_params(role, status, page_size), cursor)
+        return CursorPage.from_body(body, model=EvalRun)
+
+    async def aruns_page(
+        self, dataset_id: str, *, cursor: Optional[str] = None, role: Optional[str] = None,
+        status: Optional[str] = None, page_size: Optional[int] = None,
+    ) -> CursorPage:
+        """Async sibling of ``runs_page``."""
+        body = await self._v2_apage_get(
+            f"sdk/v2/datasets/{dataset_id}/runs", self._runs_params(role, status, page_size), cursor)
+        return CursorPage.from_body(body, model=EvalRun)
+
+    @staticmethod
+    def _run_body(
+        webhook_url: str, repeats: Optional[int], role: Optional[str],
+        checkpoint_id: Optional[str], item_ids: Optional[Union[str, Sequence[str]]],
+        window: Optional[int], repeat_deadline_seconds: Optional[int],
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"webhook_url": webhook_url}
+        # omit-None: let the backend apply its defaults (repeats=3, role="baseline", no
+        # checkpoint, every case, window=10, repeat_deadline_seconds=1800).
+        if repeats is not None:
+            body["repeats"] = repeats
+        if role is not None:
+            body["role"] = role
+        if checkpoint_id is not None:
+            body["checkpoint_id"] = checkpoint_id
+        if item_ids is not None:
+            body["item_ids"] = _id_list(item_ids)
+        if window is not None:
+            body["window"] = window
+        if repeat_deadline_seconds is not None:
+            body["repeat_deadline_seconds"] = repeat_deadline_seconds
+        return body
+
+    @staticmethod
+    def _runs_params(
+        role: Optional[str], status: Optional[str], page_size: Optional[int]
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        if role is not None:
+            params["role"] = role
+        if status is not None:
+            params["status"] = status
+        if page_size is not None:
+            params["page_size"] = page_size
+        return params
 
     # ==================== Dataset Methods ====================
 

@@ -1,7 +1,8 @@
 """Typed response models for client.datasets v2 (LUC-918).
 
 Distinct from the SDK's grandfathered gen-3 dataset helpers (which return raw
-dicts). These model the v2 schemas / items / fixtures surface.
+dicts). These model the v2 schemas / items / fixtures surface, generation runs
+(LUC-921) and eval runs (LUC-1195).
 """
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -100,3 +101,56 @@ class DatasetGenerationRun(APIModel):
         """True only for a ``completed`` run (a ``failed`` run is terminal but not
         successful — read ``error_message``)."""
         return self.status == "completed"
+
+
+# Terminal eval-run statuses. ``running`` / ``grading`` are ongoing. Mirrors the
+# backend's RUN_* constants (api/services/eval_run_outcomes.py).
+_TERMINAL_RUN_STATUSES = frozenset({"complete", "failed", "canceled"})
+
+
+@dataclass
+class EvalRun(APIModel):
+    """An eval run — one start of a Dataset's cases (all, or the chosen ones) sent to
+    the agent ``repeats`` times, then graded and frozen. Either a ``baseline`` or a
+    ``candidate`` (one try of an improved version). Returned by
+    ``client.datasets.start_run`` and ``runs``.
+
+    The start response carries the run's ids and settings with ``status="running"``;
+    a ``runs`` row adds ``created_at`` and, once complete, the compact frozen
+    ``summary`` (pass rates per repeat, buckets; ``None`` until then). The run's
+    sessions belong to ``experiment_id``; cancel a run with
+    ``client.evosims.cancel(run.evosim_id)``.
+
+    ``status`` is ``running`` / ``grading`` (ongoing) or ``complete`` / ``failed`` /
+    ``canceled`` (terminal). Use ``is_terminal`` / ``is_complete`` rather than
+    comparing the raw string.
+    """
+
+    eval_run_id: str
+    experiment_id: Optional[str] = None
+    evosim_id: Optional[str] = None
+    tmi_id: Optional[str] = None
+    dataset_id: Optional[str] = None  # None on runs started before Dataset runs existed
+    world_id: Optional[str] = None  # set only when the Dataset is a World's
+    role: Optional[str] = None
+    repeats: Optional[int] = None
+    checkpoint_id: Optional[str] = None
+    window: Optional[int] = None
+    repeat_deadline_seconds: Optional[int] = None
+    case_count: Optional[int] = None
+    session_count: Optional[int] = None
+    status: Optional[str] = None
+    # runs() rows only
+    created_at: Optional[str] = None
+    summary: Optional[Dict[str, Any]] = None
+
+    @property
+    def is_terminal(self) -> bool:
+        """True once the run has finished (``complete`` / ``failed`` / ``canceled``)."""
+        return self.status in _TERMINAL_RUN_STATUSES
+
+    @property
+    def is_complete(self) -> bool:
+        """True only for a graded and frozen run. Says nothing about its pass rate —
+        read ``summary`` for that."""
+        return self.status == "complete"

@@ -1,4 +1,5 @@
-"""LUC-918 — client.datasets v2: items + schemas (CRUD) + fixtures.create."""
+"""LUC-918 — client.datasets v2: items + schemas (CRUD) + fixtures.create.
+LUC-921 generation; LUC-1195 eval runs (start_run / runs)."""
 import json
 
 import httpx
@@ -9,6 +10,7 @@ from lucidicai.api.models.dataset import (
     DatasetGenerationRun,
     DatasetItem,
     DatasetSchema,
+    EvalRun,
     Fixture,
 )
 from lucidicai.api.resources.dataset import (
@@ -18,7 +20,9 @@ from lucidicai.api.resources.dataset import (
 )
 from lucidicai.core.errors import (
     ConflictError,
+    InsufficientScopeError,
     NotFoundError,
+    RateLimitError,
     ServiceUnavailableError,
     ValidationError,
     WaitTimeout,
@@ -413,3 +417,234 @@ class TestGenerationAsync:
         ])
         run = await datasets.await_for_generation("run1", timeout=30, interval=0)
         assert run.succeeded is True
+
+
+# ==================== LUC-1195 eval runs ====================
+
+_DS = "11111111-1111-1111-1111-111111111111"
+_RUNNER = "https://runner.example.test/hook"
+
+
+def _runs_url(dataset_id=_DS):
+    return f"{_BASE}/sdk/v2/datasets/{dataset_id}/runs"
+
+
+def _eval_run(i=1, **over):
+    # EvalRunStart.as_dict (eval_run_services.py) — the 202 body
+    d = {
+        "eval_run_id": f"er{i}", "experiment_id": f"ex{i}", "evosim_id": f"ev{i}",
+        "tmi_id": f"tmi{i}", "dataset_id": _DS, "world_id": None, "role": "baseline",
+        "repeats": 3, "checkpoint_id": None, "window": 10, "repeat_deadline_seconds": 1800,
+        "case_count": 4, "session_count": 12, "status": "running",
+    }
+    d.update(over)
+    return d
+
+
+def _run_row(i=1, **over):
+    # run_rows: the start shape plus created_at and the compact summary
+    d = _eval_run(i, created_at="2026-10-25T00:00:00Z", summary=None)
+    d.update(over)
+    return d
+
+
+_SUMMARY = {
+    "metric": "primary_pass_rate", "k": 3,
+    "per_repeat": [{"repeat": 1, "pass_rate": 0.5}],
+    "pass_rate_spread": 0.0,
+    "buckets": {"always": {"count": 2, "share": 0.5}},
+}
+
+
+class TestEvalRunModel:
+    @pytest.mark.parametrize("status,terminal,complete", [
+        ("running", False, False),
+        ("grading", False, False),
+        ("complete", True, True),
+        ("failed", True, False),
+        ("canceled", True, False),
+        (None, False, False),
+    ])
+    def test_status_flags(self, status, terminal, complete):
+        run = EvalRun.from_dict(_eval_run(status=status))
+        assert run.is_terminal is terminal and run.is_complete is complete
+
+    def test_start_body_parses(self):
+        run = EvalRun.from_dict(_eval_run())
+        assert run.eval_run_id == "er1" and run.evosim_id == "ev1" and run.experiment_id == "ex1"
+        assert run.dataset_id == _DS and run.world_id is None
+        assert run.window == 10 and run.repeat_deadline_seconds == 1800
+        assert run.case_count == 4 and run.session_count == 12
+        assert run.created_at is None and run.summary is None
+
+    def test_list_row_parses_and_keeps_unknown_keys(self):
+        run = EvalRun.from_dict(_run_row(status="complete", summary=_SUMMARY, graded_by_new=1))
+        assert run.created_at == "2026-10-25T00:00:00Z" and run.summary == _SUMMARY
+        assert run.extra == {"graded_by_new": 1}
+
+
+class TestStartRun:
+    @respx.mock
+    def test_minimal_body_is_omit_none(self, datasets):
+        route = respx.post(_runs_url()).mock(return_value=httpx.Response(202, json=_eval_run()))
+        run = datasets.start_run(_DS, webhook_url=_RUNNER)
+        assert isinstance(run, EvalRun) and run.eval_run_id == "er1" and run.status == "running"
+        body = json.loads(route.calls.last.request.read())
+        body.pop("current_time")  # the transport stamps every POST
+        assert body == {"webhook_url": _RUNNER}
+
+    @respx.mock
+    def test_every_option_sent_by_name(self, datasets):
+        route = respx.post(_runs_url()).mock(return_value=httpx.Response(202, json=_eval_run()))
+        datasets.start_run(
+            _DS, webhook_url=_RUNNER, repeats=2, role="candidate", checkpoint_id="cp1",
+            item_ids=["i3", "i1"], window=2, repeat_deadline_seconds=600,
+        )
+        body = json.loads(route.calls.last.request.read())
+        body.pop("current_time")
+        assert body == {
+            "webhook_url": _RUNNER, "repeats": 2, "role": "candidate", "checkpoint_id": "cp1",
+            "item_ids": ["i3", "i1"], "window": 2, "repeat_deadline_seconds": 600,
+        }
+
+    @respx.mock
+    @pytest.mark.parametrize("given,sent", [
+        ("i1", ["i1"]),  # one id, not its characters
+        (("i1", "i2"), ["i1", "i2"]),
+        ((i for i in ["i1", "i2"]), ["i1", "i2"]),
+    ])
+    def test_item_ids_one_or_many(self, datasets, given, sent):
+        route = respx.post(_runs_url()).mock(return_value=httpx.Response(202, json=_eval_run()))
+        datasets.start_run(_DS, webhook_url=_RUNNER, item_ids=given)
+        assert json.loads(route.calls.last.request.read())["item_ids"] == sent
+
+    @respx.mock
+    def test_out_of_range_400(self, datasets):
+        respx.post(_runs_url()).mock(return_value=httpx.Response(400, json={
+            "error": "Validation failed",
+            "details": {"window": ["Ensure this value is less than or equal to 50."]}}))
+        with pytest.raises(ValidationError) as exc:
+            datasets.start_run(_DS, webhook_url=_RUNNER, window=51)
+        assert exc.value.details == {"window": ["Ensure this value is less than or equal to 50."]}
+
+    @respx.mock
+    def test_service_refusal_400(self, datasets):
+        respx.post(_runs_url()).mock(return_value=httpx.Response(
+            400, json={"error": "200 cases x 10 repeats is over 1000 sessions per run"}))
+        with pytest.raises(ValidationError, match="over 1000 sessions"):
+            datasets.start_run(_DS, webhook_url=_RUNNER, repeats=10)
+
+    @respx.mock
+    def test_missing_scope_403(self, datasets):
+        respx.post(_runs_url()).mock(return_value=httpx.Response(403, json={
+            "error": "API key lacks the required scope", "required_scope": "evosim:run"}))
+        with pytest.raises(InsufficientScopeError) as exc:
+            datasets.start_run(_DS, webhook_url=_RUNNER)
+        assert exc.value.required_scope == "evosim:run"
+
+    @respx.mock
+    def test_unknown_dataset_404(self, datasets):
+        respx.post(_runs_url("missing")).mock(return_value=httpx.Response(
+            404, json={"error": "Specified Dataset not found"}))
+        with pytest.raises(NotFoundError):
+            datasets.start_run("missing", webhook_url=_RUNNER)
+
+    @respx.mock
+    def test_throttled_429_is_not_retried(self, datasets):
+        route = respx.post(_runs_url()).mock(return_value=httpx.Response(
+            429, json={"detail": "Request was throttled."}, headers={"Retry-After": "7"}))
+        with pytest.raises(RateLimitError) as exc:
+            datasets.start_run(_DS, webhook_url=_RUNNER)
+        assert route.call_count == 1 and exc.value.retry_after == 7
+
+    @respx.mock
+    def test_start_failed_503_is_not_retried_and_keeps_the_ids(self, datasets):
+        message = ("Workflow service is temporarily unavailable and the run may have started; "
+                   "cancel it by evosim_id before retrying.")
+        route = respx.post(_runs_url()).mock(return_value=httpx.Response(
+            503, json={**_eval_run(), "status": "start_failed", "error": message}))
+        with pytest.raises(ServiceUnavailableError, match="cancel it by evosim_id") as exc:
+            datasets.start_run(_DS, webhook_url=_RUNNER)
+        assert route.call_count == 1  # a retry could start a second run
+        assert exc.value.response_body["evosim_id"] == "ev1"
+        assert exc.value.response_body["status"] == "start_failed"
+
+
+class TestRuns:
+    @respx.mock
+    def test_follows_pages_typed_with_filters(self, datasets):
+        url = _runs_url()
+        route = respx.get(url).mock(side_effect=[
+            httpx.Response(200, json={"results": [_run_row(1, status="complete", summary=_SUMMARY),
+                                                  _run_row(2)],
+                                      "next": f"{url}?cursor=c2&role=baseline"}),
+            httpx.Response(200, json={"results": [_run_row(3)], "next": None}),
+        ])
+        got = list(datasets.runs(_DS, role="baseline", status="complete", page_size=2))
+        assert [r.eval_run_id for r in got] == ["er1", "er2", "er3"]
+        assert all(isinstance(r, EvalRun) for r in got)
+        assert got[0].summary == _SUMMARY and got[1].summary is None
+        first, second = (c.request.url.params for c in route.calls)
+        assert dict(first) == {"role": "baseline", "status": "complete", "page_size": "2"}
+        assert dict(second) == {"role": "baseline", "status": "complete", "page_size": "2", "cursor": "c2"}
+
+    @respx.mock
+    def test_no_filters_sends_no_params(self, datasets):
+        route = respx.get(_runs_url()).mock(
+            return_value=httpx.Response(200, json={"results": [], "next": None}))
+        assert list(datasets.runs(_DS)) == []
+        assert dict(route.calls.last.request.url.params) == {}
+
+    @respx.mock
+    def test_runs_page(self, datasets):
+        url = _runs_url()
+        route = respx.get(url).mock(return_value=httpx.Response(
+            200, json={"results": [_run_row(1)], "next": f"{url}?cursor=c2", "previous": None}))
+        page = datasets.runs_page(_DS, cursor="c1", role="candidate")
+        assert isinstance(page.results[0], EvalRun) and page.next_cursor == "c2"
+        assert dict(route.calls.last.request.url.params) == {"role": "candidate", "cursor": "c1"}
+
+    @respx.mock
+    def test_bad_role_400(self, datasets):
+        respx.get(_runs_url()).mock(return_value=httpx.Response(
+            400, json={"error": "role must be one of baseline, candidate"}))
+        with pytest.raises(ValidationError, match="role must be one of"):
+            list(datasets.runs(_DS, role="champion"))
+
+    @respx.mock
+    def test_unknown_dataset_404(self, datasets):
+        respx.get(_runs_url("missing")).mock(return_value=httpx.Response(
+            404, json={"error": "Specified Dataset not found"}))
+        with pytest.raises(NotFoundError):
+            list(datasets.runs("missing"))
+
+
+class TestEvalRunsAsync:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_astart_run(self, datasets):
+        route = respx.post(_runs_url()).mock(return_value=httpx.Response(202, json=_eval_run()))
+        run = await datasets.astart_run(_DS, webhook_url=_RUNNER, item_ids="i1", repeats=1)
+        assert isinstance(run, EvalRun) and run.eval_run_id == "er1"
+        body = json.loads(route.calls.last.request.read())
+        assert body["item_ids"] == ["i1"] and body["repeats"] == 1
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aruns_follows_pages(self, datasets):
+        url = _runs_url()
+        respx.get(url).mock(side_effect=[
+            httpx.Response(200, json={"results": [_run_row(1)], "next": f"{url}?cursor=c2"}),
+            httpx.Response(200, json={"results": [_run_row(2)], "next": None}),
+        ])
+        got = [r.eval_run_id async for r in datasets.aruns(_DS)]
+        assert got == ["er1", "er2"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aruns_page(self, datasets):
+        route = respx.get(_runs_url()).mock(return_value=httpx.Response(
+            200, json={"results": [_run_row(1)], "next": None}))
+        page = await datasets.aruns_page(_DS, status="complete")
+        assert isinstance(page.results[0], EvalRun) and page.has_next is False
+        assert dict(route.calls.last.request.url.params) == {"status": "complete"}
