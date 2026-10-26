@@ -429,9 +429,10 @@ class DatasetResource:
         evaluator that can't grade cases — another agent's, not LLM/CODE, a string
         result, a number without a pass mark, the agent's pass/fail metric, a World's
         grader; a malformed spec), ``NotFoundError`` (Dataset not visible to the key,
-        or an unknown ``evaluator_id``) or ``ConflictError`` (the agent has an
-        evaluator by that name with another rubric — edit it with
-        ``client.evaluators.update`` or pass its ``evaluator_id``)."""
+        or an unknown ``evaluator_id``) or ``ConflictError`` (a run of the Dataset is in
+        progress — a run reads its cases' evaluators live, so change them after it
+        finishes; or the agent has an evaluator by that name with another rubric —
+        edit it with ``client.evaluators.update`` or pass its ``evaluator_id``)."""
         return CaseEvaluatorUpdate.from_dict(self.http.put(
             self._case_evaluators_path(dataset_id),
             self._case_evaluator_body(
@@ -474,7 +475,8 @@ class DatasetResource:
         ``evaluator:write``). The evaluator itself is kept — delete it with
         ``client.evaluators.delete``. Idempotent: ``changed`` counts only the cases
         that had one. An id not in the Dataset → ``ValidationError``; Dataset not
-        visible to the key → ``NotFoundError``."""
+        visible to the key → ``NotFoundError``; a run of the Dataset in progress →
+        ``ConflictError``."""
         return CaseEvaluatorUpdate.from_dict(self.http.put(
             self._case_evaluators_path(dataset_id),
             {"item_ids": _id_list(item_ids), "evaluator_id": None},
@@ -508,6 +510,87 @@ class DatasetResource:
         choice = _evaluator_choice(
             operation, evaluator_id, name, criteria, result_type, description, pass_threshold)
         return {"item_ids": _id_list(item_ids), **choice}
+
+    # ==================== fallback evaluator (LUC-1195) ====================
+    #
+    # The Dataset's fallback evaluator grades a case that has no case evaluator and no
+    # agent-reported result; it runs only then. One per Dataset. Set it like a case
+    # evaluator (by id or by spec); clearing is remove_fallback_evaluator, so a bare
+    # set call can never clear it. Data-bearing → no swallow.
+
+    def set_fallback_evaluator(
+        self, dataset_id: str, evaluator_id: Optional[str] = None, *,
+        name: Optional[str] = None, criteria: Optional[List[Dict[str, Any]]] = None,
+        result_type: Optional[str] = None, description: Optional[str] = None,
+        pass_threshold: Optional[float] = None,
+    ) -> Evaluator:
+        """Set the Dataset's fallback evaluator (PUT
+        /sdk/v2/datasets/{id}/fallback-evaluator; needs ``evaluator:write``). Name an
+        existing evaluator with ``evaluator_id``, **or** describe an LLM rubric
+        evaluator with ``name`` + ``criteria`` + ``result_type`` (+ ``description``,
+        ``pass_threshold``), as for ``set_case_evaluator``: reused by name when the
+        rubric and pass mark match, else created. A ``"number"`` spec needs a
+        ``pass_threshold``. Passing both modes, neither, or a partial spec raises
+        ``InvalidOperationError`` before any request — to clear, call
+        ``remove_fallback_evaluator``.
+
+        Returns the evaluator in detail shape with ``dataset_id`` set and ``created``
+        True when a spec made it. Idempotent; a retried call whose first try created
+        it reads ``created=False``.
+
+        Raises ``ValidationError`` (an evaluator that can't grade cases — the same
+        refusals as ``set_case_evaluator``; a malformed spec), ``NotFoundError``
+        (Dataset not visible to the key, or an unknown ``evaluator_id``) or
+        ``ConflictError`` (a run of the Dataset is in progress — change it after the
+        run finishes; or the agent has an evaluator by that name with another
+        rubric)."""
+        return Evaluator.from_dict(self.http.put(
+            self._fallback_path(dataset_id),
+            _evaluator_choice("datasets.set_fallback_evaluator", evaluator_id, name, criteria,
+                              result_type, description, pass_threshold),
+        ))
+
+    async def aset_fallback_evaluator(
+        self, dataset_id: str, evaluator_id: Optional[str] = None, *,
+        name: Optional[str] = None, criteria: Optional[List[Dict[str, Any]]] = None,
+        result_type: Optional[str] = None, description: Optional[str] = None,
+        pass_threshold: Optional[float] = None,
+    ) -> Evaluator:
+        """Async sibling of ``set_fallback_evaluator``."""
+        return Evaluator.from_dict(await self.http.aput(
+            self._fallback_path(dataset_id),
+            _evaluator_choice("datasets.set_fallback_evaluator", evaluator_id, name, criteria,
+                              result_type, description, pass_threshold),
+        ))
+
+    def fallback_evaluator(self, dataset_id: str) -> Evaluator:
+        """Read the Dataset's fallback evaluator (GET
+        /sdk/v2/datasets/{id}/fallback-evaluator; needs ``evaluator:read``), in detail
+        shape with ``dataset_id`` set. None set raises ``NotFoundError``, as does an
+        unknown Dataset; to check without an exception, read ``fallback_evaluator_id``
+        from ``client.datasets.get(dataset_id)``. A link to another agent's evaluator
+        reads as none, since grading ignores it."""
+        return Evaluator.from_dict(self.http.get(self._fallback_path(dataset_id)))
+
+    async def afallback_evaluator(self, dataset_id: str) -> Evaluator:
+        """Async sibling of ``fallback_evaluator``."""
+        return Evaluator.from_dict(await self.http.aget(self._fallback_path(dataset_id)))
+
+    def remove_fallback_evaluator(self, dataset_id: str) -> None:
+        """Clear the Dataset's fallback evaluator (DELETE
+        /sdk/v2/datasets/{id}/fallback-evaluator; needs ``evaluator:write``). The
+        evaluator itself is kept. Idempotent: clearing an unset fallback succeeds.
+        Dataset not visible to the key → ``NotFoundError``; a run of the Dataset in
+        progress → ``ConflictError``."""
+        self.http.delete(self._fallback_path(dataset_id))
+
+    async def aremove_fallback_evaluator(self, dataset_id: str) -> None:
+        """Async sibling of ``remove_fallback_evaluator``."""
+        await self.http.adelete(self._fallback_path(dataset_id))
+
+    @staticmethod
+    def _fallback_path(dataset_id: str) -> str:
+        return f"sdk/v2/datasets/{dataset_id}/fallback-evaluator"
 
     # ==================== Dataset Methods ====================
 

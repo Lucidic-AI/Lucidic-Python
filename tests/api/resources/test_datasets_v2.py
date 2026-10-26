@@ -1,5 +1,6 @@
 """LUC-918 — client.datasets v2: items + schemas (CRUD) + fixtures.create.
-LUC-921 generation; LUC-1195 eval runs (start_run / runs) and case evaluators."""
+LUC-921 generation; LUC-1195 eval runs (start_run / runs), case evaluators and the
+fallback evaluator."""
 import json
 
 import httpx
@@ -879,3 +880,180 @@ class TestCaseEvaluatorsAsync:
             200, json=_update(evaluator_id=None, changed=0)))
         u = await datasets.aremove_case_evaluator(_DS, "i1")
         assert u.changed == 0 and _put_body(route) == {"item_ids": ["i1"], "evaluator_id": None}
+
+
+# ==================== LUC-1195 fallback evaluator (over LUC-1191) ====================
+
+_FALLBACK_URL = f"{_BASE}/sdk/v2/datasets/{_DS}/fallback-evaluator"
+_RUN_IN_PROGRESS = {"error": f"Dataset {_DS} has a run in progress; change its fallback evaluator after it finishes."}
+
+
+def _fallback_ev(**over):
+    # _fallback_body: EvaluatorDetailSerializer + dataset_id (the PUT adds created)
+    d = _case_ev()
+    d.pop("datasetitem_id")
+    d.update(dataset_id=_DS)
+    d.update(over)
+    return d
+
+
+def _evaluator_plain():
+    d = _fallback_ev()
+    d.pop("dataset_id")
+    return d
+
+
+class TestFallbackEvaluatorModel:
+    def test_fallback_fields_only_on_fallback_bodies(self):
+        ev = Evaluator.from_dict(_fallback_ev(created=True))
+        assert ev.dataset_id == _DS and ev.created is True and ev.datasetitem_id is None
+        plain = Evaluator.from_dict(_evaluator_plain())
+        assert plain.dataset_id is None and plain.created is None
+
+
+class TestSetFallbackEvaluator:
+    @respx.mock
+    def test_by_id(self, datasets):
+        route = respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(
+            200, json=_fallback_ev(created=False)))
+        ev = datasets.set_fallback_evaluator(_DS, _EV)
+        assert isinstance(ev, Evaluator) and ev.evaluator_id == _EV
+        assert ev.dataset_id == _DS and ev.created is False
+        assert _put_body(route) == {"evaluator_id": _EV}
+
+    @respx.mock
+    def test_by_number_spec(self, datasets):
+        route = respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(
+            201, json=_fallback_ev(result_type="number", created=True)))
+        ev = datasets.set_fallback_evaluator(_DS, name="answers-the-question", criteria=_NUM_CRIT,
+                                             result_type="number", pass_threshold=0.7)
+        assert ev.created is True
+        assert _put_body(route) == {"evaluator": {
+            "name": "answers-the-question", "criteria": _NUM_CRIT, "result_type": "number",
+            "pass_threshold": 0.7}}
+
+    @respx.mock
+    @pytest.mark.parametrize("args,kwargs,match", [
+        ((), {}, "pass evaluator_id, or name"),  # a bare call never clears
+        ((_EV,), {"name": "x"}, "not both"),
+        ((), {"criteria": _BOOL_CRIT, "result_type": "boolean"}, "missing name"),
+    ])
+    def test_bad_mode_raises_before_any_request(self, datasets, args, kwargs, match):
+        put = respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(200, json=_fallback_ev()))
+        delete = respx.delete(_FALLBACK_URL).mock(return_value=httpx.Response(204))
+        with pytest.raises(InvalidOperationError, match=match):
+            datasets.set_fallback_evaluator(_DS, *args, **kwargs)
+        assert not put.called and not delete.called
+
+    @respx.mock
+    def test_not_gradable_400(self, datasets):
+        respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(
+            400, json={"error": "The agent's pass/fail metric can't also be a fallback evaluator."}))
+        with pytest.raises(ValidationError, match="fallback evaluator"):
+            datasets.set_fallback_evaluator(_DS, _EV)
+
+    @respx.mock
+    def test_unknown_evaluator_404(self, datasets):
+        respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(
+            404, json={"error": "Specified Evaluator not found"}))
+        with pytest.raises(NotFoundError):
+            datasets.set_fallback_evaluator(_DS, "missing")
+
+    @respx.mock
+    def test_run_in_progress_409(self, datasets):
+        respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(409, json=_RUN_IN_PROGRESS))
+        with pytest.raises(ConflictError, match="run in progress"):
+            datasets.set_fallback_evaluator(_DS, _EV)
+
+
+class TestFallbackEvaluatorRead:
+    @respx.mock
+    def test_get(self, datasets):
+        respx.get(_FALLBACK_URL).mock(return_value=httpx.Response(200, json=_fallback_ev()))
+        ev = datasets.fallback_evaluator(_DS)
+        assert isinstance(ev, Evaluator) and ev.dataset_id == _DS and ev.created is None
+
+    @respx.mock
+    def test_unset_404(self, datasets):
+        respx.get(_FALLBACK_URL).mock(return_value=httpx.Response(
+            404, json={"error": "Specified fallback evaluator not found"}))
+        with pytest.raises(NotFoundError):
+            datasets.fallback_evaluator(_DS)
+
+    @respx.mock
+    def test_dataset_dict_carries_fallback_evaluator_id(self, datasets):
+        # no typed Dataset model: the gen-3 get() dict (DatasetSerializer) carries the id
+        route = respx.get(f"{_BASE}/getdataset").mock(return_value=httpx.Response(
+            200, json={"dataset_id": _DS, "name": "harvey", "fallback_evaluator_id": _EV}))
+        assert datasets.get(_DS)["fallback_evaluator_id"] == _EV
+        assert route.calls.last.request.url.params["dataset_id"] == _DS
+
+
+class TestRemoveFallbackEvaluator:
+    @respx.mock
+    def test_delete_204(self, datasets):
+        route = respx.delete(_FALLBACK_URL).mock(return_value=httpx.Response(204))
+        assert datasets.remove_fallback_evaluator(_DS) is None
+        assert route.called
+
+    @respx.mock
+    def test_run_in_progress_409(self, datasets):
+        respx.delete(_FALLBACK_URL).mock(return_value=httpx.Response(409, json=_RUN_IN_PROGRESS))
+        with pytest.raises(ConflictError, match="run in progress"):
+            datasets.remove_fallback_evaluator(_DS)
+
+    @respx.mock
+    def test_unknown_dataset_404(self, datasets):
+        respx.delete(f"{_BASE}/sdk/v2/datasets/missing/fallback-evaluator").mock(
+            return_value=httpx.Response(404, json={"error": "Specified Dataset not found"}))
+        with pytest.raises(NotFoundError):
+            datasets.remove_fallback_evaluator("missing")
+
+
+class TestCaseEvaluatorRunInProgress:
+    # LUC-1190's review fix: case-evaluator writes answer 409 while a run is in progress
+    @respx.mock
+    def test_set_409(self, datasets):
+        respx.put(_CASES_URL).mock(return_value=httpx.Response(409, json={
+            "error": f"Dataset {_DS} has a run in progress; change case evaluators after it finishes."}))
+        with pytest.raises(ConflictError, match="run in progress"):
+            datasets.set_case_evaluator(_DS, "i1", evaluator_id=_EV)
+
+    @respx.mock
+    def test_remove_409(self, datasets):
+        respx.put(_CASES_URL).mock(return_value=httpx.Response(409, json={
+            "error": f"Dataset {_DS} has a run in progress; change case evaluators after it finishes."}))
+        with pytest.raises(ConflictError, match="run in progress"):
+            datasets.remove_case_evaluator(_DS, "i1")
+
+
+class TestFallbackEvaluatorAsync:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aset_fallback_evaluator(self, datasets):
+        route = respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(
+            201, json=_fallback_ev(created=True)))
+        ev = await datasets.aset_fallback_evaluator(_DS, name="cites-clause", criteria=_BOOL_CRIT,
+                                                    result_type="boolean")
+        assert ev.created is True and _put_body(route)["evaluator"]["name"] == "cites-clause"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aset_fallback_evaluator_checks_the_mode(self, datasets):
+        route = respx.put(_FALLBACK_URL).mock(return_value=httpx.Response(200, json=_fallback_ev()))
+        with pytest.raises(InvalidOperationError):
+            await datasets.aset_fallback_evaluator(_DS)
+        assert not route.called
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_afallback_evaluator(self, datasets):
+        respx.get(_FALLBACK_URL).mock(return_value=httpx.Response(200, json=_fallback_ev()))
+        assert (await datasets.afallback_evaluator(_DS)).dataset_id == _DS
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aremove_fallback_evaluator(self, datasets):
+        route = respx.delete(_FALLBACK_URL).mock(return_value=httpx.Response(204))
+        assert await datasets.aremove_fallback_evaluator(_DS) is None
+        assert route.called
