@@ -3,13 +3,13 @@ import logging
 import math
 import threading
 import time
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any, Dict, Optional, Union
 
 from ..client import HttpClient
 
 logger = logging.getLogger("Lucidic")
 
-# default close() wait for in-flight emit() posts
+# default close() / sessions.end() wait for in-flight emit() posts
 EVAL_FLUSH_TIMEOUT_SECONDS = 5.0
 
 
@@ -112,7 +112,8 @@ class EvalsResource:
         """
         self.http = http
         self._production = production
-        self._pending: Set[threading.Thread] = set()
+        # each in-flight post's thread -> the session it posts for
+        self._pending: Dict[threading.Thread, str] = {}
         self._pending_lock = threading.Lock()
 
     def emit(
@@ -237,26 +238,32 @@ class EvalsResource:
                 logger.debug(f"[EvalsResource] Background emit() failed: {e}")
             finally:
                 with self._pending_lock:
-                    self._pending.discard(threading.current_thread())
+                    self._pending.pop(threading.current_thread(), None)
 
         # daemon so a hung post never blocks exit; flush() waits
         thread = threading.Thread(target=_background_emit, daemon=True)
         with self._pending_lock:
-            self._pending.add(thread)
+            self._pending[thread] = captured_session_id
         try:
             thread.start()
         except Exception:
             # an unstarted thread can never be joined; don't leave it pending
             with self._pending_lock:
-                self._pending.discard(thread)
+                self._pending.pop(thread, None)
             raise
 
-    def flush(self, timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS) -> bool:
+    def flush(
+        self,
+        timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS,
+        session_id: Optional[str] = None,
+    ) -> bool:
         """Wait for in-flight emit() posts to finish.
 
         Args:
             timeout: Upper bound in seconds for the whole wait, shared across
                 all pending posts.
+            session_id: Wait only for the posts for this session. If None,
+                wait for every session's posts.
 
         Returns:
             True if every post started before this call has finished (sent or
@@ -264,15 +271,19 @@ class EvalsResource:
         """
         deadline = time.monotonic() + timeout
         with self._pending_lock:
-            pending = list(self._pending)
+            pending = [
+                thread for thread, sid in self._pending.items()
+                if session_id is None or sid == session_id
+            ]
         for thread in pending:
             thread.join(max(0.0, deadline - time.monotonic()))
         with self._pending_lock:
             unfinished = [t for t in pending if t in self._pending]
         if unfinished:
+            for_session = f" for session {_truncate_id(session_id)}" if session_id else ""
             logger.warning(
                 f"[EvalsResource] flush() timed out after {timeout}s with "
-                f"{len(unfinished)} eval(s) still in flight"
+                f"{len(unfinished)} eval(s) still in flight{for_session}"
             )
         return not unfinished
 

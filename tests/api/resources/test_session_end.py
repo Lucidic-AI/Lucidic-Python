@@ -1,12 +1,16 @@
-"""Ending and updating a session: no session verdict.
+"""Ending and updating a session: no session verdict, and the session's emits first.
 
 A session's result is an eval, ``client.evals.emit(result, name=..., description=...)``.
 The session methods no longer take ``is_successful``, ``is_successful_reason``,
 ``session_eval`` or ``session_eval_reason``, and ``update(**updates)`` refuses them.
-The backend is mocked at the HTTP boundary with respx.
+``end()`` waits (bounded) for that session's pending emits before it finishes the
+session, so the backend has the result at the end. The backend is mocked at the HTTP
+boundary with respx; slow or held eval posts make the ordering deterministic.
 """
 import json
+import logging
 import threading
+import time
 
 import httpx
 import pytest
@@ -19,7 +23,11 @@ from lucidicai.sdk.shutdown_manager import SessionState, ShutdownManager
 
 _BASE_URL = "https://stub.lucidic.test"
 _UPDATESESSION = f"{_BASE_URL}/updatesession"
+_INITSESSION = f"{_BASE_URL}/initsession"
+_EVALS = f"{_BASE_URL}/sdk/evals"
 _SESSION_ID = "11111111-2222-3333-4444-555555555555"
+_OTHER_SESSION_ID = "99999999-8888-7777-6666-555555555555"
+_SLOW_POST_SECONDS = 0.3
 _VERDICT_FIELDS = ["is_successful", "is_successful_reason", "session_eval", "session_eval_reason"]
 _VALUES = {"is_successful": True, "is_successful_reason": "done", "session_eval": 1.0,
            "session_eval_reason": "done"}
@@ -211,3 +219,240 @@ class TestShutdownEndsWithNoVerdict:
         assert route.call_count == 1
         assert _body(route) == {"session_id": _SESSION_ID, "is_finished": True}
         assert manager.active_sessions == {}
+
+
+# ---- end() waits for the session's pending emits -------------------------------
+
+def _make_client(**kwargs):
+    return LucidicAI(api_key="test-key", agent_id="aaaa1111-0000-0000-0000-000000000000",
+                     production=False, **kwargs)
+
+
+def _routes(order, eval_delay=_SLOW_POST_SECONDS, hold=None):
+    """Mock the session and eval endpoints, recording the order requests finish in.
+
+    An eval post takes ``eval_delay`` seconds, or waits for ``hold`` (an Event) if given.
+    """
+    def _eval(request):
+        if hold is not None:
+            hold.wait(5)
+        else:
+            time.sleep(eval_delay)
+        order.append(("eval", json.loads(request.read())["session_id"]))
+        return httpx.Response(201, json={})
+
+    def _update(request):
+        body = json.loads(request.read())
+        order.append(("end" if body.get("is_finished") else "update", body["session_id"]))
+        return httpx.Response(200, json={})
+
+    respx.post(_INITSESSION).mock(
+        return_value=httpx.Response(201, json={"session_id": _SESSION_ID}))
+    respx.post(_EVALS).mock(side_effect=_eval)
+    return respx.put(_UPDATESESSION).mock(side_effect=_update)
+
+
+class TestEndPostsTheSessionsEmitsFirst:
+    @respx.mock
+    def test_end(self, client):
+        order = []
+        _routes(order)
+        client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+        client.sessions.end(_SESSION_ID)
+        assert order == [("eval", _SESSION_ID), ("end", _SESSION_ID)]
+
+    @pytest.mark.asyncio
+    async def test_aend(self, client):
+        order = []
+        with respx.mock:
+            _routes(order)
+            client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+            await client.sessions.aend(_SESSION_ID)
+        assert order == [("eval", _SESSION_ID), ("end", _SESSION_ID)]
+
+    @respx.mock
+    def test_end_from_context_flushes_the_context_session(self, client):
+        order = []
+        _routes(order)
+        session = client.sessions.create(session_name="case", session_id=_SESSION_ID)
+        client.evals.emit(0.9, name="score")  # session from context
+        client.sessions.end()
+        assert order == [("eval", _SESSION_ID), ("end", _SESSION_ID)]
+        session._unbind_context()
+
+    @respx.mock
+    def test_session_end(self, client):
+        order = []
+        _routes(order)
+        session = Session(client=client, session_id=_SESSION_ID, auto_end=False)
+        client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+        session.end()
+        assert order == [("eval", _SESSION_ID), ("end", _SESSION_ID)]
+
+    @respx.mock
+    def test_with_block_exit(self, client):
+        order = []
+        _routes(order)
+        with client.sessions.create(session_name="case", session_id=_SESSION_ID):
+            client.evals.emit(True, name="task_passed")
+        assert order == [("eval", _SESSION_ID), ("end", _SESSION_ID)]
+
+    @pytest.mark.asyncio
+    async def test_async_with_block_exit(self, client):
+        order = []
+        with respx.mock:
+            _routes(order)
+            async with await client.sessions.acreate(session_name="case", session_id=_SESSION_ID):
+                client.evals.emit(True, name="task_passed")
+        assert order == [("eval", _SESSION_ID), ("end", _SESSION_ID)]
+
+    @respx.mock
+    def test_does_not_wait_for_another_sessions_emits(self, client):
+        order = []
+        hold = threading.Event()
+        _routes(order, hold=hold)
+        client.evals.emit(True, name="task_passed", session_id=_OTHER_SESSION_ID)
+        try:
+            started = time.monotonic()
+            client.sessions.end(_SESSION_ID)
+            elapsed = time.monotonic() - started
+            assert order == [("end", _SESSION_ID)]
+        finally:
+            hold.set()
+        assert elapsed < 1.0  # the default wait is 5 s
+        assert client.evals.flush(timeout=5) is True
+
+
+class TestEndWaitIsBounded:
+    @respx.mock
+    def test_timeout_warns_and_ends_anyway(self, client, caplog):
+        order = []
+        hold = threading.Event()
+        update = _routes(order, hold=hold)
+        client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+        try:
+            with caplog.at_level(logging.WARNING, logger="Lucidic"):
+                started = time.monotonic()
+                client.sessions.end(_SESSION_ID, eval_flush_timeout=0.2)
+                elapsed = time.monotonic() - started
+            # the session finished while the eval was still in flight
+            assert order == [("end", _SESSION_ID)]
+            assert update.call_count == 1
+        finally:
+            hold.set()
+        assert client.evals.flush(timeout=5) is True  # the post lands while mocked
+        assert 0.15 <= elapsed < 1.0
+        assert "still in flight for session" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_aend_timeout_warns_and_ends_anyway(self, client, caplog):
+        order = []
+        hold = threading.Event()
+        with respx.mock:
+            _routes(order, hold=hold)
+            client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+            try:
+                with caplog.at_level(logging.WARNING, logger="Lucidic"):
+                    started = time.monotonic()
+                    await client.sessions.aend(_SESSION_ID, eval_flush_timeout=0.2)
+                    elapsed = time.monotonic() - started
+                assert order == [("end", _SESSION_ID)]
+            finally:
+                hold.set()
+            assert client.evals.flush(timeout=5) is True
+        assert 0.15 <= elapsed < 1.0
+        assert "still in flight for session" in caplog.text
+
+    @respx.mock
+    def test_the_client_setting_is_the_default(self):
+        c = _make_client(eval_flush_timeout=0.2)
+        order = []
+        hold = threading.Event()
+        _routes(order, hold=hold)
+        try:
+            c.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+            started = time.monotonic()
+            c.sessions.end(_SESSION_ID)
+            elapsed = time.monotonic() - started
+        finally:
+            hold.set()
+            assert c.evals.flush(timeout=5) is True
+            c.close()
+        assert 0.15 <= elapsed < 1.0
+
+    @respx.mock
+    def test_session_end_keyword(self, client):
+        order = []
+        hold = threading.Event()
+        _routes(order, hold=hold)
+        session = Session(client=client, session_id=_SESSION_ID, auto_end=False)
+        client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+        try:
+            started = time.monotonic()
+            session.end(eval_flush_timeout=0.2)
+            elapsed = time.monotonic() - started
+        finally:
+            hold.set()
+        assert client.evals.flush(timeout=5) is True
+        assert 0.15 <= elapsed < 1.0
+        assert session.is_finished
+
+    @respx.mock
+    def test_zero_skips_the_wait(self, client):
+        order = []
+        hold = threading.Event()
+        _routes(order, hold=hold)
+        client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+        try:
+            started = time.monotonic()
+            client.sessions.end(_SESSION_ID, eval_flush_timeout=0)
+            elapsed = time.monotonic() - started
+            assert order == [("end", _SESSION_ID)]
+        finally:
+            hold.set()
+        assert client.evals.flush(timeout=5) is True
+        assert elapsed < 0.15
+
+    @respx.mock
+    @pytest.mark.parametrize("bad", [-1, float("nan"), float("inf"), "5", True])
+    def test_invalid_timeout_is_refused_before_any_request(self, client, bad):
+        update = respx.put(_UPDATESESSION).mock(return_value=httpx.Response(200, json={}))
+        with pytest.raises(ValueError):
+            client.sessions.end(_SESSION_ID, eval_flush_timeout=bad)
+        assert not update.called
+
+    @respx.mock
+    def test_close_waits_once_not_once_more_per_session(self):
+        c = _make_client(eval_flush_timeout=0.2)
+        order = []
+        hold = threading.Event()
+        _routes(order, hold=hold)
+        try:
+            c.sessions.create(session_name="case", session_id=_SESSION_ID)
+            c.evals.emit(True, name="task_passed")
+            started = time.monotonic()
+            c.close()
+            elapsed = time.monotonic() - started
+        finally:
+            hold.set()
+            current_session_id.set(None)
+        assert c.evals.flush(timeout=5) is True
+        # close() waits its 0.2 s for every session's evals, then ends each
+        # session without a second wait; the held eval lands after the end.
+        assert 0.15 <= elapsed < 0.35
+        assert order == [("end", _SESSION_ID), ("eval", _SESSION_ID)]
+
+
+class TestFlushOneSession:
+    @respx.mock
+    def test_waits_only_for_that_sessions_posts(self, client):
+        order = []
+        hold = threading.Event()
+        _routes(order, hold=hold)
+        client.evals.emit(True, name="task_passed", session_id=_SESSION_ID)
+        try:
+            assert client.evals.flush(timeout=0.1, session_id=_OTHER_SESSION_ID) is True
+            assert client.evals.flush(timeout=0.1, session_id=_SESSION_ID) is False
+        finally:
+            hold.set()
+        assert client.evals.flush(timeout=5, session_id=_SESSION_ID) is True

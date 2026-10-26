@@ -512,15 +512,21 @@ class LucidicAI:
 
     # ==================== Lifecycle ====================
 
-    def _flush_evals(self, timeout: Optional[float] = None) -> None:
+    def _flush_evals(
+        self, timeout: Optional[float] = None, session_id: Optional[str] = None
+    ) -> None:
         """Wait (bounded) for in-flight evals.emit() posts; never raises.
 
-        ``timeout`` defaults to the client's ``eval_flush_timeout``.
+        ``timeout`` defaults to the client's ``eval_flush_timeout``. With a
+        ``session_id``, only that session's posts are waited for.
         """
         try:
-            self.evals.flush(self._eval_flush_timeout if timeout is None else timeout)
+            self.evals.flush(
+                self._eval_flush_timeout if timeout is None else timeout,
+                session_id=session_id,
+            )
         except Exception as e:
-            logger.debug(f"[LucidicAI] Error flushing evals on close: {e}")
+            logger.debug(f"[LucidicAI] Error flushing evals: {e}")
 
     def close(self, eval_flush_timeout: Optional[float] = None) -> None:
         """Close the client and clean up resources.
@@ -541,10 +547,11 @@ class LucidicAI:
             session_ids = list(self._sessions.keys())
 
         # End sessions WITHOUT holding lock (HTTP calls can be slow)
-        # end() will acquire lock and pop each session from _sessions
+        # end() will acquire lock and pop each session from _sessions;
+        # the flush above already waited for every session's evals
         for session_id in session_ids:
             try:
-                self.sessions.end(session_id)
+                self.sessions.end(session_id, eval_flush_timeout=0)
             except Exception as e:
                 logger.debug(f"[LucidicAI] Error ending session on close: {e}")
 
@@ -593,10 +600,11 @@ class LucidicAI:
             session_ids = list(self._sessions.keys())
 
         # End sessions WITHOUT holding lock (HTTP calls can be slow)
-        # aend() will acquire lock and pop each session from _sessions
+        # aend() will acquire lock and pop each session from _sessions;
+        # the flush above already waited for every session's evals
         for session_id in session_ids:
             try:
-                await self.sessions.aend(session_id)
+                await self.sessions.aend(session_id, eval_flush_timeout=0)
             except Exception as e:
                 logger.debug(f"[LucidicAI] Error ending session on close: {e}")
 

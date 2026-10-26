@@ -1,4 +1,5 @@
 """Session resource API operations."""
+import asyncio
 import logging
 import threading
 import uuid
@@ -9,6 +10,7 @@ from ..client import HttpClient
 from ..models import session as session_models
 from ..models.base import CursorPage
 from ..pagination import apaginate, paginate
+from .evals import validate_flush_timeout
 from ...core.errors import require_agent_id
 
 if TYPE_CHECKING:
@@ -296,16 +298,29 @@ class SessionResource:
         logger.debug(f"[SessionResource] Created async session {real_session_id[:8]}...")
         return session
 
-    def end(self, session_id: Optional[str] = None) -> None:
+    def end(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        eval_flush_timeout: Optional[float] = None,
+    ) -> None:
         """End a session.
 
         To report the session's result, emit it before ending:
-        ``client.evals.emit(result, name=..., description=...)``.
+        ``client.evals.emit(result, name=..., description=...)``. end() first
+        waits for this session's pending emits, so the backend has the result
+        when the session finishes. Other sessions' emits are not waited for.
 
         Args:
             session_id: Session ID to end. If None, attempts to use current context session.
+            eval_flush_timeout: Upper bound in seconds for that wait. Defaults to
+                the client's ``eval_flush_timeout`` (5.0); 0 skips the wait. On
+                timeout a warning is logged and the session ends anyway.
         """
         from ...sdk.shutdown_manager import ShutdownManager
+
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
 
         if not self._client.is_valid:
             return
@@ -318,6 +333,10 @@ class SessionResource:
         if not session_id:
             logger.debug("[SessionResource] No session to end")
             return
+
+        # deliver this session's pending evals.emit() posts before it finishes
+        if eval_flush_timeout != 0:
+            self._client._flush_evals(eval_flush_timeout, session_id=session_id)
 
         try:
             self.end_session(session_id=session_id)
@@ -337,12 +356,20 @@ class SessionResource:
 
         logger.debug(f"[SessionResource] Ended session {session_id[:8]}...")
 
-    async def aend(self, session_id: Optional[str] = None) -> None:
+    async def aend(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        eval_flush_timeout: Optional[float] = None,
+    ) -> None:
         """End a session (async version).
 
         See end() for full documentation.
         """
         from ...sdk.shutdown_manager import ShutdownManager
+
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
 
         if not self._client.is_valid:
             return
@@ -354,6 +381,16 @@ class SessionResource:
         if not session_id:
             logger.debug("[SessionResource] No session to end")
             return
+
+        # deliver this session's pending evals.emit() posts before it finishes;
+        # flush() blocks on thread joins, so keep it off the event loop
+        if eval_flush_timeout != 0:
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    None, self._client._flush_evals, eval_flush_timeout, session_id
+                )
+            except Exception as e:
+                logger.warning(f"[SessionResource] Eval flush skipped on end: {e}")
 
         try:
             await self.aend_session(session_id=session_id)

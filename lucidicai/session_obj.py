@@ -134,11 +134,17 @@ class Session:
         else:
             logger.debug(f"[Session] aupdate() called with no updates for session {self._session_id[:8]}...")
 
-    def end(self) -> None:
+    def end(self, *, eval_flush_timeout: Optional[float] = None) -> None:
         """End the session.
 
         To report the session's result, emit it before ending:
-        ``client.evals.emit(result, name=..., description=...)``.
+        ``client.evals.emit(result, name=..., description=...)``. end() first
+        waits for this session's pending emits; leaving the ``with`` block does
+        the same.
+
+        Args:
+            eval_flush_timeout: Upper bound in seconds for that wait. Defaults to
+                the client's ``eval_flush_timeout``; 0 skips the wait.
         """
         if self._ended:
             return
@@ -146,10 +152,12 @@ class Session:
         # Unbind context before ending
         self._unbind_context()
 
-        self._client.sessions.end(session_id=self._session_id)
+        self._client.sessions.end(
+            session_id=self._session_id, eval_flush_timeout=eval_flush_timeout
+        )
         self._ended = True
 
-    async def aend(self) -> None:
+    async def aend(self, *, eval_flush_timeout: Optional[float] = None) -> None:
         """End the session (async version). See end()."""
         if self._ended:
             return
@@ -157,7 +165,9 @@ class Session:
         # Unbind context before ending
         self._unbind_context()
 
-        await self._client.sessions.aend(session_id=self._session_id)
+        await self._client.sessions.aend(
+            session_id=self._session_id, eval_flush_timeout=eval_flush_timeout
+        )
         self._ended = True
 
     def _bind_context(self) -> None:
