@@ -31,7 +31,9 @@ class DatasetSchema(APIModel):
 class DatasetItem(APIModel):
     """One test case in a dataset — an ``input`` (matching the dataset's schema)
     and its ``expected_output``, plus tags/metadata. Returned by
-    ``client.datasets.items(dataset_id)``."""
+    ``client.datasets.items(dataset_id)``. ``case_evaluator_id`` is the evaluator
+    the case points at (set with ``client.datasets.set_case_evaluator``), or
+    ``None``."""
 
     datasetitem_id: str
     name: Optional[str] = None
@@ -42,6 +44,22 @@ class DatasetItem(APIModel):
     metadata: Optional[Dict[str, Any]] = None
     flag_overrides: Optional[Any] = None
     created_at: Optional[str] = None
+    case_evaluator_id: Optional[str] = None
+
+
+@dataclass
+class CaseEvaluatorUpdate(APIModel):
+    """The result of pointing cases at a case evaluator, or unlinking them
+    (``client.datasets.set_case_evaluator`` / ``remove_case_evaluator``).
+    ``evaluator_id`` is the evaluator the cases now point at (``None`` after an
+    unlink); ``created`` is True when a spec made a new evaluator rather than reusing
+    one; ``item_count`` counts the distinct ids sent and ``changed`` the cases whose
+    link actually moved, so a repeated call reads ``changed == 0``."""
+
+    evaluator_id: Optional[str] = None
+    created: bool = False
+    item_count: int = 0
+    changed: int = 0
 
 
 @dataclass

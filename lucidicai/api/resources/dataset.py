@@ -4,9 +4,18 @@ from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Sequence,
 
 from ..client import HttpClient
 from ..models.base import CursorPage
-from ..models.dataset import DatasetGenerationRun, DatasetItem, DatasetSchema, EvalRun, Fixture
+from ..models.dataset import (
+    CaseEvaluatorUpdate,
+    DatasetGenerationRun,
+    DatasetItem,
+    DatasetSchema,
+    EvalRun,
+    Fixture,
+)
+from ..models.evaluator import Evaluator
 from ..pagination import apaginate, paginate
 from ..polling import await_for, wait_for
+from ...core.errors import InvalidOperationError
 
 logger = logging.getLogger("Lucidic")
 
@@ -18,6 +27,40 @@ _GENERATE = "sdk/v2/datasets/generate"
 def _id_list(ids: Union[str, Sequence[str]]) -> List[str]:
     """One id or many, as a list: a bare ``str`` is one id, not its characters."""
     return [ids] if isinstance(ids, str) else list(ids)
+
+
+def _evaluator_choice(
+    operation: str, evaluator_id: Optional[str], name: Optional[str],
+    criteria: Optional[List[Dict[str, Any]]], result_type: Optional[str],
+    description: Optional[str], pass_threshold: Optional[float],
+) -> Dict[str, Any]:
+    """The body key naming the evaluator: ``{"evaluator_id": ...}`` for an existing
+    one, or ``{"evaluator": spec}`` to create or reuse one by name. Exactly one mode,
+    and a spec needs ``name`` + ``criteria`` + ``result_type`` — checked here, so a
+    mixed or partial call fails before any request."""
+    spec_args = {"name": name, "criteria": criteria, "result_type": result_type,
+                 "description": description, "pass_threshold": pass_threshold}
+    given = [key for key, value in spec_args.items() if value is not None]
+    if evaluator_id is not None:
+        if given:
+            raise InvalidOperationError(
+                f"{operation}: pass evaluator_id or an evaluator spec, not both "
+                f"(got evaluator_id and {', '.join(given)})."
+            )
+        return {"evaluator_id": evaluator_id}
+    if not given:
+        raise InvalidOperationError(
+            f"{operation}: pass evaluator_id, or name + criteria + result_type to create "
+            "or reuse an evaluator."
+        )
+    missing = [key for key in ("name", "criteria", "result_type") if spec_args[key] is None]
+    if missing:
+        raise InvalidOperationError(
+            f"{operation}: an evaluator spec needs name, criteria and result_type "
+            f"(missing {', '.join(missing)})."
+        )
+    # omit-None: description and pass_threshold are optional in the spec.
+    return {"evaluator": {key: value for key, value in spec_args.items() if value is not None}}
 
 
 class DatasetResource:
@@ -351,6 +394,119 @@ class DatasetResource:
         if page_size is not None:
             params["page_size"] = page_size
         return params
+
+    # ==================== case evaluators (LUC-1195) ====================
+    #
+    # A case evaluator is the evaluator a case points at: it grades that case first
+    # in the grading order, and many cases can share one. Writes go through the
+    # many-cases PUT for one id or a list, so they always return a
+    # CaseEvaluatorUpdate; case_evaluator reads one case's through the one-case GET.
+    # Data-bearing → no swallow. PUT is idempotent (and retried on 429/503).
+
+    def set_case_evaluator(
+        self, dataset_id: str, item_ids: Union[str, Sequence[str]], *,
+        evaluator_id: Optional[str] = None, name: Optional[str] = None,
+        criteria: Optional[List[Dict[str, Any]]] = None, result_type: Optional[str] = None,
+        description: Optional[str] = None, pass_threshold: Optional[float] = None,
+    ) -> CaseEvaluatorUpdate:
+        """Point one case or many (``item_ids``: one id or a list, at most 1000) at the
+        evaluator that grades them (PUT /sdk/v2/datasets/{id}/case-evaluator; needs
+        ``evaluator:write``). Name an existing evaluator with ``evaluator_id``, **or**
+        describe an LLM rubric evaluator with ``name`` + ``criteria`` + ``result_type``
+        (+ ``description``, ``pass_threshold``), shaped as for
+        ``client.evaluators.create``: it is reused when the agent has one by that name
+        with the same rubric and pass mark, else created. A ``"number"`` spec needs a
+        ``pass_threshold`` (the score passes at or above it); a ``"boolean"`` one takes
+        none. Passing both modes, neither, or a spec without its three required keys
+        raises ``InvalidOperationError`` before any request.
+
+        Returns a ``CaseEvaluatorUpdate`` (``evaluator_id``, ``created``,
+        ``item_count``, ``changed``). Idempotent: a repeat reads ``changed == 0``; a
+        retried call whose first try created the evaluator reads ``created=False``.
+
+        Raises ``ValidationError`` (an id not in the Dataset; the World entry item; an
+        evaluator that can't grade cases — another agent's, not LLM/CODE, a string
+        result, a number without a pass mark, the agent's pass/fail metric, a World's
+        grader; a malformed spec), ``NotFoundError`` (Dataset not visible to the key,
+        or an unknown ``evaluator_id``) or ``ConflictError`` (the agent has an
+        evaluator by that name with another rubric — edit it with
+        ``client.evaluators.update`` or pass its ``evaluator_id``)."""
+        return CaseEvaluatorUpdate.from_dict(self.http.put(
+            self._case_evaluators_path(dataset_id),
+            self._case_evaluator_body(
+                "datasets.set_case_evaluator", item_ids, evaluator_id, name, criteria,
+                result_type, description, pass_threshold),
+        ))
+
+    async def aset_case_evaluator(
+        self, dataset_id: str, item_ids: Union[str, Sequence[str]], *,
+        evaluator_id: Optional[str] = None, name: Optional[str] = None,
+        criteria: Optional[List[Dict[str, Any]]] = None, result_type: Optional[str] = None,
+        description: Optional[str] = None, pass_threshold: Optional[float] = None,
+    ) -> CaseEvaluatorUpdate:
+        """Async sibling of ``set_case_evaluator``."""
+        return CaseEvaluatorUpdate.from_dict(await self.http.aput(
+            self._case_evaluators_path(dataset_id),
+            self._case_evaluator_body(
+                "datasets.set_case_evaluator", item_ids, evaluator_id, name, criteria,
+                result_type, description, pass_threshold),
+        ))
+
+    def case_evaluator(self, dataset_id: str, item_id: str) -> Evaluator:
+        """Read the evaluator one case points at (GET
+        /sdk/v2/datasets/{id}/items/{item_id}/case-evaluator; needs
+        ``evaluator:read``), in detail shape with ``datasetitem_id`` set. A case with
+        no case evaluator raises ``NotFoundError``, as do an unknown Dataset or item;
+        to check without an exception, read ``case_evaluator_id`` on ``items()``. A
+        link to another agent's evaluator reads as none, since grading ignores it."""
+        return Evaluator.from_dict(self.http.get(self._case_evaluator_path(dataset_id, item_id)))
+
+    async def acase_evaluator(self, dataset_id: str, item_id: str) -> Evaluator:
+        """Async sibling of ``case_evaluator``."""
+        return Evaluator.from_dict(await self.http.aget(self._case_evaluator_path(dataset_id, item_id)))
+
+    def remove_case_evaluator(
+        self, dataset_id: str, item_ids: Union[str, Sequence[str]]
+    ) -> CaseEvaluatorUpdate:
+        """Unlink one case or many from their case evaluator (PUT
+        /sdk/v2/datasets/{id}/case-evaluator with ``evaluator_id: null``; needs
+        ``evaluator:write``). The evaluator itself is kept — delete it with
+        ``client.evaluators.delete``. Idempotent: ``changed`` counts only the cases
+        that had one. An id not in the Dataset → ``ValidationError``; Dataset not
+        visible to the key → ``NotFoundError``."""
+        return CaseEvaluatorUpdate.from_dict(self.http.put(
+            self._case_evaluators_path(dataset_id),
+            {"item_ids": _id_list(item_ids), "evaluator_id": None},
+        ))
+
+    async def aremove_case_evaluator(
+        self, dataset_id: str, item_ids: Union[str, Sequence[str]]
+    ) -> CaseEvaluatorUpdate:
+        """Async sibling of ``remove_case_evaluator``."""
+        return CaseEvaluatorUpdate.from_dict(await self.http.aput(
+            self._case_evaluators_path(dataset_id),
+            {"item_ids": _id_list(item_ids), "evaluator_id": None},
+        ))
+
+    @staticmethod
+    def _case_evaluators_path(dataset_id: str) -> str:
+        return f"sdk/v2/datasets/{dataset_id}/case-evaluator"
+
+    @staticmethod
+    def _case_evaluator_path(dataset_id: str, item_id: str) -> str:
+        return f"sdk/v2/datasets/{dataset_id}/items/{item_id}/case-evaluator"
+
+    @staticmethod
+    def _case_evaluator_body(
+        operation: str, item_ids: Union[str, Sequence[str]], evaluator_id: Optional[str],
+        name: Optional[str], criteria: Optional[List[Dict[str, Any]]],
+        result_type: Optional[str], description: Optional[str], pass_threshold: Optional[float],
+    ) -> Dict[str, Any]:
+        # check the evaluator choice before touching item_ids, so a bad call never
+        # consumes a caller's generator.
+        choice = _evaluator_choice(
+            operation, evaluator_id, name, criteria, result_type, description, pass_threshold)
+        return {"item_ids": _id_list(item_ids), **choice}
 
     # ==================== Dataset Methods ====================
 

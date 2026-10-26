@@ -1,5 +1,5 @@
 """LUC-918 — client.datasets v2: items + schemas (CRUD) + fixtures.create.
-LUC-921 generation; LUC-1195 eval runs (start_run / runs)."""
+LUC-921 generation; LUC-1195 eval runs (start_run / runs) and case evaluators."""
 import json
 
 import httpx
@@ -7,12 +7,14 @@ import pytest
 import respx
 
 from lucidicai.api.models.dataset import (
+    CaseEvaluatorUpdate,
     DatasetGenerationRun,
     DatasetItem,
     DatasetSchema,
     EvalRun,
     Fixture,
 )
+from lucidicai.api.models.evaluator import Evaluator
 from lucidicai.api.resources.dataset import (
     DatasetResource,
     DatasetFixturesResource,
@@ -21,6 +23,7 @@ from lucidicai.api.resources.dataset import (
 from lucidicai.core.errors import (
     ConflictError,
     InsufficientScopeError,
+    InvalidOperationError,
     NotFoundError,
     RateLimitError,
     ServiceUnavailableError,
@@ -648,3 +651,218 @@ class TestEvalRunsAsync:
         page = await datasets.aruns_page(_DS, status="complete")
         assert isinstance(page.results[0], EvalRun) and page.has_next is False
         assert dict(route.calls.last.request.url.params) == {"status": "complete"}
+
+
+# ==================== LUC-1195 case evaluators (over LUC-1190) ====================
+
+_CASES_URL = f"{_BASE}/sdk/v2/datasets/{_DS}/case-evaluator"
+_EV = "22222222-2222-2222-2222-222222222222"
+_BOOL_CRIT = [{"name": "cites the clause", "pass_definition": "names the clause number",
+               "fail_definition": "does not name it"}]
+_NUM_CRIT = [{"name": "accuracy", "score_definitions": [{"score": 0, "definition": "wrong"},
+                                                         {"score": 1, "definition": "right"}]}]
+
+
+def _case_url(item_id):
+    return f"{_BASE}/sdk/v2/datasets/{_DS}/items/{item_id}/case-evaluator"
+
+
+def _update(**over):
+    # DatasetCaseEvaluator.put (dataset_views.py, LUC-1190)
+    d = {"evaluator_id": _EV, "created": False, "item_count": 1, "changed": 1}
+    d.update(over)
+    return d
+
+
+def _case_ev(**over):
+    # _case_evaluator_body: EvaluatorDetailSerializer + datasetitem_id
+    d = {"evaluator_id": _EV, "name": "cites-clause", "description": "", "icon": "compass",
+         "type": "LLM", "result_type": "boolean", "is_default": False, "is_primary": False,
+         "created_at": "2026-10-25T00:00:00Z", "updated_at": "2026-10-25T00:00:00Z",
+         "criteria": _BOOL_CRIT, "rubric_json": {"criteria": _BOOL_CRIT}, "datasetitem_id": "i1"}
+    d.update(over)
+    return d
+
+
+def _put_body(route):
+    body = json.loads(route.calls.last.request.read())
+    body.pop("current_time")  # the transport stamps every PUT
+    return body
+
+
+class TestCaseEvaluatorModels:
+    def test_item_carries_case_evaluator_id(self):
+        assert DatasetItem.from_dict(_item(1, case_evaluator_id=_EV)).case_evaluator_id == _EV
+        assert DatasetItem.from_dict(_item(1)).case_evaluator_id is None
+
+    def test_evaluator_datasetitem_id_only_on_case_reads(self):
+        assert Evaluator.from_dict(_case_ev()).datasetitem_id == "i1"
+        plain = _case_ev()
+        plain.pop("datasetitem_id")
+        assert Evaluator.from_dict(plain).datasetitem_id is None
+
+    def test_update_parses_a_clear(self):
+        u = CaseEvaluatorUpdate.from_dict(_update(evaluator_id=None, item_count=3, changed=2))
+        assert u.evaluator_id is None and u.created is False and (u.item_count, u.changed) == (3, 2)
+
+
+class TestSetCaseEvaluator:
+    @respx.mock
+    def test_by_id_for_one_case(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(200, json=_update()))
+        u = datasets.set_case_evaluator(_DS, "i1", evaluator_id=_EV)
+        assert isinstance(u, CaseEvaluatorUpdate) and u.evaluator_id == _EV and u.changed == 1
+        assert _put_body(route) == {"item_ids": ["i1"], "evaluator_id": _EV}
+
+    @respx.mock
+    def test_by_id_for_many_cases(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(
+            200, json=_update(item_count=3, changed=3)))
+        u = datasets.set_case_evaluator(_DS, ("i1", "i2", "i3"), evaluator_id=_EV)
+        assert u.item_count == 3
+        assert _put_body(route)["item_ids"] == ["i1", "i2", "i3"]
+
+    @respx.mock
+    def test_boolean_spec_is_omit_none(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(201, json=_update(created=True)))
+        u = datasets.set_case_evaluator(_DS, ["i1"], name="cites-clause", criteria=_BOOL_CRIT,
+                                        result_type="boolean")
+        assert u.created is True
+        assert _put_body(route) == {"item_ids": ["i1"], "evaluator": {
+            "name": "cites-clause", "criteria": _BOOL_CRIT, "result_type": "boolean"}}
+
+    @respx.mock
+    def test_number_spec_with_pass_mark(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(201, json=_update(created=True)))
+        datasets.set_case_evaluator(_DS, ["i1", "i2"], name="accuracy", criteria=_NUM_CRIT,
+                                    result_type="number", description="d", pass_threshold=0.7)
+        assert _put_body(route)["evaluator"] == {
+            "name": "accuracy", "criteria": _NUM_CRIT, "result_type": "number",
+            "description": "d", "pass_threshold": 0.7}
+
+    @respx.mock
+    @pytest.mark.parametrize("kwargs,match", [
+        ({"evaluator_id": _EV, "name": "x"}, "not both"),
+        ({"evaluator_id": _EV, "pass_threshold": 0.5}, "not both"),
+        ({}, "pass evaluator_id, or name"),
+        ({"name": "x", "criteria": _BOOL_CRIT}, "missing result_type"),
+        ({"pass_threshold": 0.5}, "missing name, criteria, result_type"),
+    ])
+    def test_bad_mode_raises_before_any_request(self, datasets, kwargs, match):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(200, json=_update()))
+        ids = (i for i in ["i1", "i2"])
+        with pytest.raises(InvalidOperationError, match=match):
+            datasets.set_case_evaluator(_DS, ids, **kwargs)
+        assert not route.called
+        assert list(ids) == ["i1", "i2"]  # the caller's generator is untouched
+
+    @respx.mock
+    def test_ids_not_in_the_dataset_400(self, datasets):
+        respx.put(_CASES_URL).mock(return_value=httpx.Response(
+            400, json={"error": "Not cases of this Dataset: i9"}))
+        with pytest.raises(ValidationError, match="Not cases of this Dataset"):
+            datasets.set_case_evaluator(_DS, "i9", evaluator_id=_EV)
+
+    @respx.mock
+    def test_malformed_spec_400_with_details(self, datasets):
+        details = {"evaluator": {"pass_threshold": ["a finite number is required for a number evaluator."]}}
+        respx.put(_CASES_URL).mock(return_value=httpx.Response(
+            400, json={"error": "Validation failed", "details": details}))
+        with pytest.raises(ValidationError) as exc:
+            datasets.set_case_evaluator(_DS, "i1", name="accuracy", criteria=_NUM_CRIT,
+                                        result_type="number")
+        assert exc.value.details == details
+
+    @respx.mock
+    def test_unknown_evaluator_404(self, datasets):
+        respx.put(_CASES_URL).mock(return_value=httpx.Response(
+            404, json={"error": "Specified Evaluator not found"}))
+        with pytest.raises(NotFoundError):
+            datasets.set_case_evaluator(_DS, "i1", evaluator_id="missing")
+
+    @respx.mock
+    def test_name_clash_409(self, datasets):
+        respx.put(_CASES_URL).mock(return_value=httpx.Response(409, json={
+            "error": "An evaluator named 'cites-clause' already exists for this agent with a different rubric"}))
+        with pytest.raises(ConflictError, match="different rubric"):
+            datasets.set_case_evaluator(_DS, "i1", name="cites-clause", criteria=_BOOL_CRIT,
+                                        result_type="boolean")
+
+    @respx.mock
+    def test_put_is_retried_and_a_retry_reads_reused(self, datasets):
+        # the PUT is idempotent: the retry reuses the evaluator the first try made
+        route = respx.put(_CASES_URL).mock(side_effect=[
+            httpx.Response(503, json={"error": "unavailable"}),
+            httpx.Response(200, json=_update(created=False, changed=0)),
+        ])
+        u = datasets.set_case_evaluator(_DS, "i1", name="cites-clause", criteria=_BOOL_CRIT,
+                                        result_type="boolean")
+        assert route.call_count == 2 and u.created is False
+
+
+class TestCaseEvaluatorRead:
+    @respx.mock
+    def test_get_one_case(self, datasets):
+        respx.get(_case_url("i1")).mock(return_value=httpx.Response(200, json=_case_ev()))
+        ev = datasets.case_evaluator(_DS, "i1")
+        assert isinstance(ev, Evaluator) and ev.evaluator_id == _EV and ev.datasetitem_id == "i1"
+        assert ev.criteria == _BOOL_CRIT and ev.rubric_json == {"criteria": _BOOL_CRIT}
+
+    @respx.mock
+    def test_none_set_404(self, datasets):
+        respx.get(_case_url("i2")).mock(return_value=httpx.Response(
+            404, json={"error": "Specified case evaluator not found"}))
+        with pytest.raises(NotFoundError):
+            datasets.case_evaluator(_DS, "i2")
+
+
+class TestRemoveCaseEvaluator:
+    @respx.mock
+    @pytest.mark.parametrize("given,sent", [("i1", ["i1"]), (["i1", "i2"], ["i1", "i2"])])
+    def test_sends_a_null_evaluator_id(self, datasets, given, sent):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(
+            200, json=_update(evaluator_id=None, item_count=len(sent), changed=1)))
+        u = datasets.remove_case_evaluator(_DS, given)
+        assert u.evaluator_id is None and u.changed == 1
+        assert _put_body(route) == {"item_ids": sent, "evaluator_id": None}
+
+    @respx.mock
+    def test_unknown_dataset_404(self, datasets):
+        respx.put(f"{_BASE}/sdk/v2/datasets/missing/case-evaluator").mock(
+            return_value=httpx.Response(404, json={"error": "Specified Dataset not found"}))
+        with pytest.raises(NotFoundError):
+            datasets.remove_case_evaluator("missing", "i1")
+
+
+class TestCaseEvaluatorsAsync:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aset_case_evaluator(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(201, json=_update(created=True)))
+        u = await datasets.aset_case_evaluator(_DS, "i1", name="cites-clause", criteria=_BOOL_CRIT,
+                                               result_type="boolean")
+        assert u.created is True
+        assert _put_body(route)["evaluator"]["name"] == "cites-clause"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aset_case_evaluator_checks_the_mode(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(200, json=_update()))
+        with pytest.raises(InvalidOperationError):
+            await datasets.aset_case_evaluator(_DS, "i1")
+        assert not route.called
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_acase_evaluator(self, datasets):
+        respx.get(_case_url("i1")).mock(return_value=httpx.Response(200, json=_case_ev()))
+        ev = await datasets.acase_evaluator(_DS, "i1")
+        assert ev.datasetitem_id == "i1"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_aremove_case_evaluator(self, datasets):
+        route = respx.put(_CASES_URL).mock(return_value=httpx.Response(
+            200, json=_update(evaluator_id=None, changed=0)))
+        u = await datasets.aremove_case_evaluator(_DS, "i1")
+        assert u.changed == 0 and _put_body(route) == {"item_ids": ["i1"], "evaluator_id": None}

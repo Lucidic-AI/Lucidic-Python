@@ -15,6 +15,8 @@ class Evaluator(APIModel):
     """An evaluator (LLM / CODE / HUMAN / RUNTIME) — the definition of a scoring
     criterion. ``list()`` returns the light shape; ``get()`` additionally
     populates ``rubric_json`` + ``config`` (default ``None`` in a list result).
+    ``datasetitem_id`` is set only when read as a case's evaluator
+    (``client.datasets.case_evaluator``): the case it was read through.
     """
 
     evaluator_id: str
@@ -32,3 +34,6 @@ class Evaluator(APIModel):
     # detail-only (get)
     rubric_json: Optional[Any] = None
     config: Optional[Dict[str, Any]] = None
+
+    # case-evaluator reads only (datasets.case_evaluator)
+    datasetitem_id: Optional[str] = None
