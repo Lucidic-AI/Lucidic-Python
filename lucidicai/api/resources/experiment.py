@@ -34,9 +34,9 @@ class ExperimentResource:
         self._agent_id = agent_id
         self._production = production
         # Sub-namespaces (stateless — experiment id passed per call, one instance each).
-        # client.experiments.evaluators — attach/detach/list evaluators (LUC-915).
+        # client.experiments.evaluators — attach/detach/list evaluators.
         self._evaluators = ExperimentEvaluatorsResource(http)
-        # client.experiments.taxonomy — trace-taxonomy generation (LUC-922).
+        # client.experiments.taxonomy — trace-taxonomy generation.
         self._taxonomy = ExperimentTaxonomyResource(http)
 
     @property
@@ -80,7 +80,7 @@ class ExperimentResource:
         if LLM_numeric_evaluators:
             evaluator_names.extend(LLM_numeric_evaluators)
 
-        # LUC-926: an experiment must belong to an agent — raise before the
+        # An experiment must belong to an agent — raise before the
         # swallow rather than POST a null agent_id.
         require_agent_id(self._agent_id, "experiments.create")
         try:
@@ -119,7 +119,7 @@ class ExperimentResource:
         if LLM_numeric_evaluators:
             evaluator_names.extend(LLM_numeric_evaluators)
 
-        # LUC-926: same guard as create() — raise before the swallow.
+        # Same guard as create() — raise before the swallow.
         require_agent_id(self._agent_id, "experiments.create")
         try:
             response = await self.http.apost(
@@ -139,7 +139,7 @@ class ExperimentResource:
                 return None
             raise
 
-    # ==================== v2 reads (LUC-908) ====================
+    # ==================== v2 reads ====================
     #
     # Data-bearing reads: they do NOT swallow in production (they surface the
     # typed transport error), unlike create/acreate above. ``agent_id`` defaults
@@ -149,7 +149,7 @@ class ExperimentResource:
         self, agent_id: Optional[str] = None, *,
         ordering: Optional[str] = None, page_size: Optional[int] = None,
     ) -> Iterator[Experiment]:
-        """Lazily iterate an agent's experiments, newest first (LUC-816).
+        """Lazily iterate an agent's experiments, newest first.
 
         ``ordering`` accepts ``created_at`` / ``id`` (± prefix). Lazy generator —
         errors surface on first iteration; use ``count()`` for a cheap total.
@@ -200,7 +200,7 @@ class ExperimentResource:
         """Async sibling of ``get``."""
         return Experiment.from_dict(await self.http.aget(f"sdk/v2/experiments/{experiment_id}"))
 
-    # ==================== v2 writes (LUC-915) ====================
+    # ==================== v2 writes ====================
     #
     # Data-bearing (destructive) write → no production swallow, unlike the gen-3
     # create/acreate above. Each has an async sibling.
@@ -222,7 +222,7 @@ class ExperimentResource:
             f"sdk/v2/experiments/{experiment_id}", data={"delete_sessions": delete_sessions}
         )
 
-    # ==================== failure modes (LUC-922) ====================
+    # ==================== failure modes ====================
     #
     # Async failure-mode analysis: generate_failure_modes triggers a Temporal run
     # (fire-and-forget — there is NO status endpoint), failure_groups reads the
@@ -284,7 +284,7 @@ class ExperimentResource:
 
 
 class ExperimentEvaluatorsResource:
-    """``client.experiments.evaluators`` — wire evaluators onto an experiment (LUC-915).
+    """``client.experiments.evaluators`` — wire evaluators onto an experiment.
 
     Attach / detach / list the evaluator definitions bound to an experiment. Attach
     is **config-only**: it links evaluators so FUTURE sessions in the experiment
@@ -371,7 +371,7 @@ class ExperimentEvaluatorsResource:
 
 
 class ExperimentTaxonomyResource:
-    """``client.experiments.taxonomy`` — trace-taxonomy generation (LUC-922).
+    """``client.experiments.taxonomy`` — trace-taxonomy generation.
 
     Trigger a taxonomy run over an experiment's finished sessions, read the latest
     completed taxonomy, and poll generation to completion. A taxonomy is the required

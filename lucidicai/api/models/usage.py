@@ -1,4 +1,4 @@
-"""Typed response model for client.usage (LUC-911).
+"""Typed response model for client.usage.
 
 The usage endpoint returns a *dynamic* ``{stat_name: total}`` map (stat names
 are backend-normalized: spaces -> ``_``, ``/`` removed, lowercased), so — unlike

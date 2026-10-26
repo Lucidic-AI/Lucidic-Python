@@ -104,7 +104,7 @@ class SessionResource:
                 )
             raise LucidicError("Client is not properly configured")
 
-        # LUC-926: a session must attach to an agent. Raise loudly (even in
+        # A session must attach to an agent. Raise loudly (even in
         # production) BEFORE the swallow below, rather than POST a null agent_id
         # and silently drop this session + all its events.
         require_agent_id(self._config.agent_id, "sessions.create")
@@ -172,7 +172,7 @@ class SessionResource:
             )
             shutdown_manager.register_session(real_session_id, state)
 
-        # LUC-608: when the user passes datasetitem_id they intend tool-backed
+        # When the user passes datasetitem_id they intend tool-backed
         # dispatch. Init per-session fixture state + bind MockContext so
         # subsequent @mockable calls in this session route through the backend.
         # ToolsResource._init_session NEVER raises — session creation must not
@@ -216,7 +216,7 @@ class SessionResource:
                 )
             raise LucidicError("Client is not properly configured")
 
-        # LUC-926: same guard as create() — raise before the swallow.
+        # Same guard as create() — raise before the swallow.
         require_agent_id(self._config.agent_id, "sessions.create")
 
         if auto_end is None:
@@ -274,7 +274,7 @@ class SessionResource:
             )
             shutdown_manager.register_session(real_session_id, state)
 
-        # LUC-608: see create() for full rationale. Async sibling.
+        # See create() for full rationale. Async sibling.
         if datasetitem_id and self._client._has_tools_resource():
             await self._client.tools._ainit_session(real_session_id)
 
@@ -416,14 +416,14 @@ class SessionResource:
         )
         return response
 
-    # ==================== v2 reads (LUC-907) ====================
+    # ==================== v2 reads ====================
     #
     # These reads are data-bearing, so — unlike the telemetry lifecycle methods
     # above — they do NOT swallow errors in production: a failure raises the
     # typed LucidicError the transport decoded. Each has an async sibling.
 
     def get(self, session_id: str) -> "session_models.SessionTrace":
-        """Read a session's detail + trace (LUC-817).
+        """Read a session's detail + trace.
 
         Accepts the session UUID or the client-supplied ``custom_session_id``.
         Returns a ``SessionTrace`` (session meta + flat ``occurred_at``-ordered
@@ -594,7 +594,7 @@ class SessionResource:
         ordering: Optional[str] = None,
         page_size: Optional[int] = None,
     ) -> Iterator["session_models.Session"]:
-        """Lazily iterate an agent's sessions, following pages (LUC-816).
+        """Lazily iterate an agent's sessions, following pages.
 
         Filters (all optional): ``experiment_id``; ``production`` (bool);
         ``cost`` / ``duration`` / ``num_events`` as ``"min:max"`` range strings

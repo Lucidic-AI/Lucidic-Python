@@ -1,4 +1,4 @@
-"""Cursor-pagination iteration for the SDK read surface (LUC-902).
+"""Cursor-pagination iteration for the SDK read surface.
 
 v2 list endpoints return ``{"results": [...], "next": <url|null>,
 "previous": <url|null>}`` with ``?page_size`` (default 50, max 200),

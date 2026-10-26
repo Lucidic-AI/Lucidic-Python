@@ -1,6 +1,6 @@
-"""Anthropic tool-blocks adapter (LUC-580).
+"""Anthropic tool-blocks adapter.
 
-Near-clone of the OpenAI adapter (LUC-579) with two structural
+Near-clone of the OpenAI adapter with two structural
 differences:
 
 1. **Flat tool spec**: Anthropic's ``tools=`` entries are
@@ -13,7 +13,7 @@ differences:
    .function.arguments`` which is a JSON-encoded string). No
    ``json.loads`` needed.
 
-Two surfaces, matching LUC-579 conventions:
+Two surfaces, matching the OpenAI adapter's conventions:
 
 - ``register_anthropic_tools(tools)`` — walks ``tools=`` from
   ``messages.create``, registers each into the active client's
@@ -23,7 +23,7 @@ Two surfaces, matching LUC-579 conventions:
   — user-side dispatch. With a mock context: route through transport.
   Without: invoke ``impls[name]`` directly.
 
-Source hash strategy is identical to LUC-579: sha256 over canonical
+Source hash strategy is identical to the OpenAI adapter's: sha256 over canonical
 JSON of the spec. Same documented limitation that impl-level drift
 (user's Python impl changing) is invisible to spec-level drift
 detection.
@@ -83,7 +83,7 @@ def register_anthropic_tools(
 
     Walks the ``tools=`` argument typically passed to
     ``anthropic.Anthropic().messages.create``. Each entry becomes a
-    ``ToolSurface`` registered via the shared registry (LUC-577a) —
+    ``ToolSurface`` registered via the shared registry —
     either directly into the given client's registry, or via the
     module-level buffer if no client exists yet.
 
@@ -119,7 +119,7 @@ def _surface_from_anthropic_tool(spec: Dict[str, Any]) -> ToolSurface:
     """Build a ``ToolSurface`` from one Anthropic tool spec.
 
     ``source_hash`` is the canonical JSON encoding of the spec —
-    matches the LUC-579 strategy. Drift detection responds to any
+    matches the OpenAI adapter's strategy. Drift detection responds to any
     spec change (name, description, input_schema). Impl-level drift
     in the user's Python is invisible (documented limitation).
     """
@@ -168,7 +168,7 @@ def dispatch_anthropic_tool_call(
     """Dispatch one Anthropic ``tool_use`` block.
 
     Two paths, decided by the ``MockContext`` bound to the current
-    execution context (LUC-608):
+    execution context:
 
     - **No mock context** (normal observability / no session):
       invoke ``impls[name](**input)`` directly. Missing impl raises

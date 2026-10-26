@@ -1,4 +1,4 @@
-"""client.evaluator_results — a single evaluator result by id (LUC-910).
+"""client.evaluator_results — a single evaluator result by id.
 
 A small namespace keyed by an ``EvaluatorResult`` id (distinct from an evaluator
 id), so ``evaluator_results.get(eval_id)`` can't be confused with the

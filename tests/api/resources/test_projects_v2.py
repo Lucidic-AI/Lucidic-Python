@@ -1,4 +1,4 @@
-"""LUC-913 — client.projects CRUD (list / create / get / update / delete)."""
+"""client.projects CRUD (list / create / get / update / delete)."""
 import json
 
 import httpx

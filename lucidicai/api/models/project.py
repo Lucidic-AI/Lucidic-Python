@@ -1,4 +1,4 @@
-"""Typed response model for client.projects (LUC-913)."""
+"""Typed response model for client.projects."""
 from dataclasses import dataclass
 from typing import Optional
 

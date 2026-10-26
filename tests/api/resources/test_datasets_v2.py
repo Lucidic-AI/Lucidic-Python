@@ -1,4 +1,4 @@
-"""LUC-918 — client.datasets v2: items + schemas (CRUD) + fixtures.create."""
+"""client.datasets v2: items + schemas (CRUD) + fixtures.create."""
 import json
 
 import httpx
@@ -267,7 +267,7 @@ class TestAsync:
         assert f.fixture_id == "f1"
 
 
-# ==================== LUC-921 generation ====================
+# ==================== generation ====================
 
 
 class TestGenerationModel:

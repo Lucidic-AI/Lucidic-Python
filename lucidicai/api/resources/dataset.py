@@ -86,12 +86,12 @@ class DatasetResource:
         self.http = http
         self._agent_id = agent_id
         self._production = production
-        # v2 sub-namespaces (LUC-918): client.datasets.schemas / .fixtures.
+        # v2 sub-namespaces: client.datasets.schemas / .fixtures.
         # Stateless (ids passed per call), so one instance each is reused.
         self._schemas = DatasetSchemasResource(http)
         self._fixtures = DatasetFixturesResource(http)
 
-    # ==================== v2 surface (LUC-918) ====================
+    # ==================== v2 surface ====================
     #
     # Data-bearing v2 reads/writes: they do NOT swallow in production (typed
     # transport errors propagate), unlike the gen-3 methods below. ``items`` is a
@@ -154,11 +154,11 @@ class DatasetResource:
             params["cursor"] = cursor
         return await self.http.aget(path, params or None)
 
-    # ==================== generation (LUC-921) ====================
+    # ==================== generation ====================
     #
     # The async dataset-generation pipeline: trigger → poll → (retry). Trigger and
     # retry kick off a Temporal workflow and return the run; status reads its
-    # progress; wait_for_generation blocks on the LUC-920 poll helper until the run
+    # progress; wait_for_generation blocks on the wait_for poll helper until the run
     # is terminal. Org-scoped by the key; agent-bound via the run's experiment.
 
     def generate(
@@ -1146,7 +1146,7 @@ class DatasetResource:
 
 
 class DatasetSchemasResource:
-    """``client.datasets.schemas`` — dataset schema CRUD (LUC-918).
+    """``client.datasets.schemas`` — dataset schema CRUD.
 
     A dataset schema is an org-scoped typed definition of a dataset item's ``input``
     shape (required for dataset generation). Org-scoped: a bound key reaches them
@@ -1296,7 +1296,7 @@ class DatasetSchemasResource:
 
 
 class DatasetFixturesResource:
-    """``client.datasets.fixtures`` — author base fixtures from JSON rows (LUC-918).
+    """``client.datasets.fixtures`` — author base fixtures from JSON rows.
 
     A fixture is the hydrated mock data (a DuckDB blob) for one ``(dataset,
     resource)`` pair. ``create`` builds one from explicit rows. Data-bearing — no

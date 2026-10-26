@@ -1,4 +1,4 @@
-"""LUC-902 — cursor-pagination lazy iterator."""
+"""Cursor-pagination lazy iterator."""
 from dataclasses import dataclass
 from typing import Optional
 

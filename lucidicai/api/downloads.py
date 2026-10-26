@@ -1,4 +1,4 @@
-"""Presigned-URL download fetch-through (LUC-904).
+"""Presigned-URL download fetch-through.
 
 Backend read paths — event raw blobs (``GET .../events/{id}?raw=true``) and
 training-module export downloads (``GET .../download-url``) — return

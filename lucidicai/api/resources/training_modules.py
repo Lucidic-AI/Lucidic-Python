@@ -7,7 +7,7 @@ Thin wrappers over the backend inference-time Training Modules endpoints:
 - GET /sdk/training-modules/inferences/{inference_run_id}
 
 Non-2xx responses raise a typed ``LucidicError`` from the central transport
-decoder (LUC-900) — e.g. ``NotFoundError``, ``ValidationError`` (with
+decoder — e.g. ``NotFoundError``, ``ValidationError`` (with
 ``.details``), or ``ServiceUnavailableError`` after the transport's 503 retry
 budget is exhausted. This module no longer hand-formats error strings.
 """
@@ -40,7 +40,7 @@ class TrainingModulesAPIResource:
         """Return module tools for a session's checkpoint or an explicit checkpoint.
 
         Each tool carries its ``edit_site`` (the prompt it's exposed at). Pass
-        ``prompt_name`` to scope to a single edit site server-side (LUC-801), and
+        ``prompt_name`` to scope to a single edit site server-side, and
         ``checkpoint_id`` to introspect a checkpoint without a live session.
         """
         return self.http.get(

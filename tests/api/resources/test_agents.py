@@ -1,4 +1,4 @@
-"""LUC-906 / LUC-912 — client.agents reads + writes.
+"""client.agents reads + writes.
 
 Uses the hermetic ``http`` fixture from tests/api/conftest.py (stub URL,
 retry sleeps irrelevant here). Backend mocked at the HTTP boundary via respx.

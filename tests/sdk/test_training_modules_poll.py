@@ -2,7 +2,7 @@
 
 These pin the observable behavior of ``_poll_to_tool_result`` /
 ``_apoll_to_tool_result`` (terminal mapping, SDK timeout, malformed-response and
-poll-error soft failures, poll progression) so the LUC-920 refactor onto the
+poll-error soft failures, poll progression) so the refactor onto the
 generic ``wait_for`` primitive provably changes no behavior.
 """
 from unittest.mock import MagicMock

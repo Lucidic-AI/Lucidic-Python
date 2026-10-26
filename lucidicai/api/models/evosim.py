@@ -1,4 +1,4 @@
-"""Typed response models for client.evosims run management (LUC-923)."""
+"""Typed response models for client.evosims run management."""
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 

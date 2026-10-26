@@ -1,4 +1,4 @@
-"""OpenAI function-calling adapter (LUC-579).
+"""OpenAI function-calling adapter.
 
 Two surfaces:
 
@@ -86,7 +86,7 @@ def register_openai_tools(
     Walks the ``tools=`` argument typically passed to
     ``openai.chat.completions.create``. Each ``{"type": "function",
     "function": {...}}`` entry becomes a ``ToolSurface`` registered via
-    the shared registry (LUC-577a) — either directly into the given
+    the shared registry — either directly into the given
     client's registry, or via the module-level buffer if no client
     exists yet (the next ``LucidicAI(...)`` drains it).
 
@@ -167,7 +167,7 @@ def _register_into(
 
     If ``client`` is given, write directly into ``client.tools._registry``
     — explicit binding wins over context detection (matches the
-    "instance-canonical, module passthrough" choice from LUC-608).
+    "instance-canonical, module passthrough" choice).
     Otherwise fall through to the shared ``register_tool`` which uses
     ``get_active_client()`` to find the right registry (or buffers).
     """
@@ -192,8 +192,7 @@ def dispatch_openai_tool_call(
     """Dispatch one OpenAI tool_call.
 
     Two paths, decided by the ``MockContext`` bound to the current
-    execution context (set when a tool-backed session is created —
-    LUC-608):
+    execution context (set when a tool-backed session is created):
 
     - **No mock context** (normal observability / no session):
       invoke ``impls[name](**kwargs)`` directly. Missing ``impls[name]``

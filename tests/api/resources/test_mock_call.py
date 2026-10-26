@@ -2,7 +2,7 @@
 
 Covers both the new thin ``call()`` / ``acall()`` transport (used by
 ``sdk/tools/transport.py``) and the legacy ``create()`` / ``acreate()``
-API kept for LUC-483 era explicit-mock customers. Backend is mocked via
+API kept for explicit-mock customers. Backend is mocked via
 ``respx`` at the HTTP boundary so we exercise the real request shape,
 real ``_handle_response`` parsing, and the real exception-translation
 path.

@@ -1,4 +1,4 @@
-"""Typed response model for client.resources (LUC-917)."""
+"""Typed response model for client.resources."""
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 

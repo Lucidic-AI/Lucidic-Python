@@ -1,4 +1,4 @@
-"""Typed response model for client.evaluators reads (LUC-910).
+"""Typed response model for client.evaluators reads.
 
 The per-result rows (``evaluators.evals()`` distribution and
 ``evaluators.result()``) reuse the ``EvalResult`` model from ``models.session``

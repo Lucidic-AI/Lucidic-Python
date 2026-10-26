@@ -24,7 +24,7 @@ ACTIVE_STATUSES = {"PENDING", "SUBMITTED", "RUNNING"}
 
 
 class _PollAbort(Exception):
-    """Carries a soft-failure result out of the poll closure (LUC-920 refactor).
+    """Carries a soft-failure result out of the poll closure.
 
     The training-module mock-call contract never raises — a poll-time problem
     (malformed response, transport error) degrades to a structured soft failure.
@@ -75,7 +75,7 @@ class TrainingModulesResource:
         default, the active session's loaded checkpoint (so this works naturally
         inside ``with client.sessions.create(...)``). Pass ``prompt_name`` -- the
         prompt at the current LLM call -- to get just the tools that live at that
-        edit site (LUC-801); server-side scoped, so nothing else leaks in.
+        edit site; server-side scoped, so nothing else leaks in.
         """
         body = self._api.list_tools(
             **self._tools_kwargs(session_id, prompt_name=prompt_name, checkpoint_id=checkpoint_id)

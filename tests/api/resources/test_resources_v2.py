@@ -1,4 +1,4 @@
-"""LUC-917 — client.resources CRUD (SQL-substrate resources; new namespace)."""
+"""client.resources CRUD (SQL-substrate resources; new namespace)."""
 import json
 
 import httpx

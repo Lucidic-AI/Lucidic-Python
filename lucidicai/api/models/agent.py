@@ -1,4 +1,4 @@
-"""Typed response models for client.agents (LUC-906)."""
+"""Typed response models for client.agents."""
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 

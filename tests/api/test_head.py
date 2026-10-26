@@ -1,4 +1,4 @@
-"""LUC-903 — HEAD count/tags helpers."""
+"""HEAD count/tags helpers."""
 import httpx
 import pytest
 import respx

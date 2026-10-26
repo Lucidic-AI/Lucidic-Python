@@ -1,4 +1,4 @@
-"""Typed response models for client.sessions v2 reads (LUC-907)."""
+"""Typed response models for client.sessions v2 reads."""
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 

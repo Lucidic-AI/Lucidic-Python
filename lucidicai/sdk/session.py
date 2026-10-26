@@ -88,7 +88,7 @@ def _build_session_params(
     Returns:
         Tuple of (real_session_id, session_params)
     """
-    # LUC-926: a session must attach to an agent. Raise loudly (even in
+    # A session must attach to an agent. Raise loudly (even in
     # production) if there's no agent_id, rather than POST a null one or let a
     # swallow silently drop the session. Shared by create_session + acreate.
     from ..core.errors import require_agent_id
@@ -337,7 +337,7 @@ def emit_session(
     """
     from .init import _sdk_state
 
-    # NOTE (LUC-926): emit_session is pre-existing-broken — the import above
+    # NOTE: emit_session is pre-existing-broken — the import above
     # (`_sdk_state`) doesn't exist in sdk/init.py, so this fire-and-forget path
     # raises ImportError on first use and is effectively dead (not in __all__).
     # It is therefore NOT a silent-loss risk; no agent_id guard is added here.

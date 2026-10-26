@@ -1,4 +1,4 @@
-"""run.session_id: the server's session id, which can differ from the dispatched ids.session_id (LUC-1138)."""
+"""run.session_id: the server's session id, which can differ from the dispatched ids.session_id."""
 import contextvars
 import json
 

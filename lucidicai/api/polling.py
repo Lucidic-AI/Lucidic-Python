@@ -1,4 +1,4 @@
-"""Generic trigger-then-poll ``wait_for`` primitive (LUC-920).
+"""Generic trigger-then-poll ``wait_for`` primitive.
 
 The reusable poll loop behind the SDK's async, workflow-backed resources (dataset
 generation, taxonomy / failure-modes, evosim runs, training-module inference). A

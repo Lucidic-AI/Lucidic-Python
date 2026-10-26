@@ -1,6 +1,6 @@
-"""LUC-907 — client.sessions v2 reads (list/count/tags, detail+trace,
+"""client.sessions v2 reads (list/count/tags, detail+trace,
 evaluator-results, event raw).
-LUC-919 — client.sessions bulk finish."""
+client.sessions bulk finish."""
 import json
 
 import httpx

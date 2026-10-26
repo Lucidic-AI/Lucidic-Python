@@ -1,4 +1,4 @@
-"""LUC-1141 — client.resources.download(session_id, dir) (documents into the workdir)."""
+"""client.resources.download(session_id, dir) (documents into the workdir)."""
 import hashlib
 import logging
 import os

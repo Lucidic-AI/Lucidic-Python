@@ -99,7 +99,7 @@ def _capture_surface(func: Callable) -> ToolSurface:
 def make_mockable_wrapper(surface: ToolSurface, func: Callable) -> Callable:
     """Build the mockable dispatch wrapper for ``func`` against ``surface``.
 
-    Decoupled from ``mockable`` so framework adapters (LUC-578 LangChain)
+    Decoupled from ``mockable`` so framework adapters (e.g. LangChain)
     can reuse the same wrapper logic when they already have a captured
     surface (from the framework's own tool spec) and an underlying
     Python callable from the framework that needs to be wrapped.

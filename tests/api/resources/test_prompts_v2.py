@@ -1,4 +1,4 @@
-"""LUC-909 / LUC-914 — client.prompts reads + writes."""
+"""client.prompts reads + writes."""
 import json
 
 import httpx
@@ -140,7 +140,7 @@ def _ct(body):
 
 
 class TestCreate:
-    """LUC-914 follow-up (unblocked by backend LUC-931): POST /sdk/v2/prompts —
+    """POST /sdk/v2/prompts —
     create a brand-new prompt + its first version."""
 
     @respx.mock

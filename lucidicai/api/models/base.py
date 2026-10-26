@@ -1,4 +1,4 @@
-"""Typed response-model base for the SDK read surface (LUC-905).
+"""Typed response-model base for the SDK read surface.
 
 Read methods return typed dataclasses instead of raw dicts. Each model is a
 plain ``@dataclass`` that mixes in ``APIModel`` and is built from backend JSON

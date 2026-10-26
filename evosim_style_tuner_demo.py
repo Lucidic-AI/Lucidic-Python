@@ -1,4 +1,4 @@
-"""LUC-797 Phase 2 — style-tuner train + inference driver (run against local sst dev).
+"""Style-tuner train + inference driver (run against local sst dev).
 
 Two modes:
 
@@ -8,7 +8,7 @@ Two modes:
            style_tuner tool (artifact) AND the trained prompt version.
 
   infer  — bind a published checkpoint to a fresh session, fetch the target prompt
-           (now the TRAINED version, via LUC-793/795 checkpoint-scoped resolution) and
+           (now the TRAINED version, via checkpoint-scoped resolution) and
            call the style_tuner tool (which returns the trained artifact).
 
 The published checkpoint id is handed off manually (the SDK has no EvoSim-status
@@ -16,8 +16,8 @@ poll): after `train`, grab it from the dashboard (or a Checkpoint row with
 source_type=EVOSIM for this agent) and pass it to `infer --checkpoint-id`.
 
 Prereq: the target Prompt must already exist with a base `production` version — the
-SDK cannot create prompts. Seed it once (see the runbook / LUC-797). Requires an SDK
-build with LUC-795 for the checkpoint-scoped prompt fetch.
+SDK cannot create prompts. Seed it once (see the runbook). Requires an SDK
+build with the checkpoint-scoped prompt fetch.
 
     LUCIDIC_API_KEY=... LUCIDIC_AGENT_ID=... LUCIDIC_BASE_URL=http://localhost:8000 \
       TARGET_PROMPT=style_tuner_demo_prompt python3 evosim_style_tuner_demo.py train
@@ -49,7 +49,7 @@ def train() -> None:
         "module_selections": [
             {
                 "module_key": "style_tuner",
-                "target_prompt": TARGET_PROMPT,  # first-party edit-site field (LUC-799)
+                "target_prompt": TARGET_PROMPT,  # first-party edit-site field
                 "config": {
                     "session_specs": [{}, {}],  # 2 rollout sessions
                     "window": 2,

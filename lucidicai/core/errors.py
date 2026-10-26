@@ -9,7 +9,7 @@ class LucidicError(Exception):
 
 
 class WaitTimeout(LucidicError):
-    """Raised by the ``wait_for`` / ``await_for`` poll helpers (LUC-920) when a
+    """Raised by the ``wait_for`` / ``await_for`` poll helpers when a
     trigger-then-poll workflow does not reach a terminal state before the deadline.
 
     ``last_state`` is the most recently polled state (so a caller can still inspect
@@ -24,7 +24,7 @@ class WaitTimeout(LucidicError):
 
 
 # ---------------------------------------------------------------------------
-# HTTP / API errors (LUC-900)
+# HTTP / API errors
 # ---------------------------------------------------------------------------
 #
 # Every non-2xx response from the Lucidic API is decoded once, centrally, in
@@ -189,7 +189,7 @@ class FeatureFlagError(LucidicError):
 
 class AgentIdRequiredError(LucidicError):
     """Raised when an operation needs an ``agent_id`` but the client was created
-    without one (LUC-926).
+    without one.
 
     ``agent_id`` is optional at construction so org-/id-scoped work (agents,
     projects, usage, and any get-by-id) can run without one. Operations that are
@@ -221,7 +221,7 @@ def require_agent_id(agent_id: Optional[str], operation: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# mock_call dispatch errors (LUC-607)
+# mock_call dispatch errors
 # ---------------------------------------------------------------------------
 #
 # All non-2xx responses from POST /sdk/mock-call carry the envelope
@@ -271,7 +271,7 @@ class LucidicMockCallError(LucidicError):
 class LucidicToolDriftError(LucidicMockCallError):
     """Backend 409 — the tool's source_hash drifted from the session's
     `tool_version_snapshot`. The transport layer's drift-fallback path
-    (LUC-607's emit_call_through_backend) catches this and runs the
+    (emit_call_through_backend) catches this and runs the
     user's local function instead of raising. Direct callers of the
     resource see the exception.
 
@@ -305,14 +305,14 @@ class LucidicToolBlockedError(LucidicMockCallError):
 
 class LucidicUnknownToolError(LucidicMockCallError):
     """Backend 404 — no Tool row matches (agent, name). Sync the
-    registry via `client.tools.sync()` (LUC-608) or check the tool's
+    registry via `client.tools.sync()` or check the tool's
     name matches the dashboard."""
     code = "unknown_tool"
 
 
 class LucidicSessionNotInitializedError(LucidicMockCallError):
     """Backend 400 — session exists but `tool_version_snapshot` is None.
-    Caller must POST /sdk/session-init-fixtures first (LUC-608 wires
+    Caller must POST /sdk/session-init-fixtures first (the SDK wires
     this into `create_session` automatically)."""
     code = "session_not_initialized"
 
@@ -381,7 +381,7 @@ class LucidicUnsupportedSQLError(LucidicMockCallError):
             Postgres-only syntax we can't run against the fixture."
 
     Note: this class was originally defined for the M2-era legacy
-    `mock_calls.create()` (LUC-483) with a different __init__ signature
+    `mock_calls.create()` with a different __init__ signature
     (`detail` + `source_dialect` as positional kwargs). The base-class
     signature here remains compatible — `source_dialect` is exposed as
     an attribute via the `**extra` channel of LucidicMockCallError.
@@ -427,7 +427,7 @@ def error_class_for_code(code: str) -> Type[LucidicMockCallError]:
 
 
 # ---------------------------------------------------------------------------
-# Central non-2xx decoding (LUC-900)
+# Central non-2xx decoding
 # ---------------------------------------------------------------------------
 
 # Status -> generic typed exception. The mock-call ``{"error": {"code"}}``

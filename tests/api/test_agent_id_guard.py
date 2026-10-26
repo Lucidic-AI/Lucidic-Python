@@ -1,4 +1,4 @@
-"""LUC-926 — agent_id optional at construction + AgentIdRequiredError guard.
+"""agent_id optional at construction + AgentIdRequiredError guard.
 
 agent_id is no longer required to build a client (org-/id-scoped work runs
 without one); agent-scoped operations raise a clear, typed error — even in
@@ -25,7 +25,7 @@ class _FakeClient:
 
 class TestValidateRelaxed:
     def test_no_agent_id_is_valid(self):
-        # api_key alone is a valid config now (LUC-926).
+        # api_key alone is a valid config now.
         assert SDKConfig(api_key="k", agent_id=None).validate() == []
 
     def test_api_key_still_required(self):

@@ -32,7 +32,7 @@ from .core.errors import (
     InvalidOperationError,
     PromptError,
     FeatureFlagError,
-    # Typed HTTP/API errors (LUC-900)
+    # Typed HTTP/API errors
     LucidicAPIError,
     ValidationError,
     AuthError,
@@ -42,7 +42,7 @@ from .core.errors import (
     RateLimitError,
     ServiceUnavailableError,
     APIError,
-    # mock_call dispatch error family (LUC-607)
+    # mock_call dispatch error family
     LucidicMockCallError,
     LucidicToolDriftError,
     LucidicToolBlockedError,
@@ -54,7 +54,7 @@ from .core.errors import (
     LucidicImplError,
     LucidicMissingImplError,
     LucidicUnsupportedSQLError,
-    # lucidicai.load() errors (LUC-1138)
+    # lucidicai.load() errors
     RunLoadError,
     RunSignatureError,
     RunPayloadError,
@@ -62,7 +62,7 @@ from .core.errors import (
 )
 from .sdk.training_modules import TrainingModulesResource
 
-# Typed response-model base (LUC-905)
+# Typed response-model base
 from .api.models import APIModel, CursorPage
 
 # Prompt object
@@ -86,10 +86,10 @@ from .integrations.livekit import setup_livekit
 # Eval-run webhook signatures
 from . import webhook
 
-# One object per run (LUC-1138)
+# One object per run
 from .run import Run, RunIds, RunTools, load
 
-# Webhook runner (LUC-1151)
+# Webhook runner
 from .runner import MemoryDedupe, Runner, serve
 
 # Version
@@ -108,7 +108,7 @@ __all__ = [
     "InvalidOperationError",
     "PromptError",
     "FeatureFlagError",
-    # Typed HTTP/API errors (LUC-900)
+    # Typed HTTP/API errors
     "LucidicAPIError",
     "ValidationError",
     "AuthError",
@@ -118,7 +118,7 @@ __all__ = [
     "RateLimitError",
     "ServiceUnavailableError",
     "APIError",
-    # mock_call dispatch error family (LUC-607)
+    # mock_call dispatch error family
     "LucidicMockCallError",
     "LucidicToolDriftError",
     "LucidicToolBlockedError",
@@ -130,39 +130,39 @@ __all__ = [
     "LucidicImplError",
     "LucidicMissingImplError",
     "LucidicUnsupportedSQLError",
-    # lucidicai.load() errors (LUC-1138)
+    # lucidicai.load() errors
     "RunLoadError",
     "RunSignatureError",
     "RunPayloadError",
     "RunSecretMissingError",
     "TrainingModulesResource",
-    # Typed response-model base (LUC-905)
+    # Typed response-model base
     "APIModel",
     "CursorPage",
     # Prompt object
     "Prompt",
     # Tool dispatch (v2 tool-backed)
     "mockable",
-    # OpenAI adapter (LUC-579)
+    # OpenAI adapter
     "adispatch_openai_tool_call",
     "dispatch_openai_tool_call",
     "register_openai_tools",
-    # Anthropic adapter (LUC-580)
+    # Anthropic adapter
     "adispatch_anthropic_tool_call",
     "dispatch_anthropic_tool_call",
     "register_anthropic_tools",
-    # LangChain adapter (LUC-578)
+    # LangChain adapter
     "register_langchain_tools",
     # Integrations
     "setup_livekit",
     # Eval-run webhook signatures
     "webhook",
-    # One object per run (LUC-1138)
+    # One object per run
     "load",
     "Run",
     "RunIds",
     "RunTools",
-    # Webhook runner (LUC-1151)
+    # Webhook runner
     "Runner",
     "MemoryDedupe",
     "serve",

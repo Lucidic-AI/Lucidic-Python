@@ -1,4 +1,4 @@
-"""client.usage — org-aggregated usage / quota counters (LUC-911).
+"""client.usage — org-aggregated usage / quota counters.
 
 A single-endpoint namespace. Data-bearing read — does NOT swallow in production.
 """

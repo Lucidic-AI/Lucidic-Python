@@ -1,4 +1,4 @@
-"""EvoSim resource API operations (LUC-923 run management).
+"""EvoSim resource API operations (run management).
 
 ``client.evosims`` manages EvoSim runs: kick one off (``train``), list / read runs,
 cancel a run, inspect an iteration's Training Module Instances, and block until a
@@ -61,7 +61,7 @@ class EvoSimsResource:
         Returns:
             Backend response describing the run (successful or failed)
         """
-        # LUC-926: a training run needs an agent; raise before the swallow.
+        # A training run needs an agent; raise before the swallow.
         require_agent_id(self._agent_id, "evosim.train")
         try:
             payload = _load_training_config(config_json_file)
@@ -86,7 +86,7 @@ class EvoSimsResource:
                 return {"status": "failed", "error": str(e)}
             raise
 
-    # ==================== run management (LUC-923, no swallow) ====================
+    # ==================== run management (no swallow) ====================
 
     def list(self, agent_id: Optional[str] = None, *, page_size: Optional[int] = None) -> Iterator[EvoSim]:
         """Lazily iterate an agent's EvoSim runs, newest first (GET /sdk/evosims;

@@ -1,4 +1,4 @@
-"""Typed response models for client.datasets v2 (LUC-918).
+"""Typed response models for client.datasets v2.
 
 Distinct from the SDK's grandfathered gen-3 dataset helpers (which return raw
 dicts). These model the v2 schemas / items / fixtures surface, generation runs

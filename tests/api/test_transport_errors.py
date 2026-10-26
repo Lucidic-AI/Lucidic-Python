@@ -1,4 +1,4 @@
-"""LUC-900 — central error-envelope decode + typed exception hierarchy.
+"""Central error-envelope decode + typed exception hierarchy.
 
 Backend is mocked via respx at the HTTP boundary so we exercise the real
 ``HttpClient._handle_response`` → ``exception_from_response`` path and assert

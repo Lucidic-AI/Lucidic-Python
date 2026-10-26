@@ -1,4 +1,4 @@
-"""LUC-667: extraction across OTel GenAI semconv shapes.
+"""Extraction across OTel GenAI semconv shapes.
 
 fixtures are byte-faithful to spans captured live (docs/telemetry/validation/out)
 from openllmetry 0.53.4 (legacy flat) and 0.61.0 (new gen_ai.input/output.messages).

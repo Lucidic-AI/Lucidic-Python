@@ -1,4 +1,4 @@
-"""Typed response models for the Lucidic SDK read surface (LUC-905)."""
+"""Typed response models for the Lucidic SDK read surface."""
 from .agent import Agent, AgentToolCatalog, CatalogTool
 from .base import APIModel, CursorPage
 from .evaluator import Evaluator

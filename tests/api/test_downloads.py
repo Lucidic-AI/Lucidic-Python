@@ -1,4 +1,4 @@
-"""LUC-904 — presigned-URL GET fetch-through."""
+"""Presigned-URL GET fetch-through."""
 import httpx
 import pytest
 import respx

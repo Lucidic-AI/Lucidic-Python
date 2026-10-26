@@ -30,7 +30,7 @@ class LucidicSpanExporter(SpanExporter):
     """
 
     # warn loudly (but only a few times per process) when an LLM span yields no
-    # extractable content - this is the silent-failure mode behind LUC-667.
+    # extractable content - otherwise this failure is silent.
     _MAX_DROP_WARNINGS = 5
 
     def __init__(self):
