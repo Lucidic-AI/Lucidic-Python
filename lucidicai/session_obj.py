@@ -85,7 +85,7 @@ class Session:
         """Check if the session has been ended."""
         return self._ended
 
-    def update(self, task: Optional[str] = None) -> None:
+    def update(self, task: Optional[str] = None, **kwargs: Any) -> None:
         """Update the session metadata.
 
         To report the session's result, use
@@ -93,7 +93,13 @@ class Session:
 
         Args:
             task: Update the task description
+
+        Raises:
+            TypeError: If given a session verdict field such as ``is_successful``.
         """
+        from .api.resources.session import _refuse_extra_kwargs
+
+        _refuse_extra_kwargs("Session.update", kwargs)
         if self._ended:
             logger.warning(f"[Session] Attempted to update ended session {self._session_id[:8]}...")
             return
@@ -111,12 +117,15 @@ class Session:
         else:
             logger.debug(f"[Session] update() called with no updates for session {self._session_id[:8]}...")
 
-    async def aupdate(self, task: Optional[str] = None) -> None:
-        """Update the session metadata (async version).
+    async def aupdate(self, task: Optional[str] = None, **kwargs: Any) -> None:
+        """Update the session metadata (async version). See update().
 
         Args:
             task: Update the task description
         """
+        from .api.resources.session import _refuse_extra_kwargs
+
+        _refuse_extra_kwargs("Session.aupdate", kwargs)
         if self._ended:
             logger.warning(f"[Session] Attempted to update ended session {self._session_id[:8]}...")
             return
@@ -134,7 +143,7 @@ class Session:
         else:
             logger.debug(f"[Session] aupdate() called with no updates for session {self._session_id[:8]}...")
 
-    def end(self, *, eval_flush_timeout: Optional[float] = None) -> None:
+    def end(self, *, eval_flush_timeout: Optional[float] = None, **kwargs: Any) -> None:
         """End the session.
 
         To report the session's result, emit it before ending:
@@ -145,7 +154,13 @@ class Session:
         Args:
             eval_flush_timeout: Upper bound in seconds for that wait. Defaults to
                 the client's ``eval_flush_timeout``; 0 skips the wait.
+
+        Raises:
+            TypeError: If given a session verdict field such as ``is_successful``.
         """
+        from .api.resources.session import _refuse_extra_kwargs
+
+        _refuse_extra_kwargs("Session.end", kwargs)
         if self._ended:
             return
 
@@ -157,8 +172,11 @@ class Session:
         )
         self._ended = True
 
-    async def aend(self, *, eval_flush_timeout: Optional[float] = None) -> None:
+    async def aend(self, *, eval_flush_timeout: Optional[float] = None, **kwargs: Any) -> None:
         """End the session (async version). See end()."""
+        from .api.resources.session import _refuse_extra_kwargs
+
+        _refuse_extra_kwargs("Session.aend", kwargs)
         if self._ended:
             return
 

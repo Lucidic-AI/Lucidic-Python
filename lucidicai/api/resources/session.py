@@ -38,9 +38,18 @@ def _refuse_verdict_fields(method: str, updates: Dict[str, Any]) -> None:
     given = [key for key in _VERDICT_FIELDS if key in updates]
     if given:
         raise TypeError(
-            f"sessions.{method}() no longer accepts {', '.join(given)}; report the "
+            f"{method}() no longer accepts {', '.join(given)}; report the "
             f"session's result with client.evals.emit(result, name=..., description=...)"
         )
+
+
+def _refuse_extra_kwargs(method: str, kwargs: Dict[str, Any]) -> None:
+    """For a method whose ``**kwargs`` exist only to explain the removed verdict
+    fields: refuse those with the ``evals.emit`` pointer, and any other keyword
+    as Python would."""
+    _refuse_verdict_fields(method, kwargs)
+    if kwargs:
+        raise TypeError(f"{method}() got an unexpected keyword argument {next(iter(kwargs))!r}")
 
 
 class SessionResource:
@@ -303,6 +312,7 @@ class SessionResource:
         session_id: Optional[str] = None,
         *,
         eval_flush_timeout: Optional[float] = None,
+        **kwargs: Any,
     ) -> None:
         """End a session.
 
@@ -316,9 +326,11 @@ class SessionResource:
             eval_flush_timeout: Upper bound in seconds for that wait. Defaults to
                 the client's ``eval_flush_timeout`` (5.0); 0 skips the wait. On
                 timeout a warning is logged and the session ends anyway.
-        """
-        from ...sdk.shutdown_manager import ShutdownManager
 
+        Raises:
+            TypeError: If given a session verdict field such as ``is_successful``.
+        """
+        _refuse_extra_kwargs("sessions.end", kwargs)
         if eval_flush_timeout is not None:
             eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
 
@@ -335,8 +347,65 @@ class SessionResource:
             return
 
         # deliver this session's pending evals.emit() posts before it finishes
-        if eval_flush_timeout != 0:
-            self._client._flush_evals(eval_flush_timeout, session_id=session_id)
+        timeout = self._flush_timeout(eval_flush_timeout)
+        if timeout:
+            self._client._flush_evals(timeout, session_id=session_id)
+
+        self._end_and_untrack(session_id)
+
+    async def aend(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        eval_flush_timeout: Optional[float] = None,
+        **kwargs: Any,
+    ) -> None:
+        """End a session (async version).
+
+        See end() for full documentation. The wait runs on the event loop, so it
+        ends on time however busy the loop's executor is. If the task is
+        cancelled during the wait, the session is still ended before the
+        cancellation is raised.
+        """
+        _refuse_extra_kwargs("sessions.aend", kwargs)
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
+
+        if not self._client.is_valid:
+            return
+
+        if not session_id:
+            from ...sdk.context import current_session_id
+            session_id = current_session_id.get(None)
+
+        if not session_id:
+            logger.debug("[SessionResource] No session to end")
+            return
+
+        # deliver this session's pending evals.emit() posts before it finishes
+        timeout = self._flush_timeout(eval_flush_timeout)
+        if timeout:
+            try:
+                await self._client._aflush_evals(timeout, session_id=session_id)
+            except asyncio.CancelledError:
+                # still end the session, then let the cancellation through
+                try:
+                    await self._aend_and_untrack(session_id)
+                except Exception as e:
+                    logger.error(f"[SessionResource] Failed to end session: {e}")
+                raise
+
+        await self._aend_and_untrack(session_id)
+
+    def _flush_timeout(self, eval_flush_timeout: Optional[float]) -> float:
+        """The wait for a session's pending emits: the given one, else the client's."""
+        if eval_flush_timeout is None:
+            return self._client.eval_flush_timeout
+        return eval_flush_timeout
+
+    def _end_and_untrack(self, session_id: str) -> None:
+        """Finish the session (errors swallowed in production), then stop tracking it."""
+        from ...sdk.shutdown_manager import ShutdownManager
 
         try:
             self.end_session(session_id=session_id)
@@ -356,41 +425,9 @@ class SessionResource:
 
         logger.debug(f"[SessionResource] Ended session {session_id[:8]}...")
 
-    async def aend(
-        self,
-        session_id: Optional[str] = None,
-        *,
-        eval_flush_timeout: Optional[float] = None,
-    ) -> None:
-        """End a session (async version).
-
-        See end() for full documentation.
-        """
+    async def _aend_and_untrack(self, session_id: str) -> None:
+        """Async sibling of ``_end_and_untrack``."""
         from ...sdk.shutdown_manager import ShutdownManager
-
-        if eval_flush_timeout is not None:
-            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
-
-        if not self._client.is_valid:
-            return
-
-        if not session_id:
-            from ...sdk.context import current_session_id
-            session_id = current_session_id.get(None)
-
-        if not session_id:
-            logger.debug("[SessionResource] No session to end")
-            return
-
-        # deliver this session's pending evals.emit() posts before it finishes;
-        # flush() blocks on thread joins, so keep it off the event loop
-        if eval_flush_timeout != 0:
-            try:
-                await asyncio.get_running_loop().run_in_executor(
-                    None, self._client._flush_evals, eval_flush_timeout, session_id
-                )
-            except Exception as e:
-                logger.warning(f"[SessionResource] Eval flush skipped on end: {e}")
 
         try:
             await self.aend_session(session_id=session_id)
@@ -494,7 +531,7 @@ class SessionResource:
             await self.http.aget(f"sdk/v2/sessions/{quote(session_id, safe='')}/events/{event_id}", params)
         )
 
-    def finish(self, session_ids: List[str]) -> int:
+    def finish(self, session_ids: List[str], *, eval_flush_timeout: Optional[float] = None) -> int:
         """Bulk-finish sessions by id (POST /sdk/v2/sessions/finish; needs
         ``session:write``). Idempotent and best-effort — unknown, cross-org,
         already-finished, non-UUID, or (for an agent-bound key) other-agent ids are
@@ -504,15 +541,33 @@ class SessionResource:
         this only closes sessions; it does not set per-session fields such as tags.
         Returns the number of sessions matched and finished.
 
+        Like ``end()``, it first waits for these sessions' pending
+        ``evals.emit()`` posts, all under one deadline: ``eval_flush_timeout``
+        seconds, default the client's ``eval_flush_timeout``; 0 skips the wait.
+        On timeout a warning is logged and the sessions finish anyway.
+
         Data-bearing write — raises the typed transport error (does not swallow),
         unlike the gen-3 ``create``/``end`` above."""
-        resp = self.http.post("sdk/v2/sessions/finish", self._finish_body(session_ids))
+        body = self._finish_body(session_ids)
+        timeout = self._finish_flush_timeout(eval_flush_timeout)
+        if timeout and body["session_ids"]:
+            self._client._flush_evals(timeout, session_id=body["session_ids"])
+        resp = self.http.post("sdk/v2/sessions/finish", body)
         return self._finished_count(resp)
 
-    async def afinish(self, session_ids: List[str]) -> int:
-        """Async sibling of ``finish``."""
-        resp = await self.http.apost("sdk/v2/sessions/finish", self._finish_body(session_ids))
+    async def afinish(self, session_ids: List[str], *, eval_flush_timeout: Optional[float] = None) -> int:
+        """Async sibling of ``finish``; the wait runs on the event loop."""
+        body = self._finish_body(session_ids)
+        timeout = self._finish_flush_timeout(eval_flush_timeout)
+        if timeout and body["session_ids"]:
+            await self._client._aflush_evals(timeout, session_id=body["session_ids"])
+        resp = await self.http.apost("sdk/v2/sessions/finish", body)
         return self._finished_count(resp)
+
+    def _finish_flush_timeout(self, eval_flush_timeout: Optional[float]) -> float:
+        if eval_flush_timeout is not None:
+            eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
+        return self._flush_timeout(eval_flush_timeout)
 
     @staticmethod
     def _finish_body(session_ids: List[str]) -> Dict[str, Any]:
@@ -548,7 +603,7 @@ class SessionResource:
         Raises:
             TypeError: If ``updates`` holds a session verdict field.
         """
-        _refuse_verdict_fields("update", updates)
+        _refuse_verdict_fields("sessions.update", updates)
         logger.debug(
             f"[Session] update() called - "
             f"session_id={_truncate_id(session_id)}, updates={updates}"
@@ -746,7 +801,7 @@ class SessionResource:
         Returns:
             Updated session data
         """
-        _refuse_verdict_fields("aupdate", updates)
+        _refuse_verdict_fields("sessions.aupdate", updates)
         logger.debug(
             f"[Session] aupdate() called - "
             f"session_id={_truncate_id(session_id)}, updates={updates}"

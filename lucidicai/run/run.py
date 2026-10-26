@@ -1,5 +1,4 @@
 """``Run``: one case of an eval run, and the session the agent runs in."""
-import asyncio
 import json
 import logging
 import os
@@ -39,10 +38,11 @@ class Run:
 
     Build it with ``lucidicai.load()``. ``with run:`` opens the case's session
     (fixtures bound, so ``@mockable`` tools are answered from the case data),
-    then on exit flushes ``evals.emit`` posts and ends the session. A Run is
-    entered once. Prompts and tools are resolved once per run and reused, also
-    by subprocesses given ``to_env()`` or ``to_json()``. The exit flush waits
-    for all of the client's pending ``evals.emit`` posts, not only this run's.
+    then on exit ends the session, which first waits for the session's pending
+    ``evals.emit`` posts. A Run is entered once. Prompts and tools are resolved
+    once per run and reused, also by subprocesses given ``to_env()`` or
+    ``to_json()``. A child that joined an open run's session doesn't end it, so
+    on exit it waits for that session's posts itself.
 
     ``ids.session_id`` is the idempotency key: deliveries are at-least-once.
     The backend may give the session a different id; ``session_id`` is that one.
@@ -225,15 +225,19 @@ class Run:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         session, self._session = self._session, None
-        self.client._flush_evals()  # while the session is still open, so self-scores land
-        session.__exit__(exc_type, exc_val, exc_tb)
+        if self._attached:
+            # the parent ends this session; deliver the child's self-scores now
+            self.client._flush_evals(session_id=session.session_id)
+        session.__exit__(exc_type, exc_val, exc_tb)  # end() waits for the session's posts
         self._unbind_mock()
         self._close_client()
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         session, self._session = self._session, None
-        await asyncio.get_running_loop().run_in_executor(None, self.client._flush_evals)
-        await session.__aexit__(exc_type, exc_val, exc_tb)
+        if self._attached:
+            # the parent ends this session; deliver the child's self-scores now
+            await self.client._aflush_evals(session_id=session.session_id)
+        await session.__aexit__(exc_type, exc_val, exc_tb)  # aend() waits for the session's posts
         self._unbind_mock()
         await self._aclose_client()
 
