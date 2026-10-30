@@ -86,10 +86,14 @@ class LucidicAI:
                   It is also the default wait for a session's own posts in
                   sessions.end()/aend()/finish(), Session.end() and leaving a
                   session's ``with`` block. 0 means no wait.
+        require_base_url: If True, refuse to fall back to Lucidic SaaS: raise unless
+                  base_url or LUCIDIC_BASE_URL is set, and reject region. Also on when
+                  LUCIDIC_REQUIRE_BASE_URL is true. Raises even in production mode.
         **kwargs: Additional configuration options passed to SDKConfig.
 
     Raises:
-        ValueError: If required configuration is missing, invalid, or region is unrecognized.
+        ValueError: If required configuration is missing, invalid, or region is unrecognized,
+                  or require_base_url is on and no base URL is given or a region is.
 
     Example:
         # Basic usage
@@ -122,6 +126,12 @@ class LucidicAI:
             agent_id="...",
             base_url="https://custom.example.com/api"
         )
+
+        # Self-hosted (BYOC): never fall back to Lucidic SaaS
+        client = LucidicAI(
+            base_url="https://lucidic.internal.example.com/api",
+            require_base_url=True
+        )
     """
 
     def __init__(
@@ -134,6 +144,7 @@ class LucidicAI:
         region: Optional[str] = None,
         base_url: Optional[str] = None,
         eval_flush_timeout: float = EVAL_FLUSH_TIMEOUT_SECONDS,
+        require_base_url: bool = False,
         **kwargs,
     ):
         # Generate unique client ID for telemetry routing
@@ -145,13 +156,16 @@ class LucidicAI:
         self._production = production
         self._eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
 
-        # Build configuration
+        # Build configuration. Errors here raise even in production mode (only
+        # validate() errors below are downgraded to a log), so a require_base_url
+        # failure stops us before the HttpClient exists.
         self._config = SDKConfig.from_env(
             api_key=api_key,
             agent_id=agent_id,
             auto_end=auto_end,
             region=region,
             base_url=base_url,
+            require_base_url=require_base_url,
             **kwargs,
         )
 
