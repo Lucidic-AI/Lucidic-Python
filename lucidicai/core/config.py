@@ -41,6 +41,17 @@ DEFAULT_REGION = Region.US
 DEBUG_URL = "http://localhost:8000/api"
 
 
+def _require_base_url_from_env() -> bool:
+    """Read LUCIDIC_REQUIRE_BASE_URL. An unrecognized value raises instead of reading as off."""
+    raw = os.getenv("LUCIDIC_REQUIRE_BASE_URL", "")
+    value = raw.strip().lower()
+    if value in ("", "false", "0", "no", "off"):
+        return False
+    if value in ("true", "1", "yes", "on"):
+        return True
+    raise ValueError(f"LUCIDIC_REQUIRE_BASE_URL must be true or false, got '{raw}'")
+
+
 @dataclass
 class NetworkConfig:
     """Network and connection settings"""
@@ -53,15 +64,26 @@ class NetworkConfig:
     connection_pool_maxsize: int = 100
 
     @classmethod
-    def from_env(cls, region: Optional[str] = None, base_url: Optional[str] = None, debug: bool = False) -> 'NetworkConfig':
+    def from_env(cls, region: Optional[str] = None, base_url: Optional[str] = None, debug: bool = False,
+                 require_base_url: bool = False) -> 'NetworkConfig':
         """Load network configuration from environment variables.
 
         Priority: debug > base_url argument > LUCIDIC_BASE_URL > region argument > LUCIDIC_REGION > default
+
+        With require_base_url the region and default steps are off, so the SDK never
+        falls back to a Lucidic SaaS URL: no base URL raises, and so does any region.
+        Debug still wins, since localhost never leaves the machine.
 
         Args:
             region: Region string override (e.g., "us", "india")
             base_url: Custom base URL override (takes precedence over region)
             debug: If True, use localhost URL regardless of other settings
+            require_base_url: If True, require base_url or LUCIDIC_BASE_URL and reject region.
+                      Also on when LUCIDIC_REQUIRE_BASE_URL is true; False here doesn't turn the env var off.
+
+        Raises:
+            ValueError: If region is unrecognized, or require_base_url is on and no base URL
+                      is given or a region is.
         """
         import logging
         logger = logging.getLogger("Lucidic")
@@ -80,10 +102,26 @@ class NetworkConfig:
 
         # Resolve base_url: argument > env var
         resolved_base_url = base_url or os.getenv("LUCIDIC_BASE_URL")
+        region_str = region or os.getenv("LUCIDIC_REGION")
+
+        # Opt-in guard for self-hosted (BYOC) deployments: a missing URL must not
+        # fall back to Lucidic SaaS, and region only ever picks a SaaS URL.
+        if require_base_url or _require_base_url_from_env():
+            if region_str:
+                raise ValueError(
+                    "require_base_url is on (require_base_url=True or LUCIDIC_REQUIRE_BASE_URL), "
+                    f"so region '{region_str}' is not allowed: region selects a Lucidic SaaS URL. "
+                    "Unset region / LUCIDIC_REGION and set base_url or LUCIDIC_BASE_URL to your Lucidic API URL."
+                )
+            if not (resolved_base_url and resolved_base_url.strip()):
+                raise ValueError(
+                    "require_base_url is on (require_base_url=True or LUCIDIC_REQUIRE_BASE_URL), "
+                    "but no base URL was given. Set base_url or LUCIDIC_BASE_URL to your Lucidic API URL; "
+                    "the SDK will not fall back to Lucidic SaaS."
+                )
 
         if resolved_base_url:
             # base_url takes precedence over region
-            region_str = region or os.getenv("LUCIDIC_REGION")
             if region_str:
                 logger.warning(
                     f"[LucidicAI] Both base_url and region specified. "
@@ -100,7 +138,6 @@ class NetworkConfig:
             )
 
         # Fall back to region-based URL resolution
-        region_str = region or os.getenv("LUCIDIC_REGION")
         resolved_region = Region.from_string(region_str) if region_str else DEFAULT_REGION
 
         return cls(
@@ -172,13 +209,16 @@ class SDKConfig:
     debug: bool = False
     
     @classmethod
-    def from_env(cls, region: Optional[str] = None, base_url: Optional[str] = None, **overrides) -> 'SDKConfig':
+    def from_env(cls, region: Optional[str] = None, base_url: Optional[str] = None,
+                 require_base_url: bool = False, **overrides) -> 'SDKConfig':
         """Create configuration from environment variables with optional overrides.
 
         Args:
             region: Region string (e.g., "us", "india"). Priority: arg > env var > default
             base_url: Custom base URL override. Takes precedence over region.
                       Falls back to LUCIDIC_BASE_URL env var.
+            require_base_url: Refuse to fall back to Lucidic SaaS (see NetworkConfig.from_env).
+                      Also on when LUCIDIC_REQUIRE_BASE_URL is true.
             **overrides: Additional configuration overrides
         """
         from dotenv import load_dotenv, find_dotenv
@@ -196,7 +236,8 @@ class SDKConfig:
             auto_end=os.getenv("LUCIDIC_AUTO_END", "true").lower() == "true",
             production_monitoring=False,
             blob_threshold=int(os.getenv("LUCIDIC_BLOB_THRESHOLD", "65536")),
-            network=NetworkConfig.from_env(region=region, base_url=base_url, debug=debug),
+            network=NetworkConfig.from_env(region=region, base_url=base_url, debug=debug,
+                                           require_base_url=require_base_url),
             error_handling=ErrorHandlingConfig.from_env(),
             telemetry=TelemetryConfig.from_env(),
             environment=Environment.DEBUG if debug else Environment.PRODUCTION,
