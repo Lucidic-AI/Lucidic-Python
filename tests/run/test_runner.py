@@ -1,5 +1,6 @@
 """lucidicai.Runner / lucidicai.serve: the stdlib webhook runner."""
 import http.client
+import os
 import queue
 import signal
 import socket
@@ -298,20 +299,37 @@ def test_drain_on_signal_needs_the_main_thread():
     assert len(errors) == 1
 
 
-def test_drain_on_signal_hands_a_second_signal_back_and_restores_on_exit():
-    seen, stops = [], []
+def test_serve_off_the_main_thread_raises_before_binding(caplog):
+    errors = []
+
+    def off_main():
+        try:
+            lucidic.serve(lambda run: None, port=0, secret=SECRET)
+        except RuntimeError as e:
+            errors.append(e)
+
+    with caplog.at_level("INFO", logger="lucidicai.runner"):
+        thread = threading.Thread(target=off_main)
+        thread.start()
+        thread.join()
+    assert len(errors) == 1
+    assert "listening" not in caplog.text
+
+
+def test_drain_on_signal_force_quits_on_a_second_signal_and_restores_on_exit(monkeypatch):
+    seen, stops, exits = [], [], []
 
     def before(signum, frame):
         seen.append(signum)
 
+    monkeypatch.setattr(os, "_exit", exits.append)
     old = signal.signal(signal.SIGTERM, before)
     try:
         with _drain_on_signal(lambda: stops.append(1)) as stopped:
             signal.raise_signal(signal.SIGTERM)
-            assert stopped.is_set() and stops == [1] and seen == []
+            assert stopped.is_set() and stops == [1] and seen == [] and exits == []
             signal.raise_signal(signal.SIGTERM)
-            assert seen == [signal.SIGTERM] and stops == [1]
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            assert seen == [signal.SIGTERM] and exits == [128 + signal.SIGTERM] and stops == [1]
         assert signal.getsignal(signal.SIGTERM) is before
     finally:
         signal.signal(signal.SIGTERM, old)
@@ -390,6 +408,32 @@ def test_sigterm_drains_the_running_case_and_serve_returns(tmp_path):
         assert _wait_for(lines, "case") == "case done"
         _wait_for(lines, "serve returned")
         assert proc.wait(timeout=15) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_second_signal_force_quits_with_a_case_still_running(tmp_path, sig):
+    proc = subprocess.Popen([sys.executable, "-c", _SERVE_CHILD, str(tmp_path / "never")],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        lines = _lines(proc)
+        port = int(_wait_for(lines, "lucidic runner listening on").rsplit(":", 1)[1])
+        body, signature = signed(full_payload())
+        headers = {"Content-Length": str(len(body)), webhook.SIGNATURE_HEADER: signature}
+        assert _request(port, body, headers) == (202, b"accepted")
+        _wait_for(lines, "case started")
+
+        proc.send_signal(sig)
+        deadline = time.time() + 10
+        while not _refused(port):  # serve_forever has returned; close() is waiting on the case
+            assert time.time() < deadline, "server still accepting after the first signal"
+            time.sleep(0.05)
+        time.sleep(0.2)
+        proc.send_signal(sig)
+        assert proc.wait(timeout=10) == 128 + sig
     finally:
         if proc.poll() is None:
             proc.kill()
