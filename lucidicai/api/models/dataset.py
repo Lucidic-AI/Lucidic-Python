@@ -206,9 +206,15 @@ class EvalRun(APIModel):
     case_count: Optional[int] = None
     session_count: Optional[int] = None
     status: Optional[str] = None
+    # "pull" (no webhook_url: lucidicai.poll claims the cases) or "push"
+    delivery: Optional[str] = None
     # runs() rows only
     created_at: Optional[str] = None
     summary: Optional[Dict[str, Any]] = None
+    # cases queued, claimed by a poller, and the oldest queued one's age
+    queued: Optional[int] = None
+    claimed: Optional[int] = None
+    oldest_queued_seconds: Optional[int] = None
 
     @property
     def is_terminal(self) -> bool:
