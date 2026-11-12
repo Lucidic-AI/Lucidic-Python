@@ -18,11 +18,14 @@ dedupes and queues; ``run_case(run)`` runs later on a pool of ``workers`` thread
   store's ``claim`` runs under the runner's lock, so keep it fast.
 - SIGTERM or SIGINT drains: ``serve`` stops accepting, waits for the cases
   already acked with 202, then returns (instead of the client's exit-on-signal).
-  A second signal gets the previous handler, e.g. to force quit.
+  A second signal force quits: the previous handler runs (the client still ends
+  its sessions), then the process exits with 128 + the signal number, even with
+  cases still running.
 - Deliveries signed more than 300 s from this host's clock get 401, so keep the
   clock synced (NTP).
 """
 import logging
+import os
 import signal
 import threading
 import time
@@ -199,16 +202,22 @@ def _http_server(runner: Runner, host: str, port: int) -> ThreadingHTTPServer:
     return server
 
 
+def _require_main_thread() -> None:
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("signal handlers can only be installed on the main thread")
+
+
 @contextmanager
 def _drain_on_signal(stop: Callable[[], None]) -> Iterator[threading.Event]:
     """On the first SIGTERM/SIGINT, set the yielded event and call ``stop()`` (from the signal handler).
 
     Install it after the clients are built: it replaces their exit-on-signal handlers
-    for the block, puts them back on the first signal (so a second one forces the
-    old behaviour) and on exit. ``stop`` must not block.
+    for the block and puts them back on exit. A second signal force quits: it runs
+    the previous handler, then ``os._exit(128 + signum)``, since a handler that only
+    raises (sys.exit, KeyboardInterrupt) would still wait for the pool's threads at
+    interpreter exit. ``stop`` must not block.
     """
-    if threading.current_thread() is not threading.main_thread():
-        raise RuntimeError("signal handlers can only be installed on the main thread")
+    _require_main_thread()
     stopped = threading.Event()
     signals = (signal.SIGTERM, signal.SIGINT)
     previous = {s: signal.getsignal(s) for s in signals}
@@ -218,9 +227,18 @@ def _drain_on_signal(stop: Callable[[], None]) -> Iterator[threading.Event]:
             # None: a handler not set from Python; SIG_DFL is the closest
             signal.signal(s, signal.SIG_DFL if h is None else h)
 
+    def force_quit(signum: int, frame: Any) -> None:
+        logger.info(f"received signal {signum} again, force quitting")
+        try:
+            if callable(previous[signum]):
+                previous[signum](signum, frame)
+        finally:
+            os._exit(128 + signum)
+
     def on_signal(signum: int, frame: Any) -> None:
+        for s in signals:  # first, so a quick second signal already force quits
+            signal.signal(s, force_quit)
         logger.info(f"received signal {signum}, draining")
-        restore()
         stopped.set()
         stop()
 
@@ -246,12 +264,13 @@ def serve(
     """Serve eval-run webhooks until SIGTERM/SIGINT, calling ``run_case(run)`` for each new case.
 
     Call it from the main thread. On a signal it stops accepting, waits for the
-    accepted cases to finish and returns.
+    accepted cases to finish and returns; a second signal force quits.
 
     Raises:
         RunSecretMissingError: no ``secret=`` and no ``$LUCIDIC_WEBHOOK_SECRET`` (before binding).
-        RuntimeError: called off the main thread (signal handlers need it).
+        RuntimeError: called off the main thread (signal handlers need it; before binding).
     """
+    _require_main_thread()
     runner = Runner(run_case, secret, client=client, workers=workers, max_body=max_body, dedupe=dedupe)
     if not runner.has_secret:
         runner.close()
@@ -260,9 +279,9 @@ def serve(
     logger.info(f"lucidic runner listening on {host}:{server.server_address[1]}")
     # shutdown() blocks until serve_forever returns, so not from the handler on this thread
     stop = lambda: threading.Thread(target=server.shutdown, daemon=True).start()  # noqa: E731
-    try:
-        with _drain_on_signal(stop):
+    with _drain_on_signal(stop):  # also around close(), so a second signal force quits the drain
+        try:
             server.serve_forever()
-    finally:
-        server.server_close()
-        runner.close()  # waits for the accepted cases
+        finally:
+            server.server_close()
+            runner.close()  # waits for the accepted cases

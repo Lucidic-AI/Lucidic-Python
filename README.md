@@ -92,8 +92,9 @@ lucidic.serve(run_case, host="0.0.0.0", port=8080, workers=4, client=client)
 ```
 
 Call `serve` from the main thread. On SIGTERM or SIGINT it stops accepting,
-waits for the cases already accepted, and returns; a second signal goes to the
-handler that was there before (the client's exit-on-signal, or the default).
+waits for the cases already accepted, and returns. A second signal force quits:
+the previous handler runs (the client still ends its sessions), then the process
+exits with 128 + the signal number, even with cases still running.
 
 Set `LUCIDIC_WEBHOOK_SECRET` (or pass `secret=`); without one `serve` refuses to
 start. Replies: `202` accepted, `200` duplicate, `401` bad or stale signature
