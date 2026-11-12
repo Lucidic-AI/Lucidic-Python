@@ -40,7 +40,6 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, List,
 
 import httpx
 
-from .core.config import REGION_URLS
 from .core.errors import (
     APIError,
     AuthError,
@@ -370,6 +369,11 @@ def _poll_clients(
         for built in clients.values():
             built.close(eval_flush_timeout=0)
         raise
+    # Module-level @mockable tools drain into the first client built (the passed one, else ours),
+    # so give every agent's client that registry: each syncs its tools when its session starts.
+    source = client or next(iter(clients.values()))
+    for built in clients.values():
+        built.tools._registry.update(source.tools._registry)
     return clients
 
 
@@ -458,8 +462,6 @@ class Poller:
         try:
             body = self._claimer._http.post(CLAIM_PATH, {"agent_ids": self._agent_ids, "max_jobs": free})
             jobs = list(body["jobs"])
-            self._check_served(body.get("agent_ids"))
-            delay = float(body.get("poll_after_seconds", DEFAULT_POLL_AFTER))
         except RateLimitError as e:
             return self._backoff("claim throttled (429)", e.retry_after)
         except ServiceUnavailableError as e:
@@ -478,13 +480,19 @@ class Poller:
             logger.exception("claim failed")
             return self._backoff("claim failed")
         self._failures = 0
-        for job in jobs:
+        for job in jobs:  # leased already: start them before reading the optional fields
             self._start(job)
-        return delay
+        try:
+            self._check_served(body.get("agent_ids"))
+        except Exception:
+            logger.exception("claim reply has bad agent_ids")
+        delay = body.get("poll_after_seconds")
+        return float(delay) if isinstance(delay, (int, float)) and delay >= 0 else DEFAULT_POLL_AFTER
 
     def _backoff(self, what: str, retry_after: Optional[float] = None) -> float:
         self._failures += 1
-        delay = min(MAX_BACKOFF, retry_after if retry_after is not None else 2.0 ** (self._failures - 1))
+        # a Retry-After below the exponential step (e.g. 0) must not turn into a busy loop
+        delay = min(MAX_BACKOFF, max(retry_after or 0.0, 2.0 ** (self._failures - 1)))
         logger.warning(f"{what}; retrying in {delay:g} s")
         return delay
 
@@ -506,6 +514,12 @@ class Poller:
 
     def _start(self, job: Any) -> None:
         job_id = job.get("job_id") if isinstance(job, dict) else None
+        with self._lock:
+            duplicate = job_id is None or job_id in self._jobs
+        if duplicate:
+            # no id, or re-leased to us while still in flight: let the lease lapse
+            logger.error(f"job {job_id}: missing job_id or already in flight; not starting it")
+            return
         try:
             client = self._clients[_canonical(job["agent_id"])]
             run = _run_from_payload(dict(job["payload"]), {}, client)

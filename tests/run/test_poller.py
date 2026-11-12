@@ -254,6 +254,14 @@ def test_backoff_on_429_503_500_and_transport_errors_is_capped_at_60(make_poller
     assert poller.sleeps == [7, 2, 4, 8, 16, 32, 60, 60, 5]
 
 
+def test_retry_after_zero_still_backs_off(make_poller, claim):
+    claim.side_effect = replies(*[error(429, **{"Retry-After": "0"})] * 3, claim_reply())
+    poller = make_poller(stop_after=4)
+    poller.run()
+
+    assert poller.sleeps == [1, 2, 4, 5]
+
+
 def test_401_and_403_retry_every_60_seconds(make_poller, claim):
     claim.side_effect = replies(error(401), error(403), error(401), claim_reply())
     poller = make_poller(stop_after=4)
@@ -291,6 +299,40 @@ def test_validation_error_and_a_plain_value_error_are_logged_and_backed_off(make
     assert poller.sleeps == [1, 2, 5]
     failed = [r for r in caplog.records if r.getMessage() == "claim failed"]
     assert len(failed) == 2 and all(r.exc_info for r in failed)
+
+
+@pytest.mark.parametrize("extra", [{"poll_after_seconds": None}, {"agent_ids": 7}], ids=["null-delay", "bad-agents"])
+def test_a_bad_optional_field_still_runs_the_leased_jobs(make_poller, claim, extra):
+    body = {"jobs": [job()], "poll_after_seconds": 3, "agent_ids": [AGENT_ID], **extra}
+    claim.side_effect = replies(httpx.Response(200, json=body))
+    ran = []
+    poller = make_poller(lambda run: ran.append(run), stop_after=1)
+    poller.run()
+
+    assert len(ran) == 1
+    assert poller.sleeps == [5 if extra.get("poll_after_seconds", 3) is None else 3]
+
+
+def test_a_job_already_in_flight_or_without_an_id_is_not_started(make_poller, claim, backend, caplog):
+    no_id = job()
+    del no_id["job_id"]
+    claim.side_effect = replies(claim_reply(job(), job(), no_id))
+    release = threading.Event()
+    ran = []
+
+    def run_case(run):
+        ran.append(run)
+        with run:
+            release.wait(5)
+
+    poller = make_poller(run_case, workers=4)
+    with caplog.at_level(logging.ERROR, logger="lucidicai.runner"):
+        with running(poller):
+            wait_until(lambda: len(ran) == 1)
+            time.sleep(0.05)
+            release.set()
+    assert len(ran) == 1
+    assert sum("already in flight" in r.getMessage() for r in caplog.records) == 2
 
 
 def test_a_bad_reply_body_is_backed_off(make_poller, claim):
@@ -416,6 +458,34 @@ def test_per_agent_clients_copy_the_passed_clients_settings(claim, backend, clos
         passed.close(eval_flush_timeout=0)
 
 
+def enter(run):
+    with run:
+        pass
+
+
+@pytest.mark.parametrize("pass_client", [True, False], ids=["client", "env"])
+def test_module_level_mockable_tools_sync_for_every_agent(claim, backend, monkeypatch, pass_client):
+    @lucidic.mockable
+    def lookup(x: str) -> str:
+        """look up"""
+        return x
+
+    monkeypatch.setenv("LUCIDIC_API_KEY", "test-key")
+    passed = LucidicAI(agent_id=AGENT_ID, production=False) if pass_client else None
+    other_session = "5e55e55e-0000-4000-8000-000000000002"
+    claim.side_effect = replies(claim_reply(
+        job(), job(OTHER_JOB, OTHER_AGENT, session_id=other_session), agent_ids=[AGENT_ID, OTHER_AGENT]))
+    try:
+        poller = Poller(enter, [AGENT_ID, OTHER_AGENT], client=passed, _sleep=lambda s: poller.stop())
+        poller.run()
+        bodies = [json.loads(c.request.content) for c in backend["sync"].calls]
+        assert sorted(b["agent_id"] for b in bodies) == sorted([AGENT_ID, OTHER_AGENT])
+        assert all([t["name"] for t in b["tools"]] == ["lookup"] for b in bodies)
+    finally:
+        if passed:
+            passed.close(eval_flush_timeout=0)
+
+
 # ==================== signals ====================
 
 def test_sigterm_drains_the_job_heartbeating_it_and_poll_returns(client, claim, heartbeat, caplog):
@@ -470,14 +540,15 @@ def test_start_run_with_a_webhook_is_silent(client, backend, caplog):
     assert PULL_DELIVERY_WARNING not in caplog.text
 
 
-@pytest.mark.parametrize("delivery,warns", [("pull", True), ("push", False)])
-def test_train_warns_on_pull_only(client, backend, caplog, tmp_path, delivery, warns):
-    backend.post("/sdk/evosim/training-run").mock(return_value=httpx.Response(
-        201, json={"evosim": {"evosim_id": "x", "delivery": delivery}}))
+@pytest.mark.parametrize("evosim,warns", [
+    ({"evosim_id": "x", "delivery": "pull"}, True), ({"evosim_id": "x", "delivery": "push"}, False), ("x", False),
+], ids=["pull", "push", "not-a-dict"])
+def test_train_warns_on_pull_only(client, backend, caplog, tmp_path, evosim, warns):
+    backend.post("/sdk/evosim/training-run").mock(return_value=httpx.Response(201, json={"evosim": evosim}))
     config = tmp_path / "train.json"
     config.write_text(json.dumps({"name": "t"}))
     with caplog.at_level(logging.WARNING, logger="Lucidic"):
-        client.evosims.train(config)
+        assert client.evosims.train(config) == {"evosim": evosim}
 
     assert (PULL_DELIVERY_WARNING in caplog.text) is warns
 
