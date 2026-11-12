@@ -25,6 +25,16 @@ logger = logging.getLogger("Lucidic")
 
 _EVOSIMS = "sdk/evosims"
 
+PULL_DELIVERY_WARNING = (
+    "no webhook_url: cases wait for lucidicai.poll and fail as never delivered at the deadline"
+)
+
+
+def warn_if_pull(delivery: Optional[str]) -> None:
+    """Warn when a started run is in pull mode (``delivery == "pull"``)."""
+    if delivery == "pull":
+        logger.warning(PULL_DELIVERY_WARNING)
+
 
 class EvoSimsResource:
     """Handle EvoSim run-management API operations."""
@@ -66,7 +76,9 @@ class EvoSimsResource:
         try:
             payload = _load_training_config(config_json_file)
             payload.setdefault("agent_id", self._agent_id)
-            return self.http.post("sdk/evosim/training-run", payload)
+            response = self.http.post("sdk/evosim/training-run", payload)
+            warn_if_pull((response.get("evosim") or {}).get("delivery"))
+            return response
         except Exception as e:
             if self._production:
                 logger.error(f"[EvoSimsResource] Failed to start training run: {e}")
@@ -79,7 +91,9 @@ class EvoSimsResource:
         try:
             payload = _load_training_config(config_json_file)
             payload.setdefault("agent_id", self._agent_id)
-            return await self.http.apost("sdk/evosim/training-run", payload)
+            response = await self.http.apost("sdk/evosim/training-run", payload)
+            warn_if_pull((response.get("evosim") or {}).get("delivery"))
+            return response
         except Exception as e:
             if self._production:
                 logger.error(f"[EvoSimsResource] Failed to start training run: {e}")
