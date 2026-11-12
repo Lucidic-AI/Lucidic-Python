@@ -16,6 +16,7 @@ from ..models.dataset import (
 from ..models.evaluator import Evaluator
 from ..pagination import apaginate, paginate
 from ..polling import await_for, wait_for
+from .evosim import warn_if_pull
 from ...core.errors import InvalidOperationError
 
 logger = logging.getLogger("Lucidic")
@@ -278,7 +279,7 @@ class DatasetResource:
     # Dataset's runs newest first, World runs included. Data-bearing → no swallow.
 
     def start_run(
-        self, dataset_id: str, *, webhook_url: str, repeats: Optional[int] = None,
+        self, dataset_id: str, *, webhook_url: Optional[str] = None, repeats: Optional[int] = None,
         role: Optional[str] = None, checkpoint_id: Optional[str] = None,
         item_ids: Optional[Union[str, Iterable[str]]] = None, window: Optional[int] = None,
         repeat_deadline_seconds: Optional[int] = None,
@@ -286,7 +287,8 @@ class DatasetResource:
         """Start an eval run on a Dataset (POST /sdk/v2/datasets/{id}/runs; needs
         ``evosim:run``): send every case, or the cases ``item_ids`` names (one id or a
         list; they run in the Dataset's order), to the agent's runner at
-        ``webhook_url``, ``repeats`` times, ``window`` sessions at a time, each repeat
+        ``webhook_url`` (omit it for pull mode: ``lucidicai.poll`` claims the cases),
+        ``repeats`` times, ``window`` sessions at a time, each repeat
         within ``repeat_deadline_seconds``. Omit an option to take the backend
         default: ``repeats`` 3 (1–10), ``role`` ``"baseline"`` (or ``"candidate"``),
         no checkpoint, every case, ``window`` 10 (1–50), ``repeat_deadline_seconds``
@@ -304,24 +306,28 @@ class DatasetResource:
         ``status="start_failed"``; if its message says the run may have started,
         cancel it by ``evosim_id`` before retrying. After a timeout, look for a new
         ``running`` row in ``runs(dataset_id)`` before retrying."""
-        return EvalRun.from_dict(self.http.post(
+        run = EvalRun.from_dict(self.http.post(
             f"sdk/v2/datasets/{dataset_id}/runs",
             self._run_body(webhook_url, repeats, role, checkpoint_id, item_ids, window,
                            repeat_deadline_seconds),
         ))
+        warn_if_pull(run.delivery)
+        return run
 
     async def astart_run(
-        self, dataset_id: str, *, webhook_url: str, repeats: Optional[int] = None,
+        self, dataset_id: str, *, webhook_url: Optional[str] = None, repeats: Optional[int] = None,
         role: Optional[str] = None, checkpoint_id: Optional[str] = None,
         item_ids: Optional[Union[str, Iterable[str]]] = None, window: Optional[int] = None,
         repeat_deadline_seconds: Optional[int] = None,
     ) -> EvalRun:
         """Async sibling of ``start_run``."""
-        return EvalRun.from_dict(await self.http.apost(
+        run = EvalRun.from_dict(await self.http.apost(
             f"sdk/v2/datasets/{dataset_id}/runs",
             self._run_body(webhook_url, repeats, role, checkpoint_id, item_ids, window,
                            repeat_deadline_seconds),
         ))
+        warn_if_pull(run.delivery)
+        return run
 
     def runs(
         self, dataset_id: str, *, role: Optional[str] = None, status: Optional[str] = None,
@@ -366,13 +372,16 @@ class DatasetResource:
 
     @staticmethod
     def _run_body(
-        webhook_url: str, repeats: Optional[int], role: Optional[str],
+        webhook_url: Optional[str], repeats: Optional[int], role: Optional[str],
         checkpoint_id: Optional[str], item_ids: Optional[Union[str, Iterable[str]]],
         window: Optional[int], repeat_deadline_seconds: Optional[int],
     ) -> Dict[str, Any]:
-        body: Dict[str, Any] = {"webhook_url": webhook_url}
-        # omit-None: let the backend apply its defaults (repeats=3, role="baseline", no
-        # checkpoint, every case, window=10, repeat_deadline_seconds=1800).
+        body: Dict[str, Any] = {}
+        # omit-None: let the backend apply its defaults (no webhook_url: pull mode;
+        # repeats=3, role="baseline", no checkpoint, every case, window=10,
+        # repeat_deadline_seconds=1800).
+        if webhook_url is not None:
+            body["webhook_url"] = webhook_url
         if repeats is not None:
             body["repeats"] = repeats
         if role is not None:

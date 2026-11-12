@@ -89,11 +89,11 @@ from . import webhook
 # One object per run
 from .run import Run, RunIds, RunTools, load
 
-# Webhook runner
-from .runner import MemoryDedupe, Runner, serve
+# Eval-run runners: webhook (push) and poller (pull)
+from .runner import MemoryDedupe, Runner, poll, serve
 
 # Version
-__version__ = "4.0.0"
+__version__ = "4.1.0"
 
 # All exports
 __all__ = [
@@ -166,6 +166,8 @@ __all__ = [
     "Runner",
     "MemoryDedupe",
     "serve",
+    # Poller (pull mode)
+    "poll",
     # Version
     "__version__",
 ]
