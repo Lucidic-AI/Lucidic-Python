@@ -1,5 +1,10 @@
 """lucidicai.Runner / lucidicai.serve: the stdlib webhook runner."""
 import http.client
+import queue
+import signal
+import socket
+import subprocess
+import sys
 import threading
 import time
 
@@ -7,9 +12,9 @@ import pytest
 
 import lucidicai as lucidic
 from lucidicai import webhook
-from lucidicai.runner import MIN_DEDUPE_TTL, _http_server
+from lucidicai.runner import MIN_DEDUPE_TTL, _drain_on_signal, _http_server
 
-from .conftest import SECRET, SESSION_ID, full_payload, signed, wire
+from .conftest import AGENT_ID, SECRET, SESSION_ID, full_payload, signed, wire
 
 OTHER_IDS = [f"{i}{i}{i}{i}{i}{i}{i}{i}-0000-0000-0000-000000000000" for i in range(1, 4)]
 
@@ -275,3 +280,117 @@ def test_http_store_error_is_500_and_retryable(make_runner):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_drain_on_signal_needs_the_main_thread():
+    errors = []
+
+    def off_main():
+        try:
+            with _drain_on_signal(lambda: None):
+                pass
+        except RuntimeError as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=off_main)
+    thread.start()
+    thread.join()
+    assert len(errors) == 1
+
+
+def test_drain_on_signal_hands_a_second_signal_back_and_restores_on_exit():
+    seen, stops = [], []
+
+    def before(signum, frame):
+        seen.append(signum)
+
+    old = signal.signal(signal.SIGTERM, before)
+    try:
+        with _drain_on_signal(lambda: stops.append(1)) as stopped:
+            signal.raise_signal(signal.SIGTERM)
+            assert stopped.is_set() and stops == [1] and seen == []
+            signal.raise_signal(signal.SIGTERM)
+            assert seen == [signal.SIGTERM] and stops == [1]
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        assert signal.getsignal(signal.SIGTERM) is before
+    finally:
+        signal.signal(signal.SIGTERM, old)
+
+
+# A LucidicAI() arms the ShutdownManager (end sessions, sys.exit(0) on SIGTERM); serve must win.
+_SERVE_CHILD = f"""
+import logging, os, sys, time
+import lucidicai as lucidic
+logging.getLogger("lucidicai.runner").addHandler(logging.StreamHandler(sys.stdout))
+logging.getLogger("lucidicai.runner").setLevel(logging.INFO)
+client = lucidic.LucidicAI(api_key="k", agent_id="{AGENT_ID}", production=False)
+release = sys.argv[1]
+
+def run_case(run):
+    print("case started", flush=True)
+    while not os.path.exists(release):
+        time.sleep(0.01)
+    print("case done", flush=True)
+
+lucidic.serve(run_case, port=0, secret="{SECRET}", client=client)
+print("serve returned", flush=True)
+"""
+
+
+def _lines(proc):
+    lines = queue.Queue()
+
+    def pump():
+        for line in proc.stdout:
+            lines.put(line.rstrip("\n"))
+
+    threading.Thread(target=pump, daemon=True).start()
+    return lines
+
+
+def _wait_for(lines, prefix, timeout=15):
+    deadline = time.time() + timeout
+    while True:
+        line = lines.get(timeout=max(0.01, deadline - time.time()))
+        if line.startswith(prefix):
+            return line
+
+
+def _refused(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        return False
+    except ConnectionRefusedError:
+        return True
+
+
+def test_sigterm_drains_the_running_case_and_serve_returns(tmp_path):
+    release = tmp_path / "release"
+    proc = subprocess.Popen([sys.executable, "-c", _SERVE_CHILD, str(release)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        lines = _lines(proc)
+        port = int(_wait_for(lines, "lucidic runner listening on").rsplit(":", 1)[1])
+        body, signature = signed(full_payload())
+        headers = {"Content-Length": str(len(body)), webhook.SIGNATURE_HEADER: signature}
+        assert _request(port, body, headers) == (202, b"accepted")
+        _wait_for(lines, "case started")
+
+        proc.send_signal(signal.SIGTERM)
+        deadline = time.time() + 10
+        while not _refused(port):
+            assert time.time() < deadline, "server still accepting after SIGTERM"
+            time.sleep(0.05)
+        body, signature = signed(full_payload(session_id=OTHER_IDS[0]))
+        with pytest.raises(ConnectionRefusedError):
+            _request(port, body, {"Content-Length": str(len(body)), webhook.SIGNATURE_HEADER: signature})
+        assert proc.poll() is None, "exited before the accepted case finished"
+
+        release.touch()
+        assert _wait_for(lines, "case") == "case done"
+        _wait_for(lines, "serve returned")
+        assert proc.wait(timeout=15) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
