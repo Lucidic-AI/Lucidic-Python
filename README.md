@@ -75,7 +75,8 @@ current session.
 
 Lucidic sends each eval case to your runner as a signed webhook. `lucidicai.serve`
 verifies it, dedupes re-deliveries, replies `202` at once and calls your
-function on a bounded thread pool (stdlib only):
+function on a bounded thread pool (stdlib only). Signing and re-send need a
+backend release that includes World Evals (LUC-997).
 
 ```python
 import lucidicai as lucidic
@@ -86,8 +87,13 @@ def run_case(run: lucidic.Run):
     with run:                    # the case's session; ends and flushes evals on exit
         return my_agent(run.input)
 
+# host defaults to 127.0.0.1; 0.0.0.0 listens on all interfaces
 lucidic.serve(run_case, host="0.0.0.0", port=8080, workers=4, client=client)
 ```
+
+Call `serve` from the main thread. On SIGTERM or SIGINT it stops accepting,
+waits for the cases already accepted, and returns; a second signal goes to the
+handler that was there before (the client's exit-on-signal, or the default).
 
 Set `LUCIDIC_WEBHOOK_SECRET` (or pass `secret=`); without one `serve` refuses to
 start. Replies: `202` accepted, `200` duplicate, `401` bad or stale signature
