@@ -30,6 +30,11 @@ PULL_DELIVERY_WARNING = (
 )
 
 
+def _kickoff_delivery(response: Any) -> Optional[str]:
+    evosim = response.get("evosim") if isinstance(response, dict) else None
+    return evosim.get("delivery") if isinstance(evosim, dict) else None
+
+
 def warn_if_pull(delivery: Optional[str]) -> None:
     """Warn when a started run is in pull mode (``delivery == "pull"``)."""
     if delivery == "pull":
@@ -77,7 +82,7 @@ class EvoSimsResource:
             payload = _load_training_config(config_json_file)
             payload.setdefault("agent_id", self._agent_id)
             response = self.http.post("sdk/evosim/training-run", payload)
-            warn_if_pull((response.get("evosim") or {}).get("delivery"))
+            warn_if_pull(_kickoff_delivery(response))
             return response
         except Exception as e:
             if self._production:
@@ -92,7 +97,7 @@ class EvoSimsResource:
             payload = _load_training_config(config_json_file)
             payload.setdefault("agent_id", self._agent_id)
             response = await self.http.apost("sdk/evosim/training-run", payload)
-            warn_if_pull((response.get("evosim") or {}).get("delivery"))
+            warn_if_pull(_kickoff_delivery(response))
             return response
         except Exception as e:
             if self._production:
