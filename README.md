@@ -131,6 +131,67 @@ re-sends). Dedupe is in memory for an hour by default; pass `dedupe=` a store
 with `claim(key) -> bool` and `release(key)` to share it across replicas. In
 your own server, call `lucidic.Runner(run_case).handle(body, headers)`.
 
+## Eval runs by polling
+
+Start an eval run without a `webhook_url` and it runs in pull mode: Lucidic
+queues the cases and `lucidicai.poll` claims them. The poller needs outbound
+access only, so it suits a runner behind a firewall, on SaaS and on a
+self-hosted (BYOC) Lucidic alike. Push mode (a `webhook_url` and `serve`) stays
+available. The backend needs a release with the pull queue (LUC-1279).
+
+```python
+import lucidicai as lucidic
+
+client = lucidic.LucidicAI(providers=["openai"])
+
+def run_case(run: lucidic.Run):  # the same run_case as for serve
+    with run:
+        return my_agent(run.input)
+
+lucidic.poll(run_case, workers=4, client=client)  # polls for client.agent_id
+```
+
+```python
+run = client.datasets.start_run(dataset_id, repeats=3)   # no webhook_url: pull mode
+```
+
+A run started without a `webhook_url` logs a warning: its cases wait for a
+poller and fail as never delivered at the deadline. `EvalRun` and `EvoSim` carry
+`delivery` (`"pull"` or `"push"`) and the queue counts `queued`, `claimed` and
+`oldest_queued_seconds`.
+
+- `agent_ids=` lists the agents to poll for; it defaults to `[client.agent_id]`.
+  Agents the key cannot serve (another org's, or outside the key's agent binding)
+  are logged as dropped.
+- The poller builds its own client per agent (`run.client`), copying the passed
+  client's API key, base URL, providers, `eval_flush_timeout` and `auto_end`, or
+  reading the environment when no client is passed. These clients have
+  `production=False`, so a failed session start is reported instead of hidden, and
+  errors from `run.client` calls inside `run_case` (evals, prompts, events) raise
+  instead of being logged. The poller closes them on exit, never the passed client.
+- It claims up to the number of free workers (at most 10), heartbeats every job in
+  flight every 30 s, and backs off on errors (up to 60 s; 401, 403 and a backend
+  without the pull queue retry every 60 s). It never exits on an error.
+- A case whose `run_case` raised or returned before `with run:` still has its
+  session opened and ended. If the session fails to open, the case is logged and
+  its lease lapses, so the backend claims it again.
+- `poll` requires a base URL: with neither `LUCIDIC_BASE_URL` nor a client with
+  its own `base_url` it raises at startup instead of polling Lucidic SaaS. On SaaS,
+  set `LUCIDIC_BASE_URL=https://backend.lucidic.ai/api` or pass
+  `require_base_url=False`.
+- Call it from the main thread. SIGTERM or SIGINT stops claiming, waits for the
+  jobs in flight (still heartbeating them), closes the clients and returns. A
+  second signal force quits.
+
+## Releasing
+
+Release a 4.1.x only after the backend with the pull queue is deployed, and after
+`tests/e2e/test_poll_live.py` passes against the backend conformance stack: in
+AnalyticsAPIBackend, `docker compose -f docker-compose.conformance.yml -p conformance up -d --wait`,
+then `manage.py upgrade` and the conformance bootstrap for an API key (see
+`smoke_tests/conformance.py`), then here
+`LUCIDIC_E2E_BASE_URL=http://127.0.0.1:8000/api LUCIDIC_E2E_API_KEY=... pytest tests/e2e`.
+
 ## Documentation
 
 A full reference is on the way. For now, the source under `lucidicai/` is the

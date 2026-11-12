@@ -1,4 +1,4 @@
-"""examples/lucidic_entry.py and examples/lucidic_runner.py, loaded by path with a stub agent."""
+"""examples/lucidic_entry.py, lucidic_runner.py and lucidic_poller.py, loaded by path with a stub agent."""
 import importlib.util
 import json
 import runpy
@@ -64,3 +64,16 @@ def test_runner_example_serves_the_entry_run_case(client, monkeypatch):
     runpy.run_path(str(_EXAMPLES / "lucidic_runner.py"), run_name="__main__")
 
     assert served == {"fn": run_case, "host": "0.0.0.0", "port": 9001, "workers": 4, "client": client}
+
+
+def test_poller_example_polls_the_entry_run_case(client, monkeypatch):
+    def run_case(run):
+        return None
+
+    polled = {}
+    monkeypatch.setitem(sys.modules, "lucidic_entry", types.SimpleNamespace(client=client, run_case=run_case))
+    monkeypatch.setattr(lucidic, "poll", lambda fn, **kwargs: polled.update(fn=fn, **kwargs))
+    monkeypatch.setenv("LUCIDIC_RUNNER_WORKERS", "2")
+    runpy.run_path(str(_EXAMPLES / "lucidic_poller.py"), run_name="__main__")
+
+    assert polled == {"fn": run_case, "workers": 2, "client": client}
