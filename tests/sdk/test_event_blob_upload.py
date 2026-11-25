@@ -6,11 +6,13 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+import respx
 
 from lucidicai.sdk import event
 
 BLOB_URL = "https://blob.test/put"
 LARGE = "x" * 70_000
+_REAL_UPLOAD = event._upload_blob_async
 
 
 class FakeEvents:
@@ -51,6 +53,21 @@ def test_emit_event_uploads_full_payload(blob_env):
     [body] = blob_env.events.bodies
     assert body["needs_blob"] is True
     assert len(body["payload"]["details"]) <= 200
+
+
+@respx.mock
+def test_emit_event_puts_the_gzipped_payload(blob_env, monkeypatch):
+    monkeypatch.setattr(event, "_upload_blob_async", _REAL_UPLOAD)
+    put = respx.put(BLOB_URL).mock(return_value=httpx.Response(200))
+
+    event.emit_event(type="generic", session_id="sess-1", details=LARGE)
+    event.flush(timeout=5)
+
+    assert put.call_count == 1
+    request = put.calls.last.request
+    assert request.headers["content-type"] == "application/json"
+    assert request.headers["content-encoding"] == "gzip"
+    assert json.loads(gzip.decompress(request.content))["details"] == LARGE
 
 
 def test_acreate_event_returns_after_upload(blob_env):
