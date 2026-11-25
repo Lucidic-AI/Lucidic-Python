@@ -21,9 +21,8 @@ from ..utils.logger import debug, warning, error, truncate_id
 # Default blob threshold (64KB)
 DEFAULT_BLOB_THRESHOLD = 65536
 
-# Track background threads and tasks for flush()
+# Track background threads for flush()
 _background_threads: Set[threading.Thread] = WeakSet()
-_background_tasks: Set[asyncio.Task] = WeakSet()
 
 
 def _compress_json(payload: Dict[str, Any]) -> bytes:
@@ -48,11 +47,6 @@ async def _upload_blob_async(blob_url: str, data: bytes) -> None:
     async with httpx.AsyncClient() as client:
         resp = await client.put(blob_url, content=data, headers=headers)
         resp.raise_for_status()
-
-
-def _track_background_task(task: asyncio.Task) -> None:
-    """Track a background task for flush()."""
-    _background_tasks.add(task)
 
 
 def _create_preview(event_type: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -307,24 +301,20 @@ async def acreate_event(
             else:
                 raise
 
-        # Handle blob upload if needed (background task)
         if needs_blob and original_payload:
             blob_url = response.get("blob_url")
             if blob_url:
                 compressed = _compress_json(original_payload)
                 try:
-                    # Try to create background task
-                    task = asyncio.create_task(_upload_blob_async(blob_url, compressed))
-                    _track_background_task(task)
-                    debug(f"[Event] Blob upload started in background for event {truncate_id(client_event_id)}")
+                    # background thread: awaiting keeps the caller non-blocking
+                    await _upload_blob_async(blob_url, compressed)
                 except RuntimeError as e:
                     if "cannot schedule new futures" in str(e).lower() or sys.is_finalizing():
-                        # Can't create tasks, do it synchronously
-                        debug(f"[Event] Cannot create background task, uploading blob synchronously")
+                        debug(f"[Event] Async upload unavailable at shutdown, uploading blob synchronously")
                         _upload_blob_sync(blob_url, compressed)
-                        debug(f"[Event] Blob uploaded synchronously for event {truncate_id(client_event_id)}")
                     else:
                         raise
+                debug(f"[Event] Blob uploaded for event {truncate_id(client_event_id)}")
             else:
                 error("[Event] No blob_url received for large payload")
 
@@ -604,25 +594,5 @@ def flush(timeout: float = 5.0) -> None:
                 thread.join(timeout=remaining)
                 if thread.is_alive():
                     warning(f"[SDK] Thread {thread.name} did not complete within timeout")
-    
-    # Wait for async tasks if in async context
-    try:
-        loop = asyncio.get_running_loop()
-        tasks = [t for t in _background_tasks if not t.done()]
-        if tasks:
-            remaining = timeout - (time.time() - start_time)
-            if remaining > 0:
-                try:
-                    loop.run_until_complete(
-                        asyncio.wait_for(
-                            asyncio.gather(*tasks, return_exceptions=True),
-                            timeout=remaining
-                        )
-                    )
-                except asyncio.TimeoutError:
-                    warning(f"[SDK] {len(tasks)} async tasks did not complete within timeout")
-    except RuntimeError:
-        # Not in async context, skip async task flushing
-        pass
-    
+
     debug(f"[SDK] Flush completed in {time.time() - start_time:.2f}s")
