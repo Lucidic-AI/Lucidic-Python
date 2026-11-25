@@ -229,8 +229,12 @@ def _legacy_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
         if isinstance(content, list):
             text_parts = []
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text":
                     text_parts.append(item.get("text", ""))
+                elif item.get("type") in ("image_url", "image"):
+                    text_parts.append(IMAGE_PLACEHOLDER)
             if text_parts:
                 content = " ".join(text_parts)
 

@@ -62,6 +62,20 @@ def test_image_parts_render_as_placeholder(image_part):
     ]
 
 
+@pytest.mark.parametrize("image_item", [
+    {"type": "image_url", "image_url": {"url": "[image omitted]"}},
+    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+])
+def test_legacy_prompt_image_items_render_as_placeholder(image_item):
+    span = FakeSpan({
+        "gen_ai.prompt.0.role": "user",
+        "gen_ai.prompt.0.content": json.dumps([{"type": "text", "text": "What is in this picture?"}, image_item]),
+    })
+    assert extract_prompts(span, span.attributes) == [
+        {"role": "user", "content": "What is in this picture? [image omitted]"}
+    ]
+
+
 def test_openai_prompt_with_base64_image_keeps_text(monkeypatch):
     import openai
     from opentelemetry.instrumentation.openai.shared.config import Config
