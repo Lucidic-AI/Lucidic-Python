@@ -84,6 +84,14 @@ def _flatten_text_parts(parts: Any) -> str:
     return " ".join(out)
 
 
+def _has_text_part(parts: Any) -> bool:
+    """whether a new-shape message has a non-empty text part (an image placeholder doesn't count)."""
+    return any(
+        isinstance(p, dict) and p.get("type") == "text" and p.get("content", p.get("text"))
+        for p in parts or []
+    )
+
+
 def _tool_calls_from_parts(parts: Any) -> List[Dict[str, Any]]:
     """extract tool_call parts from a new-shape message."""
     calls = []
@@ -139,16 +147,16 @@ def _messages_from_new_attr(attrs: Dict[str, Any], key: str) -> Optional[List[Di
         parts = m.get("parts")
         content = _flatten_text_parts(parts)
         tool_calls = _tool_calls_from_parts(parts)
-        if tool_calls:
-            content = _append_tool_calls(content, tool_calls)
-        if not content:
+        tool_response = _tool_responses_from_parts(parts)
+        if tool_response:
             # tool RESULT messages carry a tool_call_response part, not text. providers differ
             # on the role (openai uses "tool", anthropic puts the result in a "user" message),
-            # so normalize a pure tool-result message to role="tool" for consistency.
-            tool_response = _tool_responses_from_parts(parts)
-            if tool_response:
-                content = tool_response
+            # so normalize a tool-result message without text or tool calls to role="tool".
+            if not tool_calls and not _has_text_part(parts):
                 role = "tool"
+            content = f"{tool_response}\n\n{content}" if content else tool_response
+        if tool_calls:
+            content = _append_tool_calls(content, tool_calls)
         if content:
             had_content = True
         messages.append({"role": role, "content": content})

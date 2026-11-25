@@ -254,6 +254,33 @@ def test_prompts_tool_call_only_turn_unchanged():
     )
 
 
+def _tool_result_turn(*other_parts):
+    return FakeSpan("anthropic.chat", {
+        "gen_ai.provider.name": "anthropic",
+        "gen_ai.input.messages": json.dumps([
+            {"role": "user", "parts": [{"type": "text", "content": "Take a screenshot."}]},
+            {"role": "assistant", "parts": [{"type": "tool_call", "id": "toolu_1", "name": "screenshot",
+                                             "arguments": {}}]},
+            {"role": "user", "parts": [
+                {"type": "tool_call_response", "id": "toolu_1", "response": "saved screen.png"},
+                *other_parts,
+            ]},
+        ]),
+    })
+
+
+def test_prompts_tool_result_beside_image_kept():
+    span = _tool_result_turn({"type": "blob", "modality": "image", "mime_type": "image/png", "content": "iVBORw0KGgo="})
+    msgs = extract_prompts(span, span.attributes)
+    assert msgs[2] == {"role": "tool", "content": "Tool Result:\nsaved screen.png\n\n[image omitted]"}
+
+
+def test_prompts_tool_result_beside_text_kept():
+    span = _tool_result_turn({"type": "text", "content": "Here is the screen."})
+    msgs = extract_prompts(span, span.attributes)
+    assert msgs[2] == {"role": "user", "content": "Tool Result:\nsaved screen.png\n\nHere is the screen."}
+
+
 def test_prompts_ignores_azure_prompt_filter_noise():
     """the only gen_ai.prompt.* key on a new-shape span is azure noise; must not be read as a message."""
     span = FakeSpan("openai.chat", {
