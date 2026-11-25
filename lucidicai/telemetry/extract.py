@@ -32,6 +32,8 @@ INPUT_EVENT_NAMES = {
 }
 OUTPUT_EVENT_NAME = "gen_ai.choice"
 
+IMAGE_PLACEHOLDER = "[image omitted]"
+
 
 def detect_is_llm_span(span) -> bool:
     """check if span is LLM-related - matches TypeScript logic."""
@@ -67,14 +69,18 @@ def _loads(raw: Any) -> Any:
 
 
 def _flatten_text_parts(parts: Any) -> str:
-    """join the text content of a new-shape message's parts."""
+    """join the text content of a new-shape message's parts; image parts become a placeholder."""
     out = []
     for p in parts or []:
-        if isinstance(p, dict) and p.get("type") == "text":
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
             # the new semconv part carries text under "content"
             text = p.get("content", p.get("text", ""))
             if text:
                 out.append(str(text))
+        elif p.get("modality") == "image":
+            out.append(IMAGE_PLACEHOLDER)
     return " ".join(out)
 
 
