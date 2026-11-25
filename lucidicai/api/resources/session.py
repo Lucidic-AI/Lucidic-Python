@@ -346,6 +346,11 @@ class SessionResource:
             logger.debug("[SessionResource] No session to end")
             return
 
+        from ...telemetry.telemetry_manager import flush_spans
+
+        # spans first, so the last LLM event lands before is_finished
+        flush_spans()
+
         # deliver this session's pending evals.emit() posts before it finishes
         timeout = self._flush_timeout(eval_flush_timeout)
         if timeout:
@@ -381,6 +386,11 @@ class SessionResource:
         if not session_id:
             logger.debug("[SessionResource] No session to end")
             return
+
+        from ...telemetry.telemetry_manager import flush_spans
+
+        # spans first, so the last LLM event lands before is_finished
+        flush_spans()
 
         # deliver this session's pending evals.emit() posts before it finishes
         timeout = self._flush_timeout(eval_flush_timeout)

@@ -211,20 +211,10 @@ class Session:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit the session context - unbinds and optionally ends the session."""
-        # Flush telemetry before ending
-        try:
-            from .telemetry.telemetry_manager import get_telemetry_manager
+        from .telemetry.telemetry_manager import flush_spans
 
-            manager = get_telemetry_manager()
-            if manager.is_telemetry_initialized:
-                logger.debug(
-                    f"[Session] Flushing telemetry for session {self._session_id}"
-                )
-                flush_success = manager.force_flush(timeout_millis=5000)
-                if not flush_success:
-                    logger.warning("[Session] Telemetry flush may be incomplete")
-        except Exception as e:
-            logger.debug(f"[Session] Error flushing telemetry: {e}")
+        # Flush telemetry before ending
+        flush_spans()
 
         # Unbind context
         self._unbind_context()
@@ -248,20 +238,10 @@ class Session:
         """Exit the async session context - unbinds and optionally ends the session."""
         import asyncio
 
-        # Flush telemetry before ending
-        try:
-            from .telemetry.telemetry_manager import get_telemetry_manager
+        from .telemetry.telemetry_manager import flush_spans
 
-            manager = get_telemetry_manager()
-            if manager.is_telemetry_initialized:
-                logger.debug(
-                    f"[Session] Flushing telemetry for async session {self._session_id}"
-                )
-                flush_success = manager.force_flush(timeout_millis=5000)
-                if not flush_success:
-                    logger.warning("[Session] Telemetry flush may be incomplete")
-        except Exception as e:
-            logger.debug(f"[Session] Error flushing telemetry: {e}")
+        # Flush telemetry before ending
+        flush_spans()
 
         # Unbind context
         self._unbind_context()

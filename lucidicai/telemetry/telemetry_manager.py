@@ -181,3 +181,28 @@ def get_telemetry_manager() -> TelemetryManager:
     if _telemetry_manager is None:
         _telemetry_manager = TelemetryManager()
     return _telemetry_manager
+
+
+def flush_spans(timeout_millis: int = 5000) -> None:
+    """Export pending spans, waiting at most timeout_millis; never raises."""
+    manager = get_telemetry_manager()
+    if not manager.is_telemetry_initialized:
+        return
+    flushed = []
+
+    def flush():
+        try:
+            flushed.append(manager.force_flush(timeout_millis=timeout_millis))
+        except Exception as e:
+            logger.debug(f"[Telemetry] Error flushing telemetry: {e}")
+
+    # off the caller's thread: otel ignores the timeout, and a signal handler that
+    # interrupts an export on the main thread would wait on its export lock
+    try:
+        worker = threading.Thread(target=flush, name="LucidicSpanFlush", daemon=True)
+        worker.start()
+        worker.join(timeout_millis / 1000)
+    except Exception as e:
+        logger.debug(f"[Telemetry] Error flushing telemetry: {e}")
+    if flushed != [True]:
+        logger.warning("[Telemetry] Telemetry flush may be incomplete")

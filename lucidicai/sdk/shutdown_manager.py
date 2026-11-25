@@ -54,6 +54,9 @@ class ShutdownManager:
         self.is_shutting_down = False
         self.shutdown_complete = threading.Event()
         self.listeners_registered = False
+        self._signals_installed = False
+        self._previous_signal_handlers: Dict[int, object] = {}
+        self._previous_excepthook: Optional[Callable] = None
         self._session_lock = threading.Lock()
 
         # Client registry for multi-client support
@@ -131,32 +134,49 @@ class ShutdownManager:
             debug(f"[ShutdownManager] Unregistered client {client_id[:8]}...")
 
     def _ensure_listeners_registered(self) -> None:
-        """Register process exit listeners once."""
-        if self.listeners_registered:
-            return
-            
-        self.listeners_registered = True
-        debug("[ShutdownManager] Registering global shutdown listeners (atexit, SIGINT, SIGTERM, uncaught exceptions)")
-        
-        # register atexit handler for normal termination
-        atexit.register(self._handle_exit)
-        
-        # register signal handlers for interrupts
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        
-        # register uncaught exception handler
-        sys.excepthook = self._exception_handler
-    
+        """Register process exit listeners once; signal handlers once on the main thread."""
+        if not self.listeners_registered:
+            self.listeners_registered = True
+            debug("[ShutdownManager] Registering global shutdown listeners (atexit, uncaught exceptions)")
+            atexit.register(self._handle_exit)
+            self._previous_excepthook = sys.excepthook
+            sys.excepthook = self._exception_handler
+
+        # signal handlers need the main thread; a later main-thread register installs them
+        if not self._signals_installed and threading.current_thread() is threading.main_thread():
+            self._signals_installed = True
+            debug("[ShutdownManager] Registering SIGINT/SIGTERM handlers")
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous = signal.getsignal(signum)
+                if previous != signal.SIG_IGN:  # respect an ignored signal (e.g. a shell's `cmd &`)
+                    self._previous_signal_handlers[signum] = previous
+                    signal.signal(signum, self._signal_handler)
+
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
+        """Flush and end everything, then hand the signal to the handler we replaced."""
+        previous = self._previous_signal_handlers.get(signum)
+        # chained: another handler wraps ours (e.g. serve's force quit) and owns the disposition
+        chained = signal.getsignal(signum) != self._signal_handler
+        if not chained:
+            # one-shot, so a second signal force quits through the previous handler
+            signal.signal(signum, signal.SIG_DFL if previous is None else previous)
         info(f"[ShutdownManager] Received signal {signum}, initiating graceful shutdown")
         self._handle_shutdown(f"signal_{signum}")
-        # exit after cleanup
-        sys.exit(0)
+        if callable(previous):
+            previous(signum, frame)
+        elif chained:
+            raise SystemExit(128 + signum)
+        else:
+            signal.raise_signal(signum)
     
     def _exception_handler(self, exc_type, exc_value, exc_traceback):
         """Handle uncaught exceptions."""
+        chain = self._previous_excepthook or sys.__excepthook__
+        # ctrl-c is not an error; the signal handler or atexit already ends the sessions
+        if issubclass(exc_type, KeyboardInterrupt):
+            chain(exc_type, exc_value, exc_traceback)
+            return
+
         # log the exception
         error(f"[ShutdownManager] Uncaught exception: {exc_type.__name__}: {exc_value}")
         
@@ -180,8 +200,8 @@ class ShutdownManager:
         # perform shutdown
         self._handle_shutdown("uncaught_exception")
         
-        # call default handler
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        # chain to the hook we replaced
+        chain(exc_type, exc_value, exc_traceback)
     
     def _handle_exit(self):
         """Handle normal process exit."""
