@@ -6,7 +6,7 @@ long_description = (Path(__file__).parent / "README.md").read_text(encoding="utf
 
 setup(
     name="lucidicai",
-    version="4.0.0",
+    version="4.1.0",
     packages=find_packages(),
     install_requires=[
         "requests>=2.25.1",
