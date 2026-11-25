@@ -50,7 +50,34 @@ Constructor arguments take precedence over environment variables.
 | `LUCIDIC_AUTO_END` | No | `true` | Auto-end sessions on process exit |
 | `LUCIDIC_REGION` | No | `"us"` | `"us"` or `"india"` |
 | `LUCIDIC_BASE_URL` | No | — | Custom API URL (overrides region) |
+| `LUCIDIC_REQUIRE_BASE_URL` | No | `false` | Refuse to fall back to Lucidic SaaS (see below) |
 | `LUCIDIC_WEBHOOK_SECRET` | For webhook runs | — | Eval-run webhook signing secret (comma-separated while rotating) |
+
+### Self-hosted Lucidic (BYOC)
+
+Without a base URL the SDK sends telemetry (prompts, outputs, tool calls) to
+Lucidic SaaS at `https://backend.lucidic.ai/api`. When Lucidic runs in your own
+cloud account, set the URL and turn on the guard so a missing URL fails loudly
+instead of sending data out of your account:
+
+```bash
+export LUCIDIC_BASE_URL="https://lucidic.internal.example.com/api"
+export LUCIDIC_REQUIRE_BASE_URL=true
+```
+
+With the guard on, the SDK raises `ValueError` at `LucidicAI(...)` (or at the
+first config read on the older module-level paths) if neither `base_url=` nor
+`LUCIDIC_BASE_URL` is set, or if a region (`region=` or `LUCIDIC_REGION`) is
+set, since a region only selects a Lucidic SaaS URL. It raises even with
+`LUCIDIC_PRODUCTION=true`, before any HTTP client exists. `true`, `1`, `yes`
+and `on` turn it on; `false`, `0`, `no`, `off` or unset leave it off; any
+other value raises. `LUCIDIC_DEBUG=true` still wins and uses
+`http://localhost:8000/api`, which never leaves the machine.
+
+`LucidicAI(require_base_url=True)` turns the guard on for that one client;
+`require_base_url=False` doesn't turn the environment variable off. A client the
+SDK builds for you, such as `lucidicai.load()` without `client=`, reads only the
+environment, so in a deployment prefer the environment variable.
 
 ## Supported Providers
 
