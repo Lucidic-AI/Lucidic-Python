@@ -441,13 +441,13 @@ class TestEndWaitIsBounded:
         hold = threading.Event()
         _routes(order, hold=hold)
         flushes, end_timeouts = _spy_flush(monkeypatch, c), []
-        real_end = c.sessions.end
+        real_end = c.sessions._end
 
-        def _end(session_id=None, **kwargs):
-            end_timeouts.append(kwargs.get("eval_flush_timeout"))
-            return real_end(session_id, **kwargs)
+        def _end(session_id, eval_flush_timeout, **kwargs):
+            end_timeouts.append(eval_flush_timeout)
+            return real_end(session_id, eval_flush_timeout, **kwargs)
 
-        monkeypatch.setattr(c.sessions, "end", _end)
+        monkeypatch.setattr(c.sessions, "_end", _end)
         try:
             c.sessions.create(session_name="case", session_id=_SESSION_ID)
             c.evals.emit(True, name="task_passed")

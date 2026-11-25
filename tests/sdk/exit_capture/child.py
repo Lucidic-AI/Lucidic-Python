@@ -19,6 +19,7 @@ AGENT_ID = "aaaa1111-0000-0000-0000-000000000000"
 API_KEY = "secret-key"
 MESSAGES = [{"role": "user", "content": "hi"}]
 BATCH_TIMER_WAIT_SECONDS = 7  # past the 5 s span batch timer
+MANY_SESSIONS = 6
 
 
 def new_client():
@@ -122,6 +123,10 @@ def main(name):
     elif name == "close":
         client.close()
         os._exit(0)  # skip atexit: close alone must have delivered everything
+    elif name == "many_sessions_sigterm":
+        for i in range(MANY_SESSIONS - 1):
+            session_then_llm(client, f"{name}-{i}")
+        block()
     elif name in ("sigint", "sigterm", "app_handler_before", "app_handler_after"):
         block()
     # exit, last_event_exit: fall off the end

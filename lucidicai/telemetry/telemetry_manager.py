@@ -5,6 +5,7 @@ Telemetry is shared across all LucidicAI client instances, with spans routed
 to the correct client based on client_id captured in span attributes.
 """
 
+import asyncio
 import logging
 import threading
 from typing import Dict, List, Optional, TYPE_CHECKING, Any
@@ -80,7 +81,8 @@ class TelemetryManager:
                 # First initialization - create TracerProvider
                 logger.info("[Telemetry] Initializing shared TracerProvider")
 
-                self._tracer_provider = TracerProvider()
+                # the sdk shuts the provider down itself; otel's atexit would wait ~30 s on a stuck export
+                self._tracer_provider = TracerProvider(shutdown_on_exit=False)
 
                 # Add context capture processor (captures session_id, parent_event_id, client_id)
                 self._context_processor = ContextCaptureProcessor()
@@ -183,11 +185,23 @@ def get_telemetry_manager() -> TelemetryManager:
     return _telemetry_manager
 
 
-def flush_spans(timeout_millis: int = 5000) -> None:
-    """Export pending spans, waiting at most timeout_millis; never raises."""
+_stuck_flush: Optional[threading.Thread] = None
+
+
+def flush_spans(timeout_millis: int = 5000) -> bool:
+    """Export pending spans, waiting at most timeout_millis; never raises.
+
+    Returns False when the flush is incomplete or skipped because an earlier one is stuck.
+    """
+    global _stuck_flush
     manager = get_telemetry_manager()
     if not manager.is_telemetry_initialized:
-        return
+        return True
+    # the exporter is stuck, so waiting on it again only burns the caller's budget
+    stuck = _stuck_flush
+    if stuck is not None and stuck.is_alive():
+        logger.debug("[Telemetry] Skipping span flush: an earlier flush is still stuck exporting")
+        return False
     flushed = []
 
     def flush():
@@ -202,7 +216,35 @@ def flush_spans(timeout_millis: int = 5000) -> None:
         worker = threading.Thread(target=flush, name="LucidicSpanFlush", daemon=True)
         worker.start()
         worker.join(timeout_millis / 1000)
+        if worker.is_alive():
+            # no lock: a signal handler can run here, and a reference write is atomic
+            _stuck_flush = worker
     except Exception as e:
         logger.debug(f"[Telemetry] Error flushing telemetry: {e}")
     if flushed != [True]:
         logger.warning("[Telemetry] Telemetry flush may be incomplete")
+        return False
+    return True
+
+
+async def aflush_spans(timeout_millis: int = 5000) -> bool:
+    """flush_spans() awaited off the event loop; never raises."""
+    if not get_telemetry_manager().is_telemetry_initialized:
+        return True
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+
+    def settle(result):
+        if not done.done():
+            done.set_result(result)
+
+    def run():
+        result = flush_spans(timeout_millis)
+        try:
+            loop.call_soon_threadsafe(settle, result)
+        except RuntimeError:
+            pass  # the loop closed while we flushed
+
+    # its own thread, not the loop's executor, so a busy executor can't delay the end
+    threading.Thread(target=run, name="LucidicSpanFlushWait", daemon=True).start()
+    return await done
