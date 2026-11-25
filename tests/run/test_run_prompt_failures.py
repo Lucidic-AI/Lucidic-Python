@@ -1,5 +1,5 @@
-"""A production client must not run a checkpoint case on the baseline prompt when the fetch fails,
-and a case that fails records its error on the case's session."""
+"""A checkpoint case must not run on the baseline prompt when the fetch fails, and a case that
+fails records its error on the case's session."""
 import json
 import logging
 
@@ -21,13 +21,25 @@ def production_client():
     c.close(eval_flush_timeout=0)
 
 
+@pytest.fixture(params=[True, False], ids=["production", "default"])
+def any_client(request):
+    c = LucidicAI(api_key="test-key", agent_id=AGENT_ID, production=request.param, eval_flush_timeout=2)
+    yield c
+    c.close(eval_flush_timeout=0)
+
+
 def _load(client, **overrides):
     payload = {k: v for k, v in full_payload(**overrides).items() if k != "input"}
     return lucidic.load(client=client, **{k: v for k, v in payload.items() if v is not None})
 
 
 @pytest.fixture
-def checkpoint_run(production_client):
+def checkpoint_run(any_client):
+    return _load(any_client)
+
+
+@pytest.fixture
+def production_checkpoint_run(production_client):
     return _load(production_client)
 
 
@@ -77,14 +89,22 @@ async def test_checkpoint_run_aprompt_raises_when_the_prompt_service_is_down(che
     _assert_names_the_failure(raised.value, ServiceUnavailableError)
 
 
-def test_checkpoint_run_still_uses_the_default_for_a_missing_prompt(checkpoint_run, backend):
+def test_production_checkpoint_run_still_uses_the_default_for_a_missing_prompt(production_checkpoint_run, backend):
     _prompts(backend, return_value=httpx.Response(404, json={"error": "Prompt not found"}))
 
-    assert checkpoint_run.prompt("system", default=_DEFAULT) == _DEFAULT
-    assert checkpoint_run.prompt("other") == ""
+    assert production_checkpoint_run.prompt("system", default=_DEFAULT) == _DEFAULT
+    assert production_checkpoint_run.prompt("other") == ""
 
 
-def test_run_without_checkpoint_falls_back_with_a_warning(baseline_run, backend, caplog):
+def test_default_client_run_without_checkpoint_raises_the_api_error(client, backend):
+    run = _load(client, checkpoint_id=None, experiment_id=None, eval_run_id=None)
+    _prompts(backend, return_value=httpx.Response(503, json={"error": "down"}))
+
+    with pytest.raises(ServiceUnavailableError):
+        run.prompt("system", default=_DEFAULT)
+
+
+def test_production_run_without_checkpoint_falls_back_with_a_warning(baseline_run, backend, caplog):
     _prompts(backend, return_value=httpx.Response(503, json={"error": "down"}))
 
     with caplog.at_level(logging.WARNING, logger="Lucidic"):
@@ -95,7 +115,7 @@ def test_run_without_checkpoint_falls_back_with_a_warning(baseline_run, backend,
 
 
 @pytest.mark.asyncio
-async def test_run_without_checkpoint_aprompt_falls_back_with_a_warning(baseline_run, backend, caplog):
+async def test_production_run_without_checkpoint_aprompt_falls_back_with_a_warning(baseline_run, backend, caplog):
     _prompts(backend, return_value=httpx.Response(503, json={"error": "down"}))
 
     with caplog.at_level(logging.WARNING, logger="Lucidic"):

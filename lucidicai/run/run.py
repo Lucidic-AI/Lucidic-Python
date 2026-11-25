@@ -130,7 +130,7 @@ class Run:
 
         Raises:
             NotFoundError: the prompt does not exist and no default was given.
-            PromptError: a production client could not fetch the prompt of a checkpoint run.
+            PromptError: a checkpoint run could not fetch the prompt; the cause is chained.
         """
         if name not in self._prompts:
             try:
@@ -167,33 +167,36 @@ class Run:
 
     def _fetch_prompt(self, name: str, label: str) -> Optional[str]:
         prompts = self.client.prompts
-        if not prompts._production:
-            return prompts.get(name, **self._prompt_kwargs(label)).content
         try:
             return prompts._fetch(name, **self._prompt_kwargs(label)).content
         except NotFoundError:
+            if not prompts._production:
+                raise
             return None  # a production client has always used the default for a missing prompt
         except Exception as e:
-            self._fetch_failed(name, e)
+            self._fetch_failed(name, e, prompts._production)
             return None
 
     async def _afetch_prompt(self, name: str, label: str) -> Optional[str]:
         prompts = self.client.prompts
-        if not prompts._production:
-            return (await prompts.aget(name, **self._prompt_kwargs(label))).content
         try:
             return (await prompts._afetch(name, **self._prompt_kwargs(label))).content
         except NotFoundError:
+            if not prompts._production:
+                raise
             return None  # a production client has always used the default for a missing prompt
         except Exception as e:
-            self._fetch_failed(name, e)
+            self._fetch_failed(name, e, prompts._production)
             return None
 
-    def _fetch_failed(self, name: str, e: Exception) -> None:
+    def _fetch_failed(self, name: str, e: Exception, production: bool) -> None:
+        """raise for a failed fetch, unless a production client may fall back to the default."""
         checkpoint_id = self._ids.checkpoint_id
         if checkpoint_id:
             # the default is the baseline: running it would grade the wrong prompt
             raise PromptError(f"{name!r} for checkpoint {checkpoint_id}: {type(e).__name__}: {e}") from e
+        if not production:
+            raise e
         logger.warning(f"[Run] could not fetch prompt {name!r} ({type(e).__name__}: {e}); using the local default")
 
     @staticmethod

@@ -6,7 +6,7 @@ import pytest
 import respx
 
 import lucidicai as lucidic
-from lucidicai import LucidicAI, NotFoundError, ServiceUnavailableError
+from lucidicai import LucidicAI, NotFoundError, PromptError, ServiceUnavailableError
 
 from .conftest import AGENT_ID, BASE_URL, CHECKPOINT_ID, SESSION_ID, full_payload
 
@@ -52,8 +52,9 @@ def test_missing_prompt_without_default_raises(run):
 def test_outage_raises_instead_of_using_the_default(run):
     # a checkpoint run must never silently grade the baseline prompt.
     respx.get(_PROMPTS).mock(return_value=httpx.Response(503, json={"error": "down"}))
-    with pytest.raises(ServiceUnavailableError):
+    with pytest.raises(PromptError) as raised:
         run.prompt("system", default=_DEFAULT)
+    assert isinstance(raised.value.__cause__, ServiceUnavailableError)
 
 
 @respx.mock
