@@ -139,50 +139,62 @@ class PromptResource:
             and metadata. Use str(prompt) for backward-compatible string access.
         """
         try:
-            # Resolve the session context so a session running a checkpoint
-            # gets that checkpoint's trained prompt version. The backend overrides the
-            # label only for prompts the checkpoint trained and falls back to the label
-            # otherwise, so this is safe for non-checkpoint sessions.
-            resolved_session_id = session_id if session_id is not None else _current_session_id()
-            cache_key = (prompt_name, label, checkpoint_id, resolved_session_id)
-
-            # Check cache
-            if self._is_cache_valid(cache_key, cache_ttl):
-                raw_content = self._cache[cache_key]["content"]
-                metadata = self._cache[cache_key]["metadata"]
-            else:
-                params: Dict[str, Any] = {
-                    "prompt_name": prompt_name,
-                    "label": label,
-                    "agent_id": self._config.agent_id,
-                }
-                if checkpoint_id is not None:
-                    params["checkpoint_id"] = checkpoint_id
-                if resolved_session_id is not None:
-                    params["session_id"] = resolved_session_id
-                response = self.http.get("sdk/prompts", params)
-                raw_content = response.get("prompt_content", "")
-                metadata = response.get("metadata", {})
-
-                # Store in cache if caching is enabled. checkpoint/session-scoped
-                # entries resolve to immutable versions, so a positive/indefinite ttl
-                # needs no invalidation.
-                if cache_ttl != 0:
-                    self._cache[cache_key] = {
-                        "content": raw_content,
-                        "metadata": metadata,
-                        "timestamp": time.time(),
-                    }
-
-            prompt = Prompt(raw_content=raw_content, content=raw_content, metadata=metadata)
-            if variables:
-                prompt.replace_variables(variables)
-            return prompt
+            return self._fetch(prompt_name, variables, label, cache_ttl, checkpoint_id, session_id)
         except Exception as e:
             if self._production:
                 logger.error(f"[PromptResource] Failed to get prompt: {e}")
                 return Prompt(raw_content="", content="", metadata={})
             raise
+
+    def _fetch(
+        self,
+        prompt_name: str,
+        variables: Optional[Dict[str, Any]] = None,
+        label: str = "production",
+        cache_ttl: int = 0,
+        checkpoint_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Prompt:
+        """get() without the production error swallow."""
+        # Resolve the session context so a session running a checkpoint
+        # gets that checkpoint's trained prompt version. The backend overrides the
+        # label only for prompts the checkpoint trained and falls back to the label
+        # otherwise, so this is safe for non-checkpoint sessions.
+        resolved_session_id = session_id if session_id is not None else _current_session_id()
+        cache_key = (prompt_name, label, checkpoint_id, resolved_session_id)
+
+        # Check cache
+        if self._is_cache_valid(cache_key, cache_ttl):
+            raw_content = self._cache[cache_key]["content"]
+            metadata = self._cache[cache_key]["metadata"]
+        else:
+            params: Dict[str, Any] = {
+                "prompt_name": prompt_name,
+                "label": label,
+                "agent_id": self._config.agent_id,
+            }
+            if checkpoint_id is not None:
+                params["checkpoint_id"] = checkpoint_id
+            if resolved_session_id is not None:
+                params["session_id"] = resolved_session_id
+            response = self.http.get("sdk/prompts", params)
+            raw_content = response.get("prompt_content", "")
+            metadata = response.get("metadata", {})
+
+            # Store in cache if caching is enabled. checkpoint/session-scoped
+            # entries resolve to immutable versions, so a positive/indefinite ttl
+            # needs no invalidation.
+            if cache_ttl != 0:
+                self._cache[cache_key] = {
+                    "content": raw_content,
+                    "metadata": metadata,
+                    "timestamp": time.time(),
+                }
+
+        prompt = Prompt(raw_content=raw_content, content=raw_content, metadata=metadata)
+        if variables:
+            prompt.replace_variables(variables)
+        return prompt
 
     async def aget(
         self,
@@ -198,45 +210,57 @@ class PromptResource:
         See get() for full documentation.
         """
         try:
-            # Resolve the session context (see get()).
-            resolved_session_id = session_id if session_id is not None else _current_session_id()
-            cache_key = (prompt_name, label, checkpoint_id, resolved_session_id)
-
-            # Check cache
-            if self._is_cache_valid(cache_key, cache_ttl):
-                raw_content = self._cache[cache_key]["content"]
-                metadata = self._cache[cache_key]["metadata"]
-            else:
-                params: Dict[str, Any] = {
-                    "prompt_name": prompt_name,
-                    "label": label,
-                    "agent_id": self._config.agent_id,
-                }
-                if checkpoint_id is not None:
-                    params["checkpoint_id"] = checkpoint_id
-                if resolved_session_id is not None:
-                    params["session_id"] = resolved_session_id
-                response = await self.http.aget("sdk/prompts", params)
-                raw_content = response.get("prompt_content", "")
-                metadata = response.get("metadata", {})
-
-                # Store in cache if caching is enabled (immutable when context-scoped).
-                if cache_ttl != 0:
-                    self._cache[cache_key] = {
-                        "content": raw_content,
-                        "metadata": metadata,
-                        "timestamp": time.time(),
-                    }
-
-            prompt = Prompt(raw_content=raw_content, content=raw_content, metadata=metadata)
-            if variables:
-                prompt.replace_variables(variables)
-            return prompt
+            return await self._afetch(prompt_name, variables, label, cache_ttl, checkpoint_id, session_id)
         except Exception as e:
             if self._production:
                 logger.error(f"[PromptResource] Failed to get prompt: {e}")
                 return Prompt(raw_content="", content="", metadata={})
             raise
+
+    async def _afetch(
+        self,
+        prompt_name: str,
+        variables: Optional[Dict[str, Any]] = None,
+        label: str = "production",
+        cache_ttl: int = 0,
+        checkpoint_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Prompt:
+        """aget() without the production error swallow."""
+        # Resolve the session context (see _fetch()).
+        resolved_session_id = session_id if session_id is not None else _current_session_id()
+        cache_key = (prompt_name, label, checkpoint_id, resolved_session_id)
+
+        # Check cache
+        if self._is_cache_valid(cache_key, cache_ttl):
+            raw_content = self._cache[cache_key]["content"]
+            metadata = self._cache[cache_key]["metadata"]
+        else:
+            params: Dict[str, Any] = {
+                "prompt_name": prompt_name,
+                "label": label,
+                "agent_id": self._config.agent_id,
+            }
+            if checkpoint_id is not None:
+                params["checkpoint_id"] = checkpoint_id
+            if resolved_session_id is not None:
+                params["session_id"] = resolved_session_id
+            response = await self.http.aget("sdk/prompts", params)
+            raw_content = response.get("prompt_content", "")
+            metadata = response.get("metadata", {})
+
+            # Store in cache if caching is enabled (immutable when context-scoped).
+            if cache_ttl != 0:
+                self._cache[cache_key] = {
+                    "content": raw_content,
+                    "metadata": metadata,
+                    "timestamp": time.time(),
+                }
+
+        prompt = Prompt(raw_content=raw_content, content=raw_content, metadata=metadata)
+        if variables:
+            prompt.replace_variables(variables)
+        return prompt
 
     def update(
         self,

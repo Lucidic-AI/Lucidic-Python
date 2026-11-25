@@ -2,12 +2,13 @@
 import json
 import logging
 import os
+import traceback
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Union
 
 from ..api.documents import DownloadSummary
-from ..core.errors import ConflictError, InvalidOperationError, NotFoundError
+from ..core.errors import ConflictError, InvalidOperationError, NotFoundError, PromptError
 from ..sdk.tools.context import MockContext, _current_mock_context, bind_mock_context, clear_mock_context
 from ..session_obj import Session
 from .tools import RunTools
@@ -123,15 +124,17 @@ class Run:
         Resolved once per run, so ``label`` is fixed by the first call for a
         name. Only a missing prompt falls back to ``default``;
         other errors raise, so a checkpoint run never silently grades the
-        baseline. ``register=True`` creates a missing prompt from ``default``
-        (best effort, needs ``prompt:write``).
+        baseline. A ``production=True`` client falls back on those errors too
+        (with a warning), except in a checkpoint run. ``register=True`` creates
+        a missing prompt from ``default`` (best effort, needs ``prompt:write``).
 
         Raises:
             NotFoundError: the prompt does not exist and no default was given.
+            PromptError: a production client could not fetch the prompt of a checkpoint run.
         """
         if name not in self._prompts:
             try:
-                content = self.client.prompts.get(name, **self._prompt_kwargs(label)).content
+                content = self._fetch_prompt(name, label)
             except NotFoundError:
                 if default is None:
                     raise
@@ -148,7 +151,7 @@ class Run:
         """Async sibling of ``prompt``."""
         if name not in self._prompts:
             try:
-                content = (await self.client.prompts.aget(name, **self._prompt_kwargs(label))).content
+                content = await self._afetch_prompt(name, label)
             except NotFoundError:
                 if default is None:
                     raise
@@ -162,10 +165,40 @@ class Run:
         # explicit ids pin the checkpoint version even before the session exists
         return {"label": label, "checkpoint_id": self._ids.checkpoint_id, "session_id": self._target_session_id()}
 
+    def _fetch_prompt(self, name: str, label: str) -> Optional[str]:
+        prompts = self.client.prompts
+        if not prompts._production:
+            return prompts.get(name, **self._prompt_kwargs(label)).content
+        try:
+            return prompts._fetch(name, **self._prompt_kwargs(label)).content
+        except NotFoundError:
+            return None  # a production client has always used the default for a missing prompt
+        except Exception as e:
+            self._fetch_failed(name, e)
+            return None
+
+    async def _afetch_prompt(self, name: str, label: str) -> Optional[str]:
+        prompts = self.client.prompts
+        if not prompts._production:
+            return (await prompts.aget(name, **self._prompt_kwargs(label))).content
+        try:
+            return (await prompts._afetch(name, **self._prompt_kwargs(label))).content
+        except NotFoundError:
+            return None  # a production client has always used the default for a missing prompt
+        except Exception as e:
+            self._fetch_failed(name, e)
+            return None
+
+    def _fetch_failed(self, name: str, e: Exception) -> None:
+        checkpoint_id = self._ids.checkpoint_id
+        if checkpoint_id:
+            # the default is the baseline: running it would grade the wrong prompt
+            raise PromptError(f"{name!r} for checkpoint {checkpoint_id}: {type(e).__name__}: {e}") from e
+        logger.warning(f"[Run] could not fetch prompt {name!r} ({type(e).__name__}: {e}); using the local default")
+
     @staticmethod
     def _content(name: str, content: Optional[str]) -> Optional[str]:
         if not content:
-            # missing, or a production client that swallowed an error into an empty prompt
             logger.info(f"[Run] prompt {name!r} unresolved; using the local default")
         return content or None
 
@@ -225,6 +258,8 @@ class Run:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         session, self._session = self._session, None
+        if isinstance(exc_val, Exception):
+            self._record_error(session, exc_val)
         if self._attached:
             # the parent ends this session; deliver the child's self-scores now
             self.client._flush_evals(session_id=session.session_id)
@@ -234,12 +269,36 @@ class Run:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         session, self._session = self._session, None
+        if isinstance(exc_val, Exception):
+            await self._arecord_error(session, exc_val)
         if self._attached:
             # the parent ends this session; deliver the child's self-scores now
             await self.client._aflush_evals(session_id=session.session_id)
         await session.__aexit__(exc_type, exc_val, exc_tb)  # aend() waits for the session's posts
         self._unbind_mock()
         await self._aclose_client()
+
+    @staticmethod
+    def _error_fields(session: Session, exc: Exception) -> Dict[str, Any]:
+        return {
+            "type": "error_traceback",
+            "session_id": session.session_id,
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        }
+
+    def _record_error(self, session: Session, exc: Exception) -> None:
+        # on the case's session, so the failure shows on the case and not only in local logs
+        try:
+            self.client.events.create(**self._error_fields(session, exc))
+        except Exception as e:
+            logger.warning(f"[Run] could not record the case's error: {e}")
+
+    async def _arecord_error(self, session: Session, exc: Exception) -> None:
+        try:
+            await self.client.events.acreate(**self._error_fields(session, exc))
+        except Exception as e:
+            logger.warning(f"[Run] could not record the case's error: {e}")
 
     def _close_client(self) -> None:
         if self._owns_client and self._client is not None:
