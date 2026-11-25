@@ -111,6 +111,9 @@ def main(name):
     session = session_then_llm(client, name)
     if name == "manual_end":
         session.end()
+    elif name == "sigint_during_end":
+        print("READY", flush=True)
+        session.end()
     elif name == "manual_end_linger":
         session.end()
         time.sleep(BATCH_TIMER_WAIT_SECONDS)

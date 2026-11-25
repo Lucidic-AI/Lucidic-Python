@@ -4,6 +4,7 @@ Each test runs ``child.py`` in a subprocess against a recording fake backend and
 checks the captured Lucidic requests: initsession, the LLM event, then is_finished.
 """
 import signal
+import time
 
 import pytest
 
@@ -42,6 +43,15 @@ def test_ctrl_c_flushes_then_raises_keyboard_interrupt(capture):
     assert_session_sequence(result)
     assert result.returncode == -SIGINT, result.output
     assert "KeyboardInterrupt" in result.output
+
+
+def test_ctrl_c_while_end_exports_does_not_stall_the_shutdown(capture):
+    # the signal handler interrupts end()'s flush; the shutdown must not wait on that export
+    start = time.monotonic()
+    result = capture("sigint_during_end", [("READY", SIGINT)], event_delay=3)
+    assert time.monotonic() - start < 20, result.output  # the shutdown wait is 30 s
+    assert_session_sequence(result)
+    assert result.returncode == -SIGINT, result.output
 
 
 def test_sigterm_flushes_then_terminates_by_signal(capture):

@@ -3,12 +3,15 @@
 Prints ``PORT=<n>`` and appends one JSON line per request to ``argv[1]``.
 """
 import json
+import os
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG_PATH = sys.argv[1]
 LOG_LOCK = threading.Lock()
+EVENT_DELAY_SECONDS = float(os.environ.get("FAKE_EVENT_DELAY", "0"))
 COMPLETION = {
     "id": "c1", "object": "chat.completion", "created": 0, "model": "gpt-4o-mini",
     "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
@@ -46,6 +49,8 @@ class Handler(BaseHTTPRequestHandler):
         record = {"method": self.command, "path": self.path, "headers": headers, "body": body}
         with LOG_LOCK, open(LOG_PATH, "a") as f:
             f.write(json.dumps(record) + "\n")
+        if self.path.endswith("/events"):
+            time.sleep(EVENT_DELAY_SECONDS)
         out = json.dumps(_reply(self.path, body)).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

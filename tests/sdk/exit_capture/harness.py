@@ -56,9 +56,10 @@ def _drain(lines, seen):
         seen.append(line)
 
 
-def _start_backend(log_path):
+def _start_backend(log_path, event_delay):
     backend = subprocess.Popen([sys.executable, str(HERE / "fake_backend.py"), str(log_path)],
-                               stdout=subprocess.PIPE, text=True)
+                               stdout=subprocess.PIPE, text=True,
+                               env=dict(os.environ, FAKE_EVENT_DELAY=str(event_delay)))
     port = int(backend.stdout.readline().strip().split("=", 1)[1])
     return backend, port
 
@@ -73,11 +74,12 @@ def _child_env(port):
     )
 
 
-def run_scenario(tmp_path, scenario: str, signals: Sequence[Tuple[str, int]] = ()) -> Capture:
+def run_scenario(tmp_path, scenario: str, signals: Sequence[Tuple[str, int]] = (),
+                 event_delay: float = 0) -> Capture:
     """Run ``child.py scenario``; for each (marker, sig), send sig once marker is printed."""
     log_path = tmp_path / "requests.jsonl"
     log_path.touch()
-    backend, port = _start_backend(log_path)
+    backend, port = _start_backend(log_path, event_delay)
     child = None
     try:
         child = subprocess.Popen([sys.executable, str(HERE / "child.py"), scenario],

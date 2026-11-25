@@ -9,6 +9,7 @@ import logging
 import signal
 import sys
 import threading
+import time
 
 import httpx
 import pytest
@@ -155,6 +156,17 @@ class TestFlushSpans:
         monkeypatch.setattr(TelemetryManager, "force_flush", lambda self, timeout_millis: False)
         with caplog.at_level(logging.WARNING, logger="Lucidic"):
             tm.flush_spans()
+        assert "incomplete" in caplog.text
+
+    def test_returns_within_the_timeout_when_the_export_hangs(self, monkeypatch, caplog):
+        release = threading.Event()
+        monkeypatch.setattr(TelemetryManager, "is_telemetry_initialized", property(lambda self: True))
+        monkeypatch.setattr(TelemetryManager, "force_flush", lambda self, timeout_millis: release.wait(10))
+        start = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger="Lucidic"):
+            tm.flush_spans(timeout_millis=200)
+        release.set()
+        assert time.monotonic() - start < 2
         assert "incomplete" in caplog.text
 
     def test_never_raises(self, monkeypatch):
