@@ -563,6 +563,11 @@ class LucidicAI:
             eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
         logger.info(f"[LucidicAI] Closing client {self._client_id[:8]}...")
 
+        from .telemetry.telemetry_manager import flush_spans
+
+        # spans first, while the exporter can still route them to this client
+        flush_spans()
+
         # deliver pending evals.emit() posts while their sessions are still open
         self._flush_evals(eval_flush_timeout)
 
@@ -610,11 +615,13 @@ class LucidicAI:
             eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
         logger.info(f"[LucidicAI] Closing async client {self._client_id[:8]}...")
 
+        from .telemetry.telemetry_manager import flush_spans
+
         # flush() blocks on thread joins, so keep it off the event loop
         try:
-            await asyncio.get_running_loop().run_in_executor(
-                None, self._flush_evals, eval_flush_timeout
-            )
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, flush_spans)
+            await loop.run_in_executor(None, self._flush_evals, eval_flush_timeout)
         except Exception as e:
             # pending evals may be lost; say so where users will see it
             logger.warning(f"[LucidicAI] Eval flush skipped on async close: {e}")

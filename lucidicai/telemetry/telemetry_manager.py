@@ -181,3 +181,13 @@ def get_telemetry_manager() -> TelemetryManager:
     if _telemetry_manager is None:
         _telemetry_manager = TelemetryManager()
     return _telemetry_manager
+
+
+def flush_spans(timeout_millis: int = 5000) -> None:
+    """Export pending spans (bounded); never raises."""
+    try:
+        manager = get_telemetry_manager()
+        if manager.is_telemetry_initialized and not manager.force_flush(timeout_millis=timeout_millis):
+            logger.warning("[Telemetry] Telemetry flush may be incomplete")
+    except Exception as e:
+        logger.debug(f"[Telemetry] Error flushing telemetry: {e}")
