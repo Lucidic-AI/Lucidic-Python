@@ -49,6 +49,12 @@ class EvoSim(APIModel):
     hard_stop_seconds_per_iteration: Optional[int] = None
     max_session_concurrency: Optional[int] = None
     webhook_url: Optional[str] = None
+    # "pull" (no webhook_url: lucidicai.poll claims the cases) or "push"
+    delivery: Optional[str] = None
+    # detail (get): session runs queued, claimed by a poller, and the oldest queued one's age
+    queued: Optional[int] = None
+    claimed: Optional[int] = None
+    oldest_queued_seconds: Optional[int] = None
     temporal_workflow_id: Optional[str] = None
     temporal_run_id: Optional[str] = None
     created_at: Optional[str] = None
