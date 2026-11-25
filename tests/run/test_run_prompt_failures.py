@@ -186,3 +186,41 @@ def test_case_error_propagates_when_recording_it_fails(client, backend):
 
     assert backend["events"].call_count == 1
     assert backend["updatesession"].call_count == 1
+
+
+def test_attached_child_error_is_recorded_once(client, backend, monkeypatch):
+    run = _load(client)
+    order = _record_order(backend)
+
+    with pytest.raises(RuntimeError, match="child failed"):
+        with run:
+            monkeypatch.setenv("LUCIDIC_RUN", run.to_json())
+            with lucidic.load(client=client):
+                raise RuntimeError("child failed")
+
+    assert [kind for kind, _ in order] == ["event", "end"]
+    assert order[0][1]["payload"]["error"] == "RuntimeError: child failed"
+
+
+def test_case_error_is_recorded_on_the_servers_session_id(client, backend):
+    server_id = "11111111-2222-3333-4444-555555555555"
+    backend["initsession"].mock(return_value=httpx.Response(201, json={"session_id": server_id}))
+    run = _load(client)
+    order = _record_order(backend)
+
+    with pytest.raises(RuntimeError):
+        with run:
+            raise RuntimeError("agent crashed")
+
+    assert order[0][1]["session_id"] == server_id
+
+
+def test_interrupt_is_not_recorded_and_the_session_still_ends(client, backend):
+    run = _load(client)
+    order = _record_order(backend)
+
+    with pytest.raises(KeyboardInterrupt):
+        with run:
+            raise KeyboardInterrupt()
+
+    assert [kind for kind, _ in order] == ["end"]

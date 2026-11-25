@@ -21,6 +21,8 @@ logger = logging.getLogger("Lucidic")
 RUN_ENV_VAR = "LUCIDIC_RUN"
 # reserved payload key carrying the frozen config to a subprocess (to_json)
 SNAPSHOT_KEY = "_lucidic"
+# set on an exception: the session ids it was already recorded on
+_RECORDED_ATTR = "_lucidic_recorded_sessions"
 
 
 @dataclass(frozen=True)
@@ -261,7 +263,7 @@ class Run:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         session, self._session = self._session, None
-        if isinstance(exc_val, Exception):
+        if isinstance(exc_val, Exception) and self._first_record(session, exc_val):
             self._record_error(session, exc_val)
         if self._attached:
             # the parent ends this session; deliver the child's self-scores now
@@ -272,7 +274,7 @@ class Run:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         session, self._session = self._session, None
-        if isinstance(exc_val, Exception):
+        if isinstance(exc_val, Exception) and self._first_record(session, exc_val):
             await self._arecord_error(session, exc_val)
         if self._attached:
             # the parent ends this session; deliver the child's self-scores now
@@ -280,6 +282,18 @@ class Run:
         await session.__aexit__(exc_type, exc_val, exc_tb)  # aend() waits for the session's posts
         self._unbind_mock()
         await self._aclose_client()
+
+    @staticmethod
+    def _first_record(session: Session, exc: Exception) -> bool:
+        # an attached child and its parent share a session: record the error there once
+        recorded = getattr(exc, _RECORDED_ATTR, frozenset())
+        if session.session_id in recorded:
+            return False
+        try:
+            setattr(exc, _RECORDED_ATTR, recorded | {session.session_id})
+        except Exception:
+            pass  # an exception that takes no attributes may be recorded twice
+        return True
 
     @staticmethod
     def _error_fields(session: Session, exc: Exception) -> Dict[str, Any]:
