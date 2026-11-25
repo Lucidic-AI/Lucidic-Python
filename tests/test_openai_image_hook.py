@@ -64,7 +64,7 @@ def test_image_parts_render_as_placeholder(image_part):
 
 def test_openai_prompt_with_base64_image_keeps_text(monkeypatch):
     import openai
-    from opentelemetry.instrumentation.openai import OpenAIInstrumentor
+    from opentelemetry.instrumentation.openai.shared.config import Config
 
     def handler(request):
         return httpx.Response(200, json={
@@ -80,7 +80,10 @@ def test_openai_prompt_with_base64_image_keeps_text(monkeypatch):
     spans = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(spans))
-    monkeypatch.setattr(telemetry_init, "_global_instrumentors", {})
+    # the instrumentor writes the process-wide hook; put it back afterwards
+    monkeypatch.setattr(Config, "upload_base64_image", Config.upload_base64_image)
+    instrumentors = {}
+    monkeypatch.setattr(telemetry_init, "_global_instrumentors", instrumentors)
     telemetry_init.instrument_providers(["openai"], provider, {})
     try:
         client = openai.OpenAI(
@@ -96,7 +99,7 @@ def test_openai_prompt_with_base64_image_keeps_text(monkeypatch):
             ]}],
         )
     finally:
-        OpenAIInstrumentor().uninstrument()
+        instrumentors["openai"].uninstrument()
 
     [span] = spans.get_finished_spans()
     attributes = dict(span.attributes)
