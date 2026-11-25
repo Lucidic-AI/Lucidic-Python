@@ -14,7 +14,14 @@ from ..sdk.event import emit_event
 from ..sdk.init import get_session_id
 from ..sdk.context import current_session_id, current_parent_event_id
 from ..telemetry.utils.model_pricing import calculate_cost
-from .extract import detect_is_llm_span, extract_prompts, extract_completions, extract_model, extract_tool_calls
+from .extract import (
+    detect_is_llm_span,
+    extract_prompts,
+    extract_completions,
+    extract_model,
+    extract_tool_calls,
+    _append_tool_calls,
+)
 from .utils.provider import detect_provider
 from ..utils.logger import debug, info, warning, error, verbose, truncate_id
 
@@ -153,21 +160,15 @@ class LucidicSpanExporter(SpanExporter):
             tool_calls = extract_tool_calls(span, attributes)
             debug(f"[Telemetry] Extracted tool calls: {tool_calls}")
 
-            # see if tool calls need to be used instead of output_text
-            if not output_text or output_text == "Response received" or not tool_calls:
-
-                if tool_calls:
-                    debug(f"[Telemetry] Using tool calls for span {span.name}")
-                    output_text = tool_calls
-
-                # Only use "Response received" if we have other meaningful data
-                if not messages and not tool_calls and not attributes.get("lucidic.instrumented"):
-                    self._warn_dropped_span(span, attributes)
-                    return
-                # Use a more descriptive default if we must
-                if not output_text:
-                    debug(f"[Telemetry] No output text for span {span.name}. Using default 'Response received'")
-                    output_text = "Response received"
+            if not messages and not tool_calls and not attributes.get("lucidic.instrumented"):
+                self._warn_dropped_span(span, attributes)
+                return
+            if tool_calls:
+                # the trace view renders only the output, so tool calls are shown there as well
+                output_text = _append_tool_calls(output_text, tool_calls)
+            if not output_text:
+                debug(f"[Telemetry] No output text for span {span.name}. Using default 'Response received'")
+                output_text = "Response received"
 
             input_tokens = self._extract_prompt_tokens(attributes)
             output_tokens = self._extract_completion_tokens(attributes)
@@ -190,7 +191,9 @@ class LucidicSpanExporter(SpanExporter):
                 'raw': None,
                 'parent_event_id': parent_id,
             }
-            
+            if tool_calls:
+                event_data['tool_calls'] = tool_calls
+
             # Get client_id for routing
             client_id = attributes.get("lucidic.client_id")
 
