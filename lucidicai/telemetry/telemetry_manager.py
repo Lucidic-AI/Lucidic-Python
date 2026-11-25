@@ -185,7 +185,6 @@ def get_telemetry_manager() -> TelemetryManager:
     return _telemetry_manager
 
 
-_stuck_flush_lock = threading.Lock()
 _stuck_flush: Optional[threading.Thread] = None
 
 
@@ -198,11 +197,11 @@ def flush_spans(timeout_millis: int = 5000) -> bool:
     manager = get_telemetry_manager()
     if not manager.is_telemetry_initialized:
         return True
-    with _stuck_flush_lock:
-        # the exporter is stuck, so waiting on it again only burns the caller's budget
-        if _stuck_flush is not None and _stuck_flush.is_alive():
-            logger.debug("[Telemetry] Skipping span flush: an earlier flush is still stuck exporting")
-            return False
+    # the exporter is stuck, so waiting on it again only burns the caller's budget
+    stuck = _stuck_flush
+    if stuck is not None and stuck.is_alive():
+        logger.debug("[Telemetry] Skipping span flush: an earlier flush is still stuck exporting")
+        return False
     flushed = []
 
     def flush():
@@ -218,8 +217,8 @@ def flush_spans(timeout_millis: int = 5000) -> bool:
         worker.start()
         worker.join(timeout_millis / 1000)
         if worker.is_alive():
-            with _stuck_flush_lock:
-                _stuck_flush = worker
+            # no lock: a signal handler can run here, and a reference write is atomic
+            _stuck_flush = worker
     except Exception as e:
         logger.debug(f"[Telemetry] Error flushing telemetry: {e}")
     if flushed != [True]:
