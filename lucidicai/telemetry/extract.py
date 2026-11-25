@@ -133,8 +133,8 @@ def _messages_from_new_attr(attrs: Dict[str, Any], key: str) -> Optional[List[Di
         parts = m.get("parts")
         content = _flatten_text_parts(parts)
         tool_calls = _tool_calls_from_parts(parts)
-        if not content and tool_calls:
-            content = _format_tool_calls(tool_calls)
+        if tool_calls:
+            content = _append_tool_calls(content, tool_calls)
         if not content:
             # tool RESULT messages carry a tool_call_response part, not text. providers differ
             # on the role (openai uses "tool", anthropic puts the result in a "user" message),
@@ -182,6 +182,12 @@ def _format_tool_calls(tool_calls: List[Dict]) -> str:
     return header + body
 
 
+def _append_tool_calls(text: Optional[str], tool_calls: List[Dict[str, Any]]) -> str:
+    """text followed by the rendered tool calls; just the tool calls when there is no text."""
+    rendered = _format_tool_calls(tool_calls)
+    return f"{text}\n\n{rendered}" if text else rendered
+
+
 # --------------------------------------------------------------------------- #
 # legacy flat-indexed helpers
 # --------------------------------------------------------------------------- #
@@ -214,19 +220,17 @@ def _legacy_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
             if text_parts:
                 content = " ".join(text_parts)
 
-        # no content => likely a tool-call-only history entry
-        if not content:
-            j = 0
-            tool_calls = []
-            while True:
-                tool_key_name = f"gen_ai.prompt.{i}.tool_calls.{j}.name"
-                tool_key_arguments = f"gen_ai.prompt.{i}.tool_calls.{j}.arguments"
-                if tool_key_name not in attrs:
-                    break
-                tool_calls.append({"name": attrs[tool_key_name], "arguments": attrs.get(tool_key_arguments)})
-                j += 1
-            if tool_calls:
-                content = _format_tool_calls(tool_calls)
+        j = 0
+        tool_calls = []
+        while True:
+            tool_key_name = f"gen_ai.prompt.{i}.tool_calls.{j}.name"
+            tool_key_arguments = f"gen_ai.prompt.{i}.tool_calls.{j}.arguments"
+            if tool_key_name not in attrs:
+                break
+            tool_calls.append({"name": attrs[tool_key_name], "arguments": attrs.get(tool_key_arguments)})
+            j += 1
+        if tool_calls and (not content or isinstance(content, str)):
+            content = _append_tool_calls(content, tool_calls)
 
         messages.append({"role": role, "content": content})
 
@@ -349,10 +353,11 @@ def extract_completions(span, attrs: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def extract_tool_calls(span, attrs: Dict[str, Any]) -> Optional[str]:
-    """extract tool calls as a readable string. detects by PRESENCE, not finish_reason.
+def extract_tool_calls(span, attrs: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """extract tool calls as [{"name", "arguments"}]; [] when there are none.
 
-    tries new JSON output tool_call parts -> legacy flat tool_calls.
+    detects by PRESENCE, not finish_reason. tries new JSON output tool_call parts ->
+    legacy flat tool_calls.
     """
     debug("[Telemetry] Extracting tool calls from span")
 
@@ -364,7 +369,7 @@ def extract_tool_calls(span, attrs: Dict[str, Any]) -> Optional[str]:
             if isinstance(m, dict):
                 tool_calls.extend(_tool_calls_from_parts(m.get("parts")))
         if tool_calls:
-            return "\n".join(json.dumps(tc, indent=4) for tc in tool_calls)
+            return tool_calls
 
     # 2. legacy flat-indexed (presence-based; no finish_reason gate)
     tool_calls = []
@@ -381,10 +386,10 @@ def extract_tool_calls(span, attrs: Dict[str, Any]) -> Optional[str]:
         i += 1
 
     if tool_calls:
-        return "\n".join(json.dumps(tc, indent=4) for tc in tool_calls)
+        return tool_calls
 
     debug(f"[Telemetry] No tool calls found for span {span.name}")
-    return None
+    return []
 
 
 def extract_model(attrs: Dict[str, Any]) -> Optional[str]:
