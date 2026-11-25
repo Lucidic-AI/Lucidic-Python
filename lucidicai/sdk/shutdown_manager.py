@@ -57,6 +57,7 @@ class ShutdownManager:
         self._signals_installed = False
         self._previous_signal_handlers: Dict[int, object] = {}
         self._previous_excepthook: Optional[Callable] = None
+        self._listeners_lock = threading.Lock()
         self._session_lock = threading.Lock()
 
         # Client registry for multi-client support
@@ -135,22 +136,26 @@ class ShutdownManager:
 
     def _ensure_listeners_registered(self) -> None:
         """Register process exit listeners once; signal handlers once on the main thread."""
-        if not self.listeners_registered:
-            self.listeners_registered = True
-            debug("[ShutdownManager] Registering global shutdown listeners (atexit, uncaught exceptions)")
-            atexit.register(self._handle_exit)
-            self._previous_excepthook = sys.excepthook
-            sys.excepthook = self._exception_handler
+        # session and client registers hold different locks
+        with self._listeners_lock:
+            if not self.listeners_registered:
+                self.listeners_registered = True
+                debug("[ShutdownManager] Registering global shutdown listeners (atexit, uncaught exceptions)")
+                atexit.register(self._handle_exit)
+                if sys.excepthook != self._exception_handler:
+                    self._previous_excepthook = sys.excepthook
+                    sys.excepthook = self._exception_handler
 
-        # signal handlers need the main thread; a later main-thread register installs them
-        if not self._signals_installed and threading.current_thread() is threading.main_thread():
-            self._signals_installed = True
-            debug("[ShutdownManager] Registering SIGINT/SIGTERM handlers")
-            for signum in (signal.SIGINT, signal.SIGTERM):
-                previous = signal.getsignal(signum)
-                if previous != signal.SIG_IGN:  # respect an ignored signal (e.g. a shell's `cmd &`)
-                    self._previous_signal_handlers[signum] = previous
-                    signal.signal(signum, self._signal_handler)
+            # signal handlers need the main thread; a later main-thread register installs them
+            if not self._signals_installed and threading.current_thread() is threading.main_thread():
+                self._signals_installed = True
+                debug("[ShutdownManager] Registering SIGINT/SIGTERM handlers")
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    previous = signal.getsignal(signum)
+                    # respect an ignored signal (e.g. a shell's `cmd &`) and one set outside python (None)
+                    if previous not in (signal.SIG_IGN, None):
+                        self._previous_signal_handlers[signum] = previous
+                        signal.signal(signum, self._signal_handler)
 
     def _signal_handler(self, signum, frame):
         """Flush and end everything, then hand the signal to the handler we replaced."""
@@ -263,6 +268,10 @@ class ShutdownManager:
             except Exception as e:
                 error(f"[ShutdownManager] Error flushing events: {e}")
 
+            # one span flush for the whole shutdown; clients and sessions end without re-flushing
+            from ..telemetry.telemetry_manager import flush_spans
+            flush_spans()
+
             # one eval flush deadline for the whole shutdown
             deadline = time.monotonic() + self.eval_flush_budget
 
@@ -281,7 +290,7 @@ class ShutdownManager:
                 for client in clients_to_close:
                     try:
                         debug(f"[ShutdownManager] Closing client {client._client_id[:8]}...")
-                        client.close(eval_flush_timeout=0)
+                        client._close(eval_flush_timeout=0, span_flush=False)
                     except Exception as e:
                         error(f"[ShutdownManager] Error closing client: {e}")
 
@@ -315,10 +324,12 @@ class ShutdownManager:
                 if tracer_provider:
                     debug("[ShutdownManager] Final OpenTelemetry shutdown")
                     try:
-                        # Final flush and shutdown with longer timeout
-                        tracer_provider.force_flush(timeout_millis=5000)
-                        tracer_provider.shutdown()
-                        debug("[ShutdownManager] OpenTelemetry shutdown complete")
+                        # a stuck export would hold shutdown() on otel's 30 s worker join
+                        if flush_spans():
+                            tracer_provider.shutdown()
+                            debug("[ShutdownManager] OpenTelemetry shutdown complete")
+                        else:
+                            debug("[ShutdownManager] Span export stuck, skipping OpenTelemetry shutdown")
                     except Exception as e:
                         error(f"[ShutdownManager] Error in final telemetry shutdown: {e}")
             except ImportError:
@@ -346,20 +357,8 @@ class ShutdownManager:
                 session's pending evals.emit() posts (default: the shutdown's
                 eval budget, never more than the client's own setting)
         """
-        # Flush OpenTelemetry spans first
-        try:
-            from ..sdk.init import get_tracer_provider
-            tracer_provider = get_tracer_provider()
-            if tracer_provider:
-                debug(f"[ShutdownManager] Flushing OpenTelemetry spans for session {truncate_id(session_id)}")
-                try:
-                    # Force flush with 3 second timeout
-                    tracer_provider.force_flush(timeout_millis=3000)
-                except Exception as e:
-                    error(f"[ShutdownManager] Error flushing spans: {e}")
-        except ImportError:
-            pass  # SDK not initialized
-        
+        # spans were flushed once at the start of the shutdown
+
         # end session via API if http client present
         if state.http_client and session_id:
             try:

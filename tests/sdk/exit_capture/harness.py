@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -25,6 +25,7 @@ class Capture:
     output: str
     requests: List[dict]
     raw_log: str
+    exit_after_last_signal: float = 0.0
 
 
 def _pump(stream, lines):
@@ -74,9 +75,12 @@ def _child_env(port):
     )
 
 
-def run_scenario(tmp_path, scenario: str, signals: Sequence[Tuple[str, int]] = (),
+def run_scenario(tmp_path, scenario: str, signals: Sequence[Tuple[Optional[str], int]] = (),
                  event_delay: float = 0) -> Capture:
-    """Run ``child.py scenario``; for each (marker, sig), send sig once marker is printed."""
+    """Run ``child.py scenario``; for each (marker, sig), send sig once marker is printed.
+
+    A ``None`` marker sends the signal right after the previous one.
+    """
     log_path = tmp_path / "requests.jsonl"
     log_path.touch()
     backend, port = _start_backend(log_path, event_delay)
@@ -87,12 +91,16 @@ def run_scenario(tmp_path, scenario: str, signals: Sequence[Tuple[str, int]] = (
                                  env=_child_env(port), cwd=str(tmp_path))
         lines, seen = queue.Queue(), []
         threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True).start()
+        last_signal_at = time.monotonic()
         for marker, sig in signals:
-            _wait_for(lines, marker, seen)
+            if marker is not None:
+                _wait_for(lines, marker, seen)
             time.sleep(SIGNAL_SETTLE_SECONDS)
             child.send_signal(sig)
+            last_signal_at = time.monotonic()
         _drain(lines, seen)
         returncode = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+        exit_after_last_signal = time.monotonic() - last_signal_at
         time.sleep(SIGNAL_SETTLE_SECONDS)  # let the backend finish writing
     finally:
         for proc in (child, backend):
@@ -101,7 +109,7 @@ def run_scenario(tmp_path, scenario: str, signals: Sequence[Tuple[str, int]] = (
                 proc.wait()
     raw_log = log_path.read_text()
     requests = [json.loads(line) for line in raw_log.splitlines()]
-    return Capture(returncode, "".join(seen), requests, raw_log)
+    return Capture(returncode, "".join(seen), requests, raw_log, exit_after_last_signal)
 
 
 def lucidic_requests(requests):

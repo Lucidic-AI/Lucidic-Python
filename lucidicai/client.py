@@ -561,12 +561,17 @@ class LucidicAI:
         """
         if eval_flush_timeout is not None:
             eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
+        self._close(eval_flush_timeout)
+
+    def _close(self, eval_flush_timeout: Optional[float], span_flush: bool = True) -> None:
+        """close() past its argument check; span_flush=False when the caller already flushed."""
         logger.info(f"[LucidicAI] Closing client {self._client_id[:8]}...")
 
         from .telemetry.telemetry_manager import flush_spans
 
         # spans first, while the exporter can still route them to this client
-        flush_spans()
+        if span_flush:
+            flush_spans()
 
         # deliver pending evals.emit() posts while their sessions are still open
         self._flush_evals(eval_flush_timeout)
@@ -580,7 +585,7 @@ class LucidicAI:
         # the flush above already waited for every session's evals
         for session_id in session_ids:
             try:
-                self.sessions.end(session_id, eval_flush_timeout=0)
+                self.sessions._end(session_id, eval_flush_timeout=0, span_flush=False)
             except Exception as e:
                 logger.debug(f"[LucidicAI] Error ending session on close: {e}")
 
@@ -615,16 +620,15 @@ class LucidicAI:
             eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
         logger.info(f"[LucidicAI] Closing async client {self._client_id[:8]}...")
 
-        from .telemetry.telemetry_manager import flush_spans
+        from .telemetry.telemetry_manager import aflush_spans
 
         # flush() blocks on thread joins, so keep it off the event loop
         try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, flush_spans)
-            await loop.run_in_executor(None, self._flush_evals, eval_flush_timeout)
+            await aflush_spans()
+            await asyncio.get_running_loop().run_in_executor(None, self._flush_evals, eval_flush_timeout)
         except Exception as e:
             # pending evals may be lost; say so where users will see it
-            logger.warning(f"[LucidicAI] Eval flush skipped on async close: {e}")
+            logger.warning(f"[LucidicAI] Flush skipped on async close: {e}")
 
         # Collect session IDs under lock (don't clear - let aend() handle removal)
         with self._session_lock:
@@ -635,7 +639,7 @@ class LucidicAI:
         # the flush above already waited for every session's evals
         for session_id in session_ids:
             try:
-                await self.sessions.aend(session_id, eval_flush_timeout=0)
+                await self.sessions._aend(session_id, eval_flush_timeout=0, span_flush=False)
             except Exception as e:
                 logger.debug(f"[LucidicAI] Error ending session on close: {e}")
 
