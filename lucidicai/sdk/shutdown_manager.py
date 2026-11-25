@@ -171,6 +171,12 @@ class ShutdownManager:
     
     def _exception_handler(self, exc_type, exc_value, exc_traceback):
         """Handle uncaught exceptions."""
+        chain = self._previous_excepthook or sys.__excepthook__
+        # ctrl-c is not an error; the signal handler or atexit already ends the sessions
+        if issubclass(exc_type, KeyboardInterrupt):
+            chain(exc_type, exc_value, exc_traceback)
+            return
+
         # log the exception
         error(f"[ShutdownManager] Uncaught exception: {exc_type.__name__}: {exc_value}")
         
@@ -195,7 +201,7 @@ class ShutdownManager:
         self._handle_shutdown("uncaught_exception")
         
         # chain to the hook we replaced
-        (self._previous_excepthook or sys.__excepthook__)(exc_type, exc_value, exc_traceback)
+        chain(exc_type, exc_value, exc_traceback)
     
     def _handle_exit(self):
         """Handle normal process exit."""

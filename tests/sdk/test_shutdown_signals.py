@@ -150,6 +150,18 @@ def test_excepthook_chains_to_the_hook_it_replaced(manager, calls):
     assert calls[-2:] == [("shutdown", "uncaught_exception"), ("app_hook", ValueError)]
 
 
+def test_excepthook_passes_keyboard_interrupt_straight_through(manager, calls, monkeypatch, caplog):
+    import lucidicai.sdk.event as sdk_event
+
+    monkeypatch.setattr(sdk_event, "create_event", lambda **kw: calls.append(("event", kw["type"])))
+    sys.excepthook = lambda *exc: calls.append(("app_hook", exc[0]))
+    manager._ensure_listeners_registered()
+    with caplog.at_level(logging.ERROR, logger="Lucidic"):
+        sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert [c for c in calls if c[0] != "atexit"] == [("app_hook", KeyboardInterrupt)]
+    assert "Uncaught exception" not in caplog.text
+
+
 class TestFlushSpans:
     def test_warns_when_the_flush_is_incomplete(self, monkeypatch, caplog):
         monkeypatch.setattr(TelemetryManager, "is_telemetry_initialized", property(lambda self: True))
