@@ -32,6 +32,8 @@ INPUT_EVENT_NAMES = {
 }
 OUTPUT_EVENT_NAME = "gen_ai.choice"
 
+IMAGE_PLACEHOLDER = "[image omitted]"
+
 
 def detect_is_llm_span(span) -> bool:
     """check if span is LLM-related - matches TypeScript logic."""
@@ -67,15 +69,27 @@ def _loads(raw: Any) -> Any:
 
 
 def _flatten_text_parts(parts: Any) -> str:
-    """join the text content of a new-shape message's parts."""
+    """join the text content of a new-shape message's parts; image parts become a placeholder."""
     out = []
     for p in parts or []:
-        if isinstance(p, dict) and p.get("type") == "text":
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
             # the new semconv part carries text under "content"
             text = p.get("content", p.get("text", ""))
             if text:
                 out.append(str(text))
+        elif p.get("modality") == "image":
+            out.append(IMAGE_PLACEHOLDER)
     return " ".join(out)
+
+
+def _has_text_part(parts: Any) -> bool:
+    """whether a new-shape message has a non-empty text part (an image placeholder doesn't count)."""
+    return any(
+        isinstance(p, dict) and p.get("type") == "text" and p.get("content", p.get("text"))
+        for p in parts or []
+    )
 
 
 def _tool_calls_from_parts(parts: Any) -> List[Dict[str, Any]]:
@@ -133,16 +147,16 @@ def _messages_from_new_attr(attrs: Dict[str, Any], key: str) -> Optional[List[Di
         parts = m.get("parts")
         content = _flatten_text_parts(parts)
         tool_calls = _tool_calls_from_parts(parts)
-        if not content and tool_calls:
-            content = _format_tool_calls(tool_calls)
-        if not content:
+        tool_response = _tool_responses_from_parts(parts)
+        if tool_response:
             # tool RESULT messages carry a tool_call_response part, not text. providers differ
             # on the role (openai uses "tool", anthropic puts the result in a "user" message),
-            # so normalize a pure tool-result message to role="tool" for consistency.
-            tool_response = _tool_responses_from_parts(parts)
-            if tool_response:
-                content = tool_response
+            # so normalize a tool-result message without text or tool calls to role="tool".
+            if not tool_calls and not _has_text_part(parts):
                 role = "tool"
+            content = f"{tool_response}\n\n{content}" if content else tool_response
+        if tool_calls:
+            content = _append_tool_calls(content, tool_calls)
         if content:
             had_content = True
         messages.append({"role": role, "content": content})
@@ -182,6 +196,12 @@ def _format_tool_calls(tool_calls: List[Dict]) -> str:
     return header + body
 
 
+def _append_tool_calls(text: Optional[str], tool_calls: List[Dict[str, Any]]) -> str:
+    """text followed by the rendered tool calls; just the tool calls when there is no text."""
+    rendered = _format_tool_calls(tool_calls)
+    return f"{text}\n\n{rendered}" if text else rendered
+
+
 # --------------------------------------------------------------------------- #
 # legacy flat-indexed helpers
 # --------------------------------------------------------------------------- #
@@ -209,24 +229,26 @@ def _legacy_prompts(attrs: Dict[str, Any]) -> Optional[List[Dict]]:
         if isinstance(content, list):
             text_parts = []
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text":
                     text_parts.append(item.get("text", ""))
+                elif item.get("type") in ("image_url", "image"):
+                    text_parts.append(IMAGE_PLACEHOLDER)
             if text_parts:
                 content = " ".join(text_parts)
 
-        # no content => likely a tool-call-only history entry
-        if not content:
-            j = 0
-            tool_calls = []
-            while True:
-                tool_key_name = f"gen_ai.prompt.{i}.tool_calls.{j}.name"
-                tool_key_arguments = f"gen_ai.prompt.{i}.tool_calls.{j}.arguments"
-                if tool_key_name not in attrs:
-                    break
-                tool_calls.append({"name": attrs[tool_key_name], "arguments": attrs.get(tool_key_arguments)})
-                j += 1
-            if tool_calls:
-                content = _format_tool_calls(tool_calls)
+        j = 0
+        tool_calls = []
+        while True:
+            tool_key_name = f"gen_ai.prompt.{i}.tool_calls.{j}.name"
+            tool_key_arguments = f"gen_ai.prompt.{i}.tool_calls.{j}.arguments"
+            if tool_key_name not in attrs:
+                break
+            tool_calls.append({"name": attrs[tool_key_name], "arguments": attrs.get(tool_key_arguments)})
+            j += 1
+        if tool_calls and (not content or isinstance(content, str)):
+            content = _append_tool_calls(content, tool_calls)
 
         messages.append({"role": role, "content": content})
 
@@ -349,10 +371,11 @@ def extract_completions(span, attrs: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def extract_tool_calls(span, attrs: Dict[str, Any]) -> Optional[str]:
-    """extract tool calls as a readable string. detects by PRESENCE, not finish_reason.
+def extract_tool_calls(span, attrs: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """extract tool calls as [{"name", "arguments"}]; [] when there are none.
 
-    tries new JSON output tool_call parts -> legacy flat tool_calls.
+    detects by PRESENCE, not finish_reason. tries new JSON output tool_call parts ->
+    legacy flat tool_calls.
     """
     debug("[Telemetry] Extracting tool calls from span")
 
@@ -364,7 +387,7 @@ def extract_tool_calls(span, attrs: Dict[str, Any]) -> Optional[str]:
             if isinstance(m, dict):
                 tool_calls.extend(_tool_calls_from_parts(m.get("parts")))
         if tool_calls:
-            return "\n".join(json.dumps(tc, indent=4) for tc in tool_calls)
+            return tool_calls
 
     # 2. legacy flat-indexed (presence-based; no finish_reason gate)
     tool_calls = []
@@ -381,10 +404,10 @@ def extract_tool_calls(span, attrs: Dict[str, Any]) -> Optional[str]:
         i += 1
 
     if tool_calls:
-        return "\n".join(json.dumps(tc, indent=4) for tc in tool_calls)
+        return tool_calls
 
     debug(f"[Telemetry] No tool calls found for span {span.name}")
-    return None
+    return []
 
 
 def extract_model(attrs: Dict[str, Any]) -> Optional[str]:

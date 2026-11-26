@@ -1,4 +1,8 @@
+from pathlib import Path
+
 from setuptools import setup, find_packages
+
+long_description = (Path(__file__).parent / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="lucidicai",
@@ -32,10 +36,16 @@ setup(
     author="Andy Liang",
     author_email="andy@lucidic.ai",
     description="Lucidic AI Python SDK",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
     classifiers=[
         "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.6",
+    python_requires=">=3.10",
 )

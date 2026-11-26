@@ -9,6 +9,8 @@ from typing import Dict, Any, Optional
 
 from opentelemetry.sdk.trace import TracerProvider
 
+from .extract import IMAGE_PLACEHOLDER
+
 logger = logging.getLogger("Lucidic")
 
 # Global tracking to prevent duplicate instrumentation
@@ -17,6 +19,12 @@ _instrumentation_lock = threading.Lock()
 
 
 _content_capture_checked = False
+
+
+# async on purpose: the instrumentation awaits this hook
+async def _omit_base64_image(trace_id: str, span_id: str, image_name: str, base64_string: str) -> str:
+    """stand-in for the inline image, so the rest of the prompt is still captured."""
+    return IMAGE_PLACEHOLDER
 
 
 def check_content_capture_env() -> None:
@@ -110,7 +118,7 @@ def instrument_providers(providers: list, tracer_provider: TracerProvider, exist
         if "openai" in canonical and "openai" not in _global_instrumentors:
             try:
                 from opentelemetry.instrumentation.openai import OpenAIInstrumentor
-                inst = OpenAIInstrumentor()
+                inst = OpenAIInstrumentor(upload_base64_image=_omit_base64_image)
                 inst.instrument(tracer_provider=tracer_provider, enrich_token_usage=True)
                 _global_instrumentors["openai"] = inst
                 new_instrumentors["openai"] = inst

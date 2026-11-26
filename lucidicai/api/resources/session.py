@@ -333,7 +333,15 @@ class SessionResource:
         _refuse_extra_kwargs("sessions.end", kwargs)
         if eval_flush_timeout is not None:
             eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
+        self._end(session_id, eval_flush_timeout)
 
+    def _end(
+        self,
+        session_id: Optional[str],
+        eval_flush_timeout: Optional[float],
+        span_flush: bool = True,
+    ) -> None:
+        """end() past its argument checks; span_flush=False when the caller already flushed."""
         if not self._client.is_valid:
             return
 
@@ -345,6 +353,12 @@ class SessionResource:
         if not session_id:
             logger.debug("[SessionResource] No session to end")
             return
+
+        from ...telemetry.telemetry_manager import flush_spans
+
+        # spans first, so the last LLM event lands before is_finished
+        if span_flush:
+            flush_spans()
 
         # deliver this session's pending evals.emit() posts before it finishes
         timeout = self._flush_timeout(eval_flush_timeout)
@@ -370,7 +384,15 @@ class SessionResource:
         _refuse_extra_kwargs("sessions.aend", kwargs)
         if eval_flush_timeout is not None:
             eval_flush_timeout = validate_flush_timeout(eval_flush_timeout)
+        await self._aend(session_id, eval_flush_timeout)
 
+    async def _aend(
+        self,
+        session_id: Optional[str],
+        eval_flush_timeout: Optional[float],
+        span_flush: bool = True,
+    ) -> None:
+        """Async sibling of ``_end``."""
         if not self._client.is_valid:
             return
 
@@ -382,18 +404,23 @@ class SessionResource:
             logger.debug("[SessionResource] No session to end")
             return
 
-        # deliver this session's pending evals.emit() posts before it finishes
+        from ...telemetry.telemetry_manager import aflush_spans
+
+        # spans first, so the last LLM event lands before is_finished
         timeout = self._flush_timeout(eval_flush_timeout)
-        if timeout:
-            try:
+        try:
+            if span_flush:
+                await aflush_spans()
+            # deliver this session's pending evals.emit() posts before it finishes
+            if timeout:
                 await self._client._aflush_evals(timeout, session_id=session_id)
-            except asyncio.CancelledError:
-                # still end the session, then let the cancellation through
-                try:
-                    await self._aend_and_untrack(session_id)
-                except Exception as e:
-                    logger.error(f"[SessionResource] Failed to end session: {e}")
-                raise
+        except asyncio.CancelledError:
+            # still end the session, then let the cancellation through
+            try:
+                await self._aend_and_untrack(session_id)
+            except Exception as e:
+                logger.error(f"[SessionResource] Failed to end session: {e}")
+            raise
 
         await self._aend_and_untrack(session_id)
 

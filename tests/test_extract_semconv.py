@@ -13,6 +13,7 @@ from lucidicai.telemetry.extract import (
     extract_completions,
     extract_tool_calls,
     extract_model,
+    _format_tool_calls,
 )
 from lucidicai.telemetry.utils.provider import detect_provider
 
@@ -199,6 +200,87 @@ def test_anthropic_tool_result_normalized_to_tool_role():
     assert "18" in msgs[2]["content"]
 
 
+def test_prompts_new_json_assistant_text_and_tool_call_both_kept():
+    span = FakeSpan("openai.chat", {
+        "gen_ai.provider.name": "openai",
+        "gen_ai.input.messages": json.dumps([
+            {"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]},
+            {"role": "assistant", "parts": [
+                {"type": "text", "content": "Let me look that up."},
+                {"type": "tool_call", "id": "call_1", "name": "get_weather", "arguments": {"city": "Paris"}},
+            ]},
+            {"role": "tool", "parts": [{"type": "tool_call_response", "id": "call_1", "response": "18C"}]},
+        ]),
+    })
+    msgs = extract_prompts(span, span.attributes)
+    assistant = msgs[1]["content"]
+    assert assistant.startswith("Let me look that up.")
+    assert "get_weather" in assistant
+    assert "Paris" in assistant
+
+
+def test_prompts_legacy_assistant_text_and_tool_call_both_kept():
+    span = FakeSpan("openai.chat", {
+        "gen_ai.system": "openai",
+        "gen_ai.prompt.0.role": "user",
+        "gen_ai.prompt.0.content": "Weather in Paris?",
+        "gen_ai.prompt.1.role": "assistant",
+        "gen_ai.prompt.1.content": "Checking.",
+        "gen_ai.prompt.1.tool_calls.0.name": "get_weather",
+        "gen_ai.prompt.1.tool_calls.0.arguments": '{"city":"Paris"}',
+    })
+    msgs = extract_prompts(span, span.attributes)
+    assistant = msgs[1]["content"]
+    assert assistant.startswith("Checking.")
+    assert "get_weather" in assistant
+    assert "Paris" in assistant
+
+
+def test_prompts_tool_call_only_turn_unchanged():
+    call = {"name": "get_weather", "arguments": {"city": "Paris"}}
+    new_span = FakeSpan("openai.chat", {
+        "gen_ai.input.messages": json.dumps([
+            {"role": "assistant", "parts": [{"type": "tool_call", "id": "call_1", **call}]},
+        ]),
+    })
+    legacy_span = FakeSpan("openai.chat", {
+        "gen_ai.prompt.0.role": "assistant",
+        "gen_ai.prompt.0.tool_calls.0.name": "get_weather",
+        "gen_ai.prompt.0.tool_calls.0.arguments": '{"city":"Paris"}',
+    })
+    assert extract_prompts(new_span, new_span.attributes)[0]["content"] == _format_tool_calls([call])
+    assert extract_prompts(legacy_span, legacy_span.attributes)[0]["content"] == _format_tool_calls(
+        [{"name": "get_weather", "arguments": '{"city":"Paris"}'}]
+    )
+
+
+def _tool_result_turn(*other_parts):
+    return FakeSpan("anthropic.chat", {
+        "gen_ai.provider.name": "anthropic",
+        "gen_ai.input.messages": json.dumps([
+            {"role": "user", "parts": [{"type": "text", "content": "Take a screenshot."}]},
+            {"role": "assistant", "parts": [{"type": "tool_call", "id": "toolu_1", "name": "screenshot",
+                                             "arguments": {}}]},
+            {"role": "user", "parts": [
+                {"type": "tool_call_response", "id": "toolu_1", "response": "saved screen.png"},
+                *other_parts,
+            ]},
+        ]),
+    })
+
+
+def test_prompts_tool_result_beside_image_kept():
+    span = _tool_result_turn({"type": "blob", "modality": "image", "mime_type": "image/png", "content": "iVBORw0KGgo="})
+    msgs = extract_prompts(span, span.attributes)
+    assert msgs[2] == {"role": "tool", "content": "Tool Result:\nsaved screen.png\n\n[image omitted]"}
+
+
+def test_prompts_tool_result_beside_text_kept():
+    span = _tool_result_turn({"type": "text", "content": "Here is the screen."})
+    msgs = extract_prompts(span, span.attributes)
+    assert msgs[2] == {"role": "user", "content": "Tool Result:\nsaved screen.png\n\nHere is the screen."}
+
+
 def test_prompts_ignores_azure_prompt_filter_noise():
     """the only gen_ai.prompt.* key on a new-shape span is azure noise; must not be read as a message."""
     span = FakeSpan("openai.chat", {
@@ -233,22 +315,18 @@ def test_tool_calls_legacy_without_finish_reason():
     """regression: legacy tool_calls must be detected by PRESENCE, not finish_reason gate."""
     span = legacy_responses_toolcall_span()
     out = extract_tool_calls(span, span.attributes)
-    assert out is not None
-    assert "get_weather" in out
-    assert "Paris" in out
+    assert out == [{"name": "get_weather", "arguments": '{"city":"Paris"}'}]
 
 
 def test_tool_calls_new_json():
     span = new_responses_toolcall_span()
     out = extract_tool_calls(span, span.attributes)
-    assert out is not None
-    assert "get_weather" in out
-    assert "Paris" in out
+    assert out == [{"name": "get_weather", "arguments": {"city": "Paris"}}]
 
 
-def test_tool_calls_none_when_absent():
+def test_tool_calls_empty_when_absent():
     span = legacy_chat_span()
-    assert extract_tool_calls(span, span.attributes) is None
+    assert extract_tool_calls(span, span.attributes) == []
 
 
 # --------------------------------------------------------------------------- #
